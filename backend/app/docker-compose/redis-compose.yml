@@ -1,0 +1,18 @@
+version: '3.8'
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: easy-novel-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass liuwenpeng123
+    volumes:
+      - redis_data:/data
+    networks:
+      - novel-network
+volumes:
+  redis_data:
+networks:
+  novel-network:
+    driver: bridge

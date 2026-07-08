@@ -1,0 +1,27 @@
+version: '3.8'
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: easy-novel-mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: liuwenpeng123
+      MYSQL_DATABASE: easy-novel
+      MYSQL_USER: liuwenpeng
+      MYSQL_PASSWORD: liuwenpeng123
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ../sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    networks:
+      - novel-network
+volumes:
+  mysql_data:
+networks:
+  novel-network:
+    driver: bridge

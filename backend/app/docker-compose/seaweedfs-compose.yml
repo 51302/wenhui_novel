@@ -1,0 +1,41 @@
+version: '3.8'
+services:
+  master:
+    image: chrislusf/seaweedfs:latest
+    container_name: easy-novel-seaweedfs-master
+    ports:
+      - "9333:9333"
+      - "19333:19333"
+    command: "master"
+    volumes:
+      - seaweedfs_master_data:/data
+
+  volume:
+    image: chrislusf/seaweedfs:latest
+    container_name: easy-novel-seaweedfs-volume
+    ports:
+      - "8080:8080"
+      - "18080:18080"
+    command: 'volume -dir=/data -max=5 -mserver="master:9333"'
+    depends_on:
+      - master
+    volumes:
+      - seaweedfs_volume_data:/data
+
+  filer:
+    image: chrislusf/seaweedfs:latest
+    container_name: easy-novel-seaweedfs-filer
+    ports:
+      - "8888:8888"
+      - "18888:18888"
+    command: 'filer -master="master:9333"'
+    depends_on:
+      - master
+      - volume
+    volumes:
+      - seaweedfs_filer_data:/data
+
+volumes:
+  seaweedfs_master_data:
+  seaweedfs_volume_data:
+  seaweedfs_filer_data:

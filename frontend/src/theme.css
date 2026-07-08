@@ -1,0 +1,408 @@
+/* =====================================================
+   文辉小说 – 全局主题系统
+   ===================================================== */
+
+/* ===== 蓝紫色调（默认，星空紫） ===== */
+:root,
+[data-theme="purple"] {
+  /* 背景 */
+  --bg-deep: #0a0a1a;
+  --bg-card: rgba(15, 15, 40, 0.85);
+  --bg-card-hover: rgba(20, 20, 55, 0.9);
+  --bg-overlay: rgba(0, 0, 0, 0.65);
+  --bg-nav: rgba(10, 10, 30, 0.88);
+
+  /* 品牌渐变色 */
+  --brand-from: #06b6d4;      /* 青 */
+  --brand-to: #8b5cf6;        /* 紫 */
+  --brand-gradient: linear-gradient(135deg, var(--brand-from), var(--brand-to));
+
+  /* 强调色 */
+  --accent: #06b6d4;
+  --accent-hover: #22d3ee;
+  --accent-glow: rgba(6, 182, 212, 0.3);
+  --accent-glow-strong: rgba(6, 182, 212, 0.5);
+
+  /* 辅助色 */
+  --secondary: #a78bfa;
+  --gold: #f59e0b;
+  --gold-from: #f59e0b;
+  --gold-to: #f97316;
+  --gold-gradient: linear-gradient(135deg, var(--gold-from), var(--gold-to));
+
+  /* 成功/警告色 */
+  --success: #10b981;
+  --success-from: #10b981;
+  --success-to: #059669;
+  --success-gradient: linear-gradient(135deg, var(--success-from), var(--success-to));
+
+  /* 文字 */
+  --text-primary: #e0e0e0;
+  --text-secondary: #8892b0;
+  --text-muted: #64748b;
+  --text-white: #ffffff;
+
+  /* 边框 */
+  --border: rgba(102, 126, 234, 0.15);
+  --border-hover: rgba(6, 182, 212, 0.4);
+  --border-focus: rgba(6, 182, 212, 0.6);
+
+  /* 按钮 */
+  --btn-bg: rgba(102, 126, 234, 0.2);
+  --btn-border: rgba(102, 126, 234, 0.3);
+  --btn-text: #e0e0e0;
+
+  /* Card 阴影 */
+  --card-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  --card-shadow-hover: 0 24px 70px rgba(0, 0, 0, 0.4), 0 0 40px rgba(6, 182, 212, 0.08);
+
+  /* shine 光效色 */
+  --shine-color: rgba(6, 182, 212, 0.3);
+
+  /* 粒子/星空颜色 */
+  --star-color-1: rgba(72, 52, 212, 0.15);
+  --star-color-2: rgba(6, 182, 212, 0.12);
+  --star-color-3: rgba(168, 85, 247, 0.1);
+}
+
+
+/* ===== 蓝白科技主题 ===== */
+[data-theme="blue"] {
+  --bg-deep: #060a18;
+  --bg-card: rgba(10, 16, 40, 0.88);
+  --bg-card-hover: rgba(15, 22, 55, 0.92);
+  --bg-overlay: rgba(0, 0, 0, 0.6);
+  --bg-nav: rgba(6, 10, 24, 0.9);
+
+  --brand-from: #3b82f6;      /* 蓝 */
+  --brand-to: #60a5fa;        /* 浅蓝白 */
+  --brand-gradient: linear-gradient(135deg, var(--brand-from), var(--brand-to));
+
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-glow: rgba(59, 130, 246, 0.3);
+  --accent-glow-strong: rgba(59, 130, 246, 0.5);
+
+  --secondary: #818cf8;
+  --gold: #f59e0b;
+  --gold-from: #f59e0b;
+  --gold-to: #f97316;
+  --gold-gradient: linear-gradient(135deg, var(--gold-from), var(--gold-to));
+
+  --success: #10b981;
+  --success-from: #10b981;
+  --success-to: #059669;
+  --success-gradient: linear-gradient(135deg, var(--success-from), var(--success-to));
+
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --text-white: #ffffff;
+
+  --border: rgba(59, 130, 246, 0.12);
+  --border-hover: rgba(59, 130, 246, 0.35);
+  --border-focus: rgba(59, 130, 246, 0.55);
+
+  --btn-bg: rgba(59, 130, 246, 0.15);
+  --btn-border: rgba(59, 130, 246, 0.25);
+  --btn-text: #e2e8f0;
+
+  --card-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  --card-shadow-hover: 0 24px 70px rgba(0, 0, 0, 0.4), 0 0 40px rgba(59, 130, 246, 0.08);
+
+  --shine-color: rgba(59, 130, 246, 0.25);
+
+  --star-color-1: rgba(30, 64, 175, 0.12);
+  --star-color-2: rgba(59, 130, 246, 0.1);
+  --star-color-3: rgba(96, 165, 250, 0.08);
+}
+
+
+/* ===== 蓝绿科技主题 ===== */
+[data-theme="green"] {
+  --bg-deep: #050f14;
+  --bg-card: rgba(8, 20, 28, 0.88);
+  --bg-card-hover: rgba(12, 28, 38, 0.92);
+  --bg-overlay: rgba(0, 0, 0, 0.6);
+  --bg-nav: rgba(5, 15, 20, 0.9);
+
+  --brand-from: #06b6d4;      /* 青 */
+  --brand-to: #10b981;        /* 绿 */
+  --brand-gradient: linear-gradient(135deg, var(--brand-from), var(--brand-to));
+
+  --accent: #06b6d4;
+  --accent-hover: #22d3ee;
+  --accent-glow: rgba(6, 182, 212, 0.3);
+  --accent-glow-strong: rgba(6, 182, 212, 0.5);
+
+  --secondary: #34d399;
+  --gold: #f59e0b;
+  --gold-from: #f59e0b;
+  --gold-to: #f97316;
+  --gold-gradient: linear-gradient(135deg, var(--gold-from), var(--gold-to));
+
+  --success: #10b981;
+  --success-from: #10b981;
+  --success-to: #059669;
+  --success-gradient: linear-gradient(135deg, var(--success-from), var(--success-to));
+
+  --text-primary: #d1fae5;
+  --text-secondary: #6ee7b7;
+  --text-muted: #4b8b6e;
+  --text-white: #ffffff;
+
+  --border: rgba(6, 182, 212, 0.12);
+  --border-hover: rgba(16, 185, 129, 0.35);
+  --border-focus: rgba(16, 185, 129, 0.55);
+
+  --btn-bg: rgba(6, 182, 212, 0.15);
+  --btn-border: rgba(6, 182, 212, 0.25);
+  --btn-text: #d1fae5;
+
+  --card-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  --card-shadow-hover: 0 24px 70px rgba(0, 0, 0, 0.4), 0 0 40px rgba(6, 182, 212, 0.08);
+
+  --shine-color: rgba(16, 185, 129, 0.25);
+
+  --star-color-1: rgba(6, 182, 212, 0.1);
+  --star-color-2: rgba(16, 185, 129, 0.08);
+  --star-color-3: rgba(52, 211, 153, 0.06);
+}
+
+
+/* ===== 暗夜金·奢华主题 ===== */
+[data-theme="gold"] {
+  --bg-deep: #0d0b08;
+  --bg-card: rgba(20, 16, 10, 0.88);
+  --bg-card-hover: rgba(28, 22, 14, 0.92);
+  --bg-overlay: rgba(0, 0, 0, 0.6);
+  --bg-nav: rgba(13, 11, 8, 0.9);
+
+  --brand-from: #f59e0b;      /* 琥珀金 */
+  --brand-to: #d97706;        /* 深金 */
+  --brand-gradient: linear-gradient(135deg, var(--brand-from), var(--brand-to));
+
+  --accent: #f59e0b;
+  --accent-hover: #fbbf24;
+  --accent-glow: rgba(245, 158, 11, 0.3);
+  --accent-glow-strong: rgba(245, 158, 11, 0.5);
+
+  --secondary: #d4a574;
+  --gold: #f59e0b;
+  --gold-from: #f59e0b;
+  --gold-to: #d97706;
+  --gold-gradient: linear-gradient(135deg, var(--gold-from), var(--gold-to));
+
+  --success: #10b981;
+  --success-from: #10b981;
+  --success-to: #059669;
+  --success-gradient: linear-gradient(135deg, var(--success-from), var(--success-to));
+
+  --text-primary: #fef3c7;
+  --text-secondary: #d4a574;
+  --text-muted: #8b7355;
+  --text-white: #ffffff;
+
+  --border: rgba(245, 158, 11, 0.12);
+  --border-hover: rgba(245, 158, 11, 0.35);
+  --border-focus: rgba(245, 158, 11, 0.55);
+
+  --btn-bg: rgba(245, 158, 11, 0.15);
+  --btn-border: rgba(245, 158, 11, 0.25);
+  --btn-text: #fef3c7;
+
+  --card-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  --card-shadow-hover: 0 24px 70px rgba(0, 0, 0, 0.4), 0 0 40px rgba(245, 158, 11, 0.1);
+
+  --shine-color: rgba(245, 158, 11, 0.25);
+
+  --star-color-1: rgba(217, 119, 6, 0.12);
+  --star-color-2: rgba(245, 158, 11, 0.1);
+  --star-color-3: rgba(180, 130, 90, 0.08);
+}
+
+
+/* ===== 赛博粉·霓虹主题 ===== */
+[data-theme="pink"] {
+  --bg-deep: #0f0518;
+  --bg-card: rgba(22, 8, 38, 0.88);
+  --bg-card-hover: rgba(30, 10, 48, 0.92);
+  --bg-overlay: rgba(0, 0, 0, 0.6);
+  --bg-nav: rgba(15, 5, 24, 0.9);
+
+  --brand-from: #ec4899;      /* 粉 */
+  --brand-to: #a855f7;        /* 紫 */
+  --brand-gradient: linear-gradient(135deg, var(--brand-from), var(--brand-to));
+
+  --accent: #ec4899;
+  --accent-hover: #f472b6;
+  --accent-glow: rgba(236, 72, 153, 0.3);
+  --accent-glow-strong: rgba(236, 72, 153, 0.5);
+
+  --secondary: #c084fc;
+  --gold: #f59e0b;
+  --gold-from: #f59e0b;
+  --gold-to: #f97316;
+  --gold-gradient: linear-gradient(135deg, var(--gold-from), var(--gold-to));
+
+  --success: #10b981;
+  --success-from: #10b981;
+  --success-to: #059669;
+  --success-gradient: linear-gradient(135deg, var(--success-from), var(--success-to));
+
+  --text-primary: #fce7f3;
+  --text-secondary: #e9a5c9;
+  --text-muted: #9b6b8a;
+  --text-white: #ffffff;
+
+  --border: rgba(236, 72, 153, 0.12);
+  --border-hover: rgba(236, 72, 153, 0.35);
+  --border-focus: rgba(236, 72, 153, 0.55);
+
+  --btn-bg: rgba(236, 72, 153, 0.15);
+  --btn-border: rgba(236, 72, 153, 0.25);
+  --btn-text: #fce7f3;
+
+  --card-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  --card-shadow-hover: 0 24px 70px rgba(0, 0, 0, 0.4), 0 0 40px rgba(236, 72, 153, 0.1);
+
+  --shine-color: rgba(236, 72, 153, 0.25);
+
+  --star-color-1: rgba(168, 85, 247, 0.12);
+  --star-color-2: rgba(236, 72, 153, 0.1);
+  --star-color-3: rgba(192, 132, 252, 0.08);
+}
+
+
+/* ===== 日落橙·暖色主题 ===== */
+[data-theme="orange"] {
+  --bg-deep: #0f0806;
+  --bg-card: rgba(22, 12, 8, 0.88);
+  --bg-card-hover: rgba(30, 16, 10, 0.92);
+  --bg-overlay: rgba(0, 0, 0, 0.6);
+  --bg-nav: rgba(15, 8, 6, 0.9);
+
+  --brand-from: #f97316;      /* 橙 */
+  --brand-to: #ef4444;        /* 红 */
+  --brand-gradient: linear-gradient(135deg, var(--brand-from), var(--brand-to));
+
+  --accent: #f97316;
+  --accent-hover: #fb923c;
+  --accent-glow: rgba(249, 115, 22, 0.3);
+  --accent-glow-strong: rgba(249, 115, 22, 0.5);
+
+  --secondary: #fca5a5;
+  --gold: #f59e0b;
+  --gold-from: #f59e0b;
+  --gold-to: #f97316;
+  --gold-gradient: linear-gradient(135deg, var(--gold-from), var(--gold-to));
+
+  --success: #10b981;
+  --success-from: #10b981;
+  --success-to: #059669;
+  --success-gradient: linear-gradient(135deg, var(--success-from), var(--success-to));
+
+  --text-primary: #fff7ed;
+  --text-secondary: #fca5a5;
+  --text-muted: #b0826b;
+  --text-white: #ffffff;
+
+  --border: rgba(249, 115, 22, 0.12);
+  --border-hover: rgba(249, 115, 22, 0.35);
+  --border-focus: rgba(249, 115, 22, 0.55);
+
+  --btn-bg: rgba(249, 115, 22, 0.15);
+  --btn-border: rgba(249, 115, 22, 0.25);
+  --btn-text: #fff7ed;
+
+  --card-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  --card-shadow-hover: 0 24px 70px rgba(0, 0, 0, 0.4), 0 0 40px rgba(249, 115, 22, 0.1);
+
+  --shine-color: rgba(249, 115, 22, 0.25);
+
+  --star-color-1: rgba(239, 68, 68, 0.1);
+  --star-color-2: rgba(249, 115, 22, 0.08);
+  --star-color-3: rgba(252, 165, 165, 0.06);
+}
+
+
+/* ===== 通用过渡效果 ===== */
+*,
+*::before,
+*::after {
+  transition: background-color 0.35s ease,
+              border-color 0.35s ease,
+              box-shadow 0.35s ease,
+              color 0.35s ease;
+}
+
+/* ===== 全局科技风格增强类 ===== */
+
+/* 卡片科技光效边框 */
+.card-tech {
+  position: relative;
+  overflow: hidden;
+}
+.card-tech::before {
+  content: '';
+  position: absolute;
+  top: 0; left: -100%;
+  width: 100%; height: 100%;
+  background: linear-gradient(90deg, transparent, var(--shine-color), transparent);
+  transition: left 0.6s ease;
+}
+.card-tech:hover::before {
+  left: 100%;
+}
+
+/* 扫描线效果 */
+.scan-line {
+  position: relative;
+  overflow: hidden;
+}
+.scan-line::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 2px;
+  background: var(--brand-gradient);
+  opacity: 0;
+  animation: scan 3s linear infinite;
+}
+@keyframes scan {
+  0%   { top: -2px; opacity: 0; }
+  10%  { opacity: 0.8; }
+  90%  { opacity: 0.8; }
+  100% { top: 100%; opacity: 0; }
+}
+
+/* 脉冲光晕 */
+.pulse-glow {
+  animation: pulseGlow 2s ease-in-out infinite;
+}
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 5px var(--accent-glow); }
+  50%      { box-shadow: 0 0 25px var(--accent-glow-strong); }
+}
+
+/* 数据流粒子装饰 */
+.data-dots {
+  position: relative;
+}
+.data-dots::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, var(--accent) 1px, transparent 1px);
+  background-size: 30px 30px;
+  opacity: 0.05;
+  pointer-events: none;
+}
+
+/* 网格背景 */
+.grid-bg {
+  background-image:
+    linear-gradient(var(--border) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border) 1px, transparent 1px);
+  background-size: 40px 40px;
+}

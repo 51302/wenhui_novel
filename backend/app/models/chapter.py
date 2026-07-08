@@ -1,0 +1,22 @@
+from sqlalchemy import Column, Integer, String, DateTime, Text, func, SmallInteger
+from app.models.base import Base
+
+
+class Chapter(Base):
+    __tablename__ = "chapters"
+
+    id = Column(Integer, primary_key=True, autoincrement=True, comment="章节自增ID")
+    novel_unique_id = Column(String(64), nullable=False, comment="作品唯一ID")
+    user_id = Column(Integer, nullable=False, comment="用户ID")
+    chapter_unique_id = Column(String(64), unique=True, nullable=False, comment="章节唯一ID")
+    chapter_name = Column(String(256), nullable=False, comment="章节名称")
+    characters_involved = Column(Text, comment="涉及人物(JSON)")
+    organizations = Column(Text, comment="涉及组织(JSON)")
+    locations = Column(Text, comment="涉及地点(JSON)")
+    skills = Column(Text, comment="涉及技能(JSON)")
+    word_count = Column(Integer, default=0, comment="章节字数")
+    chapter_summary = Column(String(512), nullable=True, comment="本章概要")
+    is_published = Column(SmallInteger, default=0, comment="是否发布: 0=草稿, 1=已发布")
+    created_by = Column(String(64), nullable=True, comment="创建人")
+    created_at = Column(DateTime, default=func.now(), comment="创建时间")
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), comment="更新时间")
