@@ -159,9 +159,16 @@ class AuthService:
 
         if len(password) < 8:
             return fail("密码必须超过8位数", code=400)
+        
+        # 检查用户名是否已存在
         existing = UserDAO.get_by_username(db, username)
         if existing:
             return fail("用户名已存在", code=400)
+        
+        # 检查邮箱是否已注册
+        existing_email = UserDAO.get_by_email(db, email)
+        if existing_email:
+            return fail("该邮箱已经注册", code=400)
 
         hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
         user = UserDAO.create(db, username, hashed, email, phone, is_super_admin)

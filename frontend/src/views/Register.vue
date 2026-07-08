@@ -110,7 +110,16 @@ export default {
           localStorage.setItem('novel_user', JSON.stringify(res.数据))
           emit('login-success', res.数据)
           router.push('/')
-        } else { error.value = res.消息 }
+        } else {
+          // 针对不同错误给出更友好的提示
+          if (res.消息 && res.消息.includes('邮箱')) {
+            error.value = res.消息
+          } else if (res.消息 && res.消息.includes('用户名')) {
+            error.value = res.消息
+          } else {
+            error.value = res.消息 || '注册失败，请重试'
+          }
+        }
       } catch (e) { error.value = '注册失败，请重试' }
       finally { submitting.value = false }
     }

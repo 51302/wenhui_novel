@@ -15,6 +15,10 @@ class UserDAO:
         return db.query(User).filter(User.username == username).first()
 
     @staticmethod
+    def get_by_email(db: Session, email: str) -> Optional[User]:
+        return db.query(User).filter(User.email == email).first()
+
+    @staticmethod
     def create(db: Session, username: str, hashed_password: str,
                email: str = None, phone: str = None, is_super_admin: int = 0) -> User:
         user = User(
