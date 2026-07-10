@@ -130,38 +130,48 @@ class NovelService:
             cached = r.get(cache_key)
             if cached:
                 return success(cached)
-        es_results = es_service.search_novels(keyword, page, page_size)
-        if es_results and es_results.get("hits", {}).get("total", {}).get("value", 0) > 0:
-            items = []
-            for hit in es_results["hits"]["hits"]:
-                src = hit["_source"]
-                items.append({
-                    "novel_unique_id": src.get("novel_unique_id"),
-                    "title": src.get("title"),
-                    "author_name": src.get("author_name"),
-                    "target_reader": src.get("target_reader"),
-                    "genre": src.get("genre"),
-                    "description": src.get("description", "")[:100],
-                    "cover_image": src.get("cover_image", ""),
-                })
-            result = {"items": items, "total": es_results["hits"]["total"]["value"], "page": page, "page_size": page_size}
-        else:
-            novels, total = NovelDAO.search_novels(db, keyword, page, page_size)
-            result = {
-                "items": [{
-                    "novel_unique_id": n.novel_unique_id,
-                    "title": n.title,
-                    "author_name": n.author_name,
-                    "target_reader": n.target_reader,
-                    "genre": n.genre,
-                    "description": n.description[:100] if n.description else "",
-                    "cover_image": n.cover_image,
-                } for n in novels],
-                "total": total, "page": page, "page_size": page_size
-            }
-        if r:
-            r.set(cache_key, result)
-        return success(result)
+
+        # 缓存击穿保护：并发时只有第一个请求去 ES/DB
+        lock = _get_cache_lock(cache_key)
+        with lock:
+            if r:
+                cached = r.get(cache_key)
+                if cached:
+                    return success(cached)
+
+            es_results = es_service.search_novels(keyword, page, page_size)
+            if es_results and es_results.get("hits", {}).get("total", {}).get("value", 0) > 0:
+                items = []
+                for hit in es_results["hits"]["hits"]:
+                    src = hit["_source"]
+                    items.append({
+                        "novel_unique_id": src.get("novel_unique_id"),
+                        "title": src.get("title"),
+                        "author_name": src.get("author_name"),
+                        "target_reader": src.get("target_reader"),
+                        "genre": src.get("genre"),
+                        "description": src.get("description", "")[:100],
+                        "cover_image": src.get("cover_image", ""),
+                    })
+                result = {"items": items, "total": es_results["hits"]["total"]["value"], "page": page, "page_size": page_size}
+            else:
+                novels, total = NovelDAO.search_novels(db, keyword, page, page_size)
+                result = {
+                    "items": [{
+                        "novel_unique_id": n.novel_unique_id,
+                        "title": n.title,
+                        "author_name": n.author_name,
+                        "target_reader": n.target_reader,
+                        "genre": n.genre,
+                        "description": n.description[:100] if n.description else "",
+                        "cover_image": n.cover_image,
+                    } for n in novels],
+                    "total": total, "page": page, "page_size": page_size
+                }
+
+            if r:
+                r.set(cache_key, result)
+            return success(result)
 
     @staticmethod
     def get_novel_detail(db: Session, novel_unique_id: str) -> dict:

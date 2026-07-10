@@ -10,7 +10,14 @@ class ESService:
 
     def __init__(self):
         try:
-            self.client = Elasticsearch(ES_HOST)
+            self.client = Elasticsearch(
+                ES_HOST,
+                # 连接池优化：保持长连接，减少握手开销
+                maxsize=20,
+                retry_on_timeout=True,
+                timeout=5,
+                max_retries=2,
+            )
             self._ensure_index()
         except Exception:
             self.client = None

@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from app.models.novel import Novel
 from typing import Optional, List
-from sqlalchemy import desc
+from sqlalchemy import desc, text
 
 
 class NovelDAO:
@@ -24,16 +24,20 @@ class NovelDAO:
 
     @staticmethod
     def list_novels(db: Session, target_reader: str = None, genre: str = None,
-                    page: int = 1, page_size: int = 12) -> tuple:
+                    page: int = 1, page_size: int = 12, fast_total: bool = True) -> tuple:
         query = db.query(Novel)
         if target_reader:
             query = query.filter(Novel.target_reader == target_reader)
         if genre:
             query = query.filter(Novel.genre == genre)
-        total = query.count()
+        # 优化: 用 information_schema 估算行数(毫秒级) 替代 COUNT(*)(全表扫描)
+        if fast_total:
+            total = db.execute(text("SELECT AUTO_INCREMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='novels'")).scalar() or 0
+        else:
+            total = query.count()
         novels = query.order_by(desc(Novel.created_at)).offset(
             (page - 1) * page_size).limit(page_size).all()
-        return novels, total
+        return novels, int(total)
 
     @staticmethod
     def search_novels(db: Session, keyword: str, page: int = 1, page_size: int = 12) -> tuple:
