@@ -58,9 +58,17 @@
       </div>
     </div>
 
-    <!-- 复制提示弹窗 - 底部居中 -->
-    <div class="copy-toast" :class="{ show: copyToastShow }">
-      📖 复制小说内容需要 <a href="/vip" class="toast-vip-link">开通 VIP</a> 才能享受此功能
+    <!-- VIP复制弹窗 - 模态框 -->
+    <div class="vip-copy-overlay" v-if="vipModalShow" @click.self="closeVipModal">
+      <div class="vip-copy-modal">
+        <div class="vip-modal-icon">💎</div>
+        <h3 class="vip-modal-title">VIP 专属功能</h3>
+        <p class="vip-modal-desc">复制小说内容需要<b>开通 VIP</b> 才能使用</p>
+        <div class="vip-modal-actions">
+          <button class="vip-modal-btn btn-cancel" @click="closeVipModal">暂不需要</button>
+          <button class="vip-modal-btn btn-confirm" @click="goVip">立即开通 VIP</button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -79,8 +87,7 @@ export default {
     const currentChapter = ref(null)
     const currentChapterId = ref(null)
     const inBookshelf = ref(false)
-    const copyToastShow = ref(false)
-    let copyToastTimer = null
+    const vipModalShow = ref(false)
 
     // VIP 判断
     const user = JSON.parse(localStorage.getItem('novel_user') || '{}')
@@ -91,7 +98,7 @@ export default {
       if (isVip.value) return
       if (e.ctrlKey && (e.key === 'c' || e.key === 'C' || e.key === 'Insert')) {
         e.preventDefault()
-        showCopyTip()
+        showVipModal()
       }
     }
 
@@ -118,17 +125,24 @@ export default {
         .join('')
     })
 
-    const showCopyTip = () => {
-      copyToastShow.value = true
-      clearTimeout(copyToastTimer)
-      copyToastTimer = setTimeout(() => { copyToastShow.value = false }, 2500)
+    const showVipModal = () => {
+      vipModalShow.value = true
+    }
+
+    const closeVipModal = () => {
+      vipModalShow.value = false
+    }
+
+    const goVip = () => {
+      vipModalShow.value = false
+      router.push('/vip')
     }
 
     // 右键菜单：VIP允许，非VIP拦截
     const onContextMenu = (e) => {
       if (!isVip.value) {
         e.preventDefault()
-        showCopyTip()
+        showVipModal()
       }
     }
 
@@ -136,7 +150,7 @@ export default {
     const onCopy = (e) => {
       if (!isVip.value) {
         e.preventDefault()
-        showCopyTip()
+        showVipModal()
       }
     }
 
@@ -150,7 +164,7 @@ export default {
     // 尝试选中（仅非VIP拦截）
     const onSelectStart = (e) => {
       if (isVip.value) return
-      showCopyTip()
+      showVipModal()
       e.preventDefault()
     }
 
@@ -213,7 +227,7 @@ export default {
     onUnmounted(() => {
       document.removeEventListener('keydown', onKeyDown)
     })
-    return { novel, allChapters, publishedChapters, currentChapter, currentChapterId, prevChapter, nextChapter, openChapter, formattedContent, inBookshelf, toggleBookshelf, copyToastShow, showCopyTip, isVip, onContextMenu, onCopy, onSelectStart, onBeforeSelect }
+    return { novel, allChapters, publishedChapters, currentChapter, currentChapterId, prevChapter, nextChapter, openChapter, formattedContent, inBookshelf, toggleBookshelf, vipModalShow, showVipModal, closeVipModal, goVip, isVip, onContextMenu, onCopy, onSelectStart, onBeforeSelect }
   }
 }
 </script>
@@ -318,16 +332,36 @@ export default {
 }
 .chapter-nav button:hover { color: #06b6d4; border-color: rgba(6, 182, 212, 0.4); }
 
-/* 复制提示弹窗 - 底部居中 */
-.copy-toast {
-  position: fixed !important; bottom: 30px !important; top: auto !important;
-  left: 50% !important; transform: translateX(-50%) translateY(20px);
-  background: rgba(15,15,40,0.95); border: 1px solid rgba(245,158,11,0.4);
-  padding: 12px 24px; border-radius: 12px; font-size: 13px; color: #fbbf24;
-  z-index: 9999; opacity: 0; pointer-events: none; transition: all 0.35s ease;
-  box-shadow: 0 8px 30px rgba(0,0,0,0.5), 0 0 20px rgba(245,158,11,0.1);
-  backdrop-filter: blur(12px); white-space: nowrap; max-width: 90vw;
+/* VIP复制弹窗 - 模态框 */
+.vip-copy-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.65); backdrop-filter: blur(4px);
+  z-index: 9999; display: flex; align-items: center; justify-content: center;
+  animation: fadeIn 0.25s ease;
 }
-.copy-toast.show { opacity: 1 !important; transform: translateX(-50%) translateY(0) !important; pointer-events: auto; }
-.toast-vip-link { color: #f59e0b; font-weight: 700; text-decoration: underline; margin: 0 2px; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+.vip-copy-modal {
+  background: linear-gradient(145deg, #1a1a3e 0%, #0f0f2a 100%);
+  border: 1px solid rgba(245,158,11,0.3); border-radius: 20px;
+  padding: 40px 36px 32px; text-align: center; max-width: 420px; width: 90%;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6), 0 0 40px rgba(245,158,11,0.08);
+  animation: slideUp 0.3s ease;
+}
+@keyframes slideUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+.vip-modal-icon { font-size: 48px; margin-bottom: 12px; }
+.vip-modal-title { font-size: 20px; color: #fbbf24; margin: 0 0 10px; font-weight: 700; }
+.vip-modal-desc { font-size: 14px; color: #aab; margin: 0 0 28px; line-height: 1.6; }
+.vip-modal-desc b { color: #f59e0b; }
+.vip-modal-actions { display: flex; gap: 14px; justify-content: center; }
+.vip-modal-btn {
+  padding: 10px 24px; border-radius: 10px; font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: all 0.2s ease; border: none;
+}
+.btn-cancel { background: rgba(255,255,255,0.06); color: #889; border: 1px solid rgba(255,255,255,0.1); }
+.btn-cancel:hover { background: rgba(255,255,255,0.12); color: #aab; }
+.btn-confirm {
+  background: linear-gradient(135deg, #f59e0b, #d97706); color: #fff;
+  box-shadow: 0 4px 16px rgba(245,158,11,0.3);
+}
+.btn-confirm:hover { box-shadow: 0 6px 24px rgba(245,158,11,0.45); transform: translateY(-1px); }
 </style>
