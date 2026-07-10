@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from app.models.base import get_db
 from app.service.novel_service import NovelService
-from app.api.deps import get_current_user, require_vip
+from app.api.deps import get_current_user, check_creation_access
 
 router = APIRouter(prefix="/api/novels", tags=["小说"])
 
@@ -16,7 +16,7 @@ def create_novel(
     cover_image: str = None,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    _vip=Depends(require_vip),
+    _perm=Depends(check_creation_access),
 ):
     return NovelService.create_novel(
         db, current_user["user_id"], current_user["username"],
@@ -64,7 +64,7 @@ def delete_novel(
     novel_unique_id: str,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    _vip=Depends(require_vip),
+    _vip=Depends(check_creation_access),
 ):
     return NovelService.delete_novel(db, novel_unique_id)
 
@@ -81,7 +81,7 @@ def update_novel(
     cover_image: str = None,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    _vip=Depends(require_vip),
+    _vip=Depends(check_creation_access),
 ):
     return NovelService.update_novel(
         db, novel_unique_id, title, target_reader, description,

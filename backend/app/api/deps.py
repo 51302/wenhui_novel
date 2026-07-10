@@ -68,6 +68,7 @@ def get_current_user(
             "username": username,
             "is_super_admin": is_super_admin,
             "is_vip": is_vip,
+            "free_generate_quota": user.free_generate_quota if user else 0,
         }
 
         # 写入 Redis 缓存
@@ -90,6 +91,22 @@ def require_vip(current_user: dict = Depends(get_current_user)):
     if not current_user.get("is_vip"):
         raise HTTPException(status_code=403, detail="仅 VIP 用户可操作")
     return current_user
+
+
+def check_creation_access(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """创作权限检查：VIP直接通过，非VIP检查是否有剩余免费次数(不扣减)"""
+    if current_user.get("is_vip"):
+        return current_user
+    user = UserDAO.get_by_id(db, current_user["user_id"])
+    if not user:
+        raise HTTPException(status_code=401, detail="用户不存在")
+    if user.free_generate_quota > 0:
+        current_user["free_generate_quota"] = user.free_generate_quota
+        return current_user
+    raise HTTPException(status_code=403, detail="免费次数已用完，请开通VIP继续使用")
 
 
 def check_generate_permission(

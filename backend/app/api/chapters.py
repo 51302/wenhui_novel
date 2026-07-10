@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query, Body
 from sqlalchemy.orm import Session
 from app.models.base import get_db
 from app.service.chapter_service import ChapterService
-from app.api.deps import get_current_user, check_generate_permission, require_vip
+from app.api.deps import get_current_user, check_generate_permission, check_creation_access
 from app.utils.response import fail
 from pydantic import BaseModel
 
@@ -72,7 +72,7 @@ def update_chapter(
     chapter_summary: str = None,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    _vip=Depends(require_vip),
+    _vip=Depends(check_creation_access),
 ):
     return ChapterService.update_chapter(
         db, chapter_unique_id, content, chapter_name, chapter_summary
@@ -85,7 +85,7 @@ def publish_chapter(
     body: dict = Body(...),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    _vip=Depends(require_vip),
+    _vip=Depends(check_creation_access),
 ):
     """发布章节到作品圈"""
     return ChapterService.publish_chapter(db, chapter_unique_id, body.get("content"))
@@ -96,7 +96,7 @@ def delete_chapter(
     chapter_unique_id: str,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    _vip=Depends(require_vip),
+    _vip=Depends(check_creation_access),
 ):
     return ChapterService.delete_chapter(db, chapter_unique_id)
 
