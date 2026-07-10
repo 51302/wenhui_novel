@@ -247,7 +247,7 @@ export default {
   setup() {
     const tab = ref('create')
 
-    const user = JSON.parse(localStorage.getItem('novel_user') || '{}')
+    const user = reactive(JSON.parse(localStorage.getItem('novel_user') || '{}'))
     const isVip = computed(() => !!user.is_vip)
     const freeQuota = computed(() => user.free_generate_quota ?? 0)
 
