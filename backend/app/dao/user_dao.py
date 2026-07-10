@@ -26,7 +26,8 @@ class UserDAO:
             password=hashed_password,
             email=email,
             phone=phone,
-            is_super_admin=is_super_admin
+            is_super_admin=is_super_admin,
+            free_generate_quota=10
         )
         db.add(user)
         db.commit()
@@ -58,3 +59,15 @@ class UserDAO:
                 db.commit()
                 return True  # 已降级
         return False
+
+    @staticmethod
+    def decrement_generate_quota(db: Session, user_id: int) -> int:
+        """扣减1次免费生成次数，返回剩余次数；-1表示失败"""
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return -1
+        if user.free_generate_quota <= 0:
+            return -1
+        user.free_generate_quota -= 1
+        db.commit()
+        return user.free_generate_quota

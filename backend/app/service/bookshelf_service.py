@@ -123,6 +123,7 @@ class ProfileService:
             "phone": user.phone,
             "is_vip": is_vip,
             "vip_expire_at": user.vip_expire_at.strftime('%Y-%m-%d %H:%M:%S') if user.vip_expire_at else None,
+            "free_generate_quota": user.free_generate_quota or 0,
             "stats": {
                 "bookshelf": bookshelf_count,
                 "followers": followers_count,

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query, Body
 from sqlalchemy.orm import Session
 from app.models.base import get_db
 from app.service.chapter_service import ChapterService
-from app.api.deps import get_current_user, require_vip
+from app.api.deps import get_current_user, check_generate_permission, require_vip
 from app.utils.response import fail
 from pydantic import BaseModel
 
@@ -17,7 +17,7 @@ def create_chapter(
     word_count: int = 0, chapter_summary: str = None,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    _vip=Depends(require_vip),
+    _perm=Depends(check_generate_permission),
 ):
     return ChapterService.create_chapter(
         db, novel_unique_id, current_user["user_id"],
@@ -35,7 +35,7 @@ async def generate_chapter(
     word_count: int = 2000, chapter_summary: str = None,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    _vip=Depends(require_vip),
+    _perm=Depends(check_generate_permission),
 ):
     return await ChapterService.generate_with_ai(
         db, novel_unique_id, current_user["user_id"],
@@ -51,7 +51,7 @@ async def continue_chapter(
     word_count: int = 800,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    _vip=Depends(require_vip),
+    _perm=Depends(check_generate_permission),
 ):
     """AI续写指定章节：根据作品设定、前序章节、当前内容续写"""
     return await ChapterService.continue_with_ai(db, chapter_unique_id, word_count)

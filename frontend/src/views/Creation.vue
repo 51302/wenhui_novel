@@ -11,8 +11,14 @@
 
     <!-- ==================== 新建作品 ==================== -->
     <div v-if="tab === 'create'" class="tab-content">
-      <div v-if="!isVip" class="no-permission">创作功能仅VIP用户可用，当前不可用</div>
-      <form v-else class="create-form" @submit.prevent="handleCreateNovel">
+      <div v-if="!isVip && freeQuota <= 0" class="no-permission">
+        <p>创作功能仅VIP用户可用，请先 <router-link to="/vip" class="link-vip">开通VIP</router-link></p>
+      </div>
+      <div v-else-if="!isVip && freeQuota > 0" class="vip-banner free-banner">
+        🎁 新用户免费体验 · 剩余 <b>{{ freeQuota }}</b> 次 AI 生成
+        <router-link to="/vip" class="btn-upgrade">开通VIP无限使用</router-link>
+      </div>
+      <form v-if="isVip || freeQuota > 0" class="create-form" @submit.prevent="handleCreateNovel">
         <div class="form-row">
           <label>作品名称</label><input v-model="novelForm.title" required />
         </div>
@@ -235,6 +241,7 @@ export default {
 
     const user = JSON.parse(localStorage.getItem('novel_user') || '{}')
     const isVip = computed(() => !!user.is_vip)
+    const freeQuota = computed(() => user.free_generate_quota ?? 0)
 
     // 新建作品
     const novelForm = reactive({
@@ -483,6 +490,8 @@ export default {
           }
         })
         if (res.状态码 === 200) {
+          // 刷新用户信息（更新免费次数）
+          try { const mu = await api.get('/auth/me'); if (mu.状态码===200) { Object.assign(user, mu.数据); localStorage.setItem('novel_user', JSON.stringify(user)) } } catch {}
           alert(res.消息)
           tab.value = 'drafts'
           fetchDrafts()
@@ -567,7 +576,7 @@ export default {
       fetchMyNovels()
     })
 
-    return { tab, isVip, novelForm, createError, createSuccess, handleCreateNovel,
+    return { tab, isVip, freeQuota, novelForm, createError, createSuccess, handleCreateNovel,
       myNovels, fetchMyNovels,
       showChapterModal, chapterNovel, chapterMode, novelChapters, chapterForm, generating,
       openChapterModal, generateChapter,
@@ -597,6 +606,22 @@ export default {
 }
 .tab-content { min-height: 400px; }
 .no-permission { text-align: center; padding: 80px; background: rgba(15,15,40,0.7); border: 1px solid rgba(102,126,234,0.12); border-radius: 14px; color: #6b7280; font-size: 15px; }
+.no-permission p { margin: 0; }
+.link-vip { color: #f59e0b; font-weight: 700; text-decoration: underline; }
+
+/* 免费体验 banner */
+.free-banner {
+  text-align: center; padding: 16px 24px; background: linear-gradient(135deg, rgba(16,185,129,0.1), rgba(5,150,105,0.08));
+  border: 1px solid rgba(16,185,129,0.25); border-radius: 12px; color: #a7f3d0; font-size: 14px;
+  margin-bottom: 20px; display: flex; align-items: center; justify-content: center; gap: 16px; flex-wrap: wrap;
+}
+.free-banner b { color: #34d399; font-size: 18px; }
+.btn-upgrade {
+  display: inline-block; padding: 6px 16px; background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: #fff; border-radius: 8px; font-size: 13px; font-weight: 600; text-decoration: none;
+  transition: all 0.2s;
+}
+.btn-upgrade:hover { box-shadow: 0 4px 16px rgba(245,158,11,0.4); }
 
 /* Form */
 .create-form { background: rgba(15,15,40,0.7); border: 1px solid rgba(102,126,234,0.12); border-radius: 14px; padding: 28px; max-width: 800px; backdrop-filter: blur(10px); }

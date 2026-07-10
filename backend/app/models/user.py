@@ -14,4 +14,5 @@ class User(Base):
     phone = Column(String(20), nullable=True, comment="手机号")
     is_super_admin = Column(SmallInteger, default=0, comment="VIP会员: 0=普通用户, 1=VIP会员")
     vip_expire_at = Column(DateTime, nullable=True, comment="VIP到期时间，过期自动降级")
+    free_generate_quota = Column(Integer, default=10, comment="免费AI生成剩余次数，新用户默认10次")
     created_at = Column(DateTime, default=func.now(), comment="创建时间")

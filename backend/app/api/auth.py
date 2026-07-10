@@ -99,6 +99,7 @@ def get_me(current_user: dict = Depends(get_current_user), db: Session = Depends
     return success({
         **current_user,
         "vip_expire_at": vip_expire_at,
+        "free_generate_quota": user.free_generate_quota if user else 0,
     }, "已登录")
 
 
