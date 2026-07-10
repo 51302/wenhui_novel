@@ -29,8 +29,8 @@
 
         <!-- 被互动的作品 -->
         <div class="feed-work" @click="goReader(item.novel_unique_id)">
-          <img v-if="item.novel?.cover_image" :src="item.novel.cover_image" class="work-cover" />
-          <div v-else class="work-cover placeholder">📖</div>
+          <img v-if="item.novel?.cover_image" :src="item.novel.cover_image" class="work-cover" @error="item.novel.cover_image = ''" />
+          <div v-if="!item.novel?.cover_image" class="work-cover placeholder">📖</div>
           <div class="work-info">
             <strong class="work-title">{{ item.novel?.title || '未命名作品' }}</strong>
             <span class="work-author">作者: {{ item.novel?.author_name || '佚名' }}</span>

@@ -26,7 +26,7 @@
           <label>封面图片</label>
           <div class="image-upload">
             <div v-if="novelForm.cover_image" class="preview">
-              <img :src="novelForm.cover_image" alt="封面预览" />
+              <img :src="novelForm.cover_image" alt="封面预览" @error="novelForm.cover_image = ''" />
               <button type="button" class="btn-remove" @click="removeCover">删除</button>
             </div>
             <input v-else type="file" accept="image/*" @change="handleCoverUpload" />
@@ -113,8 +113,8 @@
       </div>
       <div v-for="novel in myNovels" :key="novel.novel_unique_id" class="my-novel-card">
         <div class="my-novel-cover">
-          <img v-if="novel.cover_image" :src="novel.cover_image" alt="封面" />
-          <span v-else class="placeholder">文辉小说</span>
+          <img v-if="novel.cover_image" :src="novel.cover_image" alt="封面" @error="novel.cover_image = ''" />
+          <span v-if="!novel.cover_image" class="placeholder">文辉小说</span>
         </div>
         <div class="my-novel-info">
           <h3>{{ novel.title }}</h3>
@@ -174,7 +174,7 @@
             <label>封面图片</label>
             <div class="image-upload">
               <div v-if="editForm.cover_image" class="preview">
-                <img :src="editForm.cover_image" alt="封面预览" />
+                <img :src="editForm.cover_image" alt="封面预览" @error="editForm.cover_image = ''" />
                 <button type="button" class="btn-remove" @click="editForm.cover_image = ''">删除</button>
               </div>
               <input v-else type="file" accept="image/*" @change="handleEditCoverUpload" />

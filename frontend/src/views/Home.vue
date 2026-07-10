@@ -31,8 +31,8 @@
       <div v-for="novel in novels" :key="novel.novel_unique_id" class="novel-card" @click="openDetail(novel.novel_unique_id)">
         <div class="card-img">
           <div class="card-glow"></div>
-          <img v-if="novel.cover_image" :src="novel.cover_image" />
-          <span v-else class="placeholder-img">📚</span>
+          <img v-if="novel.cover_image" :src="novel.cover_image" @error="novel.cover_image = ''" />
+          <span v-if="!novel.cover_image" class="placeholder-img">📚</span>
           <div class="card-overlay">
             <span class="overlay-btn">开始阅读 →</span>
           </div>
