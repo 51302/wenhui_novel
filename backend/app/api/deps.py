@@ -1,12 +1,25 @@
+"""
+认证依赖 — 优化版：Redis 缓存用户身份，减少数据库查询
+"""
 from fastapi import Depends, HTTPException, Request, Cookie
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.application.jwt_handler import verify_token
 from app.models.base import get_db
 from app.dao.user_dao import UserDAO
+import app.utils.redis_cache as redis_mod
+from app.utils.redis_cache import RedisCache
 from typing import Optional
 from datetime import datetime
 
 security = HTTPBearer(auto_error=False)
+
+# 用户信息缓存 TTL：5分钟
+_USER_CACHE_TTL = 300
+_USER_CACHE_PREFIX = "user:cache:"
+
+
+def _redis() -> Optional[RedisCache]:
+    return redis_mod.redis_client
 
 
 def get_current_user(
@@ -15,7 +28,6 @@ def get_current_user(
     novel_token: Optional[str] = Cookie(None)
 ):
     token = None
-    # 优先从 Authorization header 取，其次从 cookie
     if credentials:
         token = credentials.credentials
     elif novel_token:
@@ -29,34 +41,50 @@ def get_current_user(
         user_id = payload["user_id"]
         username = payload["username"]
 
-        # 从数据库读取真实的 VIP 状态
+        # 优先从 Redis 读取用户缓存
+        r = _redis()
+        cache_key = f"{_USER_CACHE_PREFIX}{user_id}"
+        if r:
+            cached = r.get(cache_key)
+            if cached:
+                return cached
+
+        # 缓存未命中，查询数据库
         db = next(get_db())
         try:
             UserDAO.check_and_downgrade_expired(db, user_id)
             user = UserDAO.get_by_id(db, user_id)
             is_super_admin = user.is_super_admin if user else 0
-            # VIP 用户 = 超管 或 有效期内 VIP
             is_vip = is_super_admin == 1 or (
                 user and user.vip_expire_at and user.vip_expire_at > datetime.now()
             )
         finally:
             db.close()
 
-        return {
+        result = {
             "user_id": user_id,
             "username": username,
             "is_super_admin": is_super_admin,
             "is_vip": is_vip,
         }
+
+        # 写入 Redis 缓存
+        if r:
+            r.set(cache_key, result, ttl=_USER_CACHE_TTL)
+
+        return result
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
 
 
+def invalidate_user_cache(user_id: int):
+    """当用户 VIP 状态变更时，清除缓存"""
+    r = _redis()
+    if r:
+        r.delete(f"{_USER_CACHE_PREFIX}{user_id}")
+
+
 def require_vip(current_user: dict = Depends(get_current_user)):
-    """
-    仅 VIP 用户或超管可访问，否则返回 403。
-    用法: def some_api(..., _vip=Depends(require_vip)):
-    """
     if not current_user.get("is_vip"):
         raise HTTPException(status_code=403, detail="仅 VIP 用户可操作")
     return current_user

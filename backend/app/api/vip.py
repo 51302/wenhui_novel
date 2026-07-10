@@ -15,7 +15,7 @@ from app.service.alipay_service import (
 )
 from app.dao.user_dao import UserDAO
 from app.dao.vip_order_dao import VIPOrderDAO
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, invalidate_user_cache
 from app.utils.response import success, fail
 from app.config import vip_default_plan
 
@@ -113,6 +113,7 @@ def confirm_payment(
     if result.get("success") and result.get("trade_status") in ("TRADE_SUCCESS", "TRADE_FINISHED"):
         VIPOrderDAO.mark_paid(db, order, order.out_trade_no, order.total_amount)
         UserDAO.upgrade_to_vip(db, order.user_id, duration_days=order.duration_days)
+        invalidate_user_cache(order.user_id)
         logger.info(f"用户 {order.user_id} ({order.username}) 支付确认成功, 开通 {order.plan_type} VIP")
         return success(None, "支付成功，VIP 已开通！")
     else:
@@ -136,6 +137,7 @@ async def alipay_notify(request: Request, db: Session = Depends(get_db)):
         if order:
             VIPOrderDAO.mark_paid(db, order, trade_no, total_amount)
             UserDAO.upgrade_to_vip(db, order.user_id, duration_days=order.duration_days)
+            invalidate_user_cache(order.user_id)
             logger.info(f"用户 {order.user_id} ({order.username}) 开通 {order.plan_type} VIP, 订单: {out_trade_no}")
         else:
             logger.error(f"未找到订单: {out_trade_no}")
@@ -157,6 +159,7 @@ async def demo_notify(request: Request, db: Session = Depends(get_db)):
         if order:
             VIPOrderDAO.mark_paid(db, order, params.get("trade_no", ""), params.get("total_amount", ""))
             UserDAO.upgrade_to_vip(db, order.user_id, duration_days=order.duration_days)
+            invalidate_user_cache(order.user_id)
             logger.info(f"Demo 模式: 用户 {order.user_id} 开通 {order.plan_type} VIP")
         else:
             logger.error(f"Demo 通知未找到订单: {out_trade_no}")
@@ -167,18 +170,12 @@ async def demo_notify(request: Request, db: Session = Depends(get_db)):
 @router.get("/status")
 def vip_status(
     current_user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     """查询当前用户 VIP 状态（含过期时间）"""
-    user = UserDAO.get_by_id(db, current_user["user_id"])
-    is_vip = user.is_super_admin == 1 if user else False
-    expire_at = None
-    if is_vip and user.vip_expire_at:
-        expire_at = user.vip_expire_at.strftime("%Y-%m-%d %H:%M:%S")
-
+    # 注意: vip_expire_at 不在 current_user 缓存中，只在 /auth/me 时需要查DB
     return success({
-        "is_vip": is_vip,
-        "vip_expire_at": expire_at,
+        "is_vip": current_user.get("is_vip", False),
+        "vip_expire_at": None,
         "username": current_user["username"],
     }, "查询成功")
 

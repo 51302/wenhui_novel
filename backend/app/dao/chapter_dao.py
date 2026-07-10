@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from app.models.chapter import Chapter
-from typing import Optional, List
-from sqlalchemy import desc
+from typing import Optional, List, Dict
+from sqlalchemy import desc, and_, func
 
 
 class ChapterDAO:
@@ -55,3 +55,28 @@ class ChapterDAO:
     def delete_by_novel_id(db: Session, novel_unique_id: str):
         db.query(Chapter).filter(Chapter.novel_unique_id == novel_unique_id).delete()
         db.commit()
+
+    @staticmethod
+    def get_latest_published_batch(db: Session, novel_ids: List[str]) -> Dict[str, Optional[Chapter]]:
+        """批量获取每个作品的最新已发布章节（一条 JOIN 子查询替代 N 次查询）"""
+        if not novel_ids:
+            return {}
+        # 子查询：每个 novel 的最新 published 章节 ID
+        sub = (
+            db.query(
+                Chapter.novel_unique_id,
+                func.max(Chapter.created_at).label("max_created")
+            )
+            .filter(Chapter.novel_unique_id.in_(novel_ids), Chapter.is_published == 1)
+            .group_by(Chapter.novel_unique_id)
+            .subquery()
+        )
+        chapters = (
+            db.query(Chapter)
+            .join(sub, and_(
+                Chapter.novel_unique_id == sub.c.novel_unique_id,
+                Chapter.created_at == sub.c.max_created
+            ))
+            .all()
+        )
+        return {c.novel_unique_id: c for c in chapters}

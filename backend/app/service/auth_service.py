@@ -170,7 +170,7 @@ class AuthService:
         if existing_email:
             return fail("该邮箱已经注册", code=400)
 
-        hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=8)).decode("utf-8")
         user = UserDAO.create(db, username, hashed, email, phone, is_super_admin)
         token = create_token(user.id, user.username, user.is_super_admin)
         UserDAO.update_token(db, user, token)

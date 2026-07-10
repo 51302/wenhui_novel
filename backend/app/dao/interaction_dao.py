@@ -1,8 +1,8 @@
 from sqlalchemy.orm import Session
 from app.models.interaction import WorkInteraction
 from app.models.novel import Novel
-from typing import Optional, List
-from sqlalchemy import desc
+from typing import Optional, List, Dict
+from sqlalchemy import desc, func
 
 
 class InteractionDAO:
@@ -118,6 +118,38 @@ class InteractionDAO:
         ).delete(synchronize_session=False)
         db.commit()
         return deleted
+
+    # ---------- 批量查询方法（优化 N+1 问题） ----------
+    @staticmethod
+    def get_user_interactions_batch(db: Session, novel_ids: List[str], interactor_id: int) -> Dict[str, Optional[WorkInteraction]]:
+        """批量查询用户对多个作品的互动状态（1次查询替代N次）"""
+        if not novel_ids:
+            return {}
+        rows = db.query(WorkInteraction).filter(
+            WorkInteraction.novel_unique_id.in_(novel_ids),
+            WorkInteraction.interactor_id == interactor_id,
+            WorkInteraction.comment_text == None
+        ).all()
+        return {r.novel_unique_id: r for r in rows}
+
+    @staticmethod
+    def get_likes_bookmarks_batch(db: Session, novel_ids: List[str]) -> Dict[str, Dict[str, int]]:
+        """批量查询多个作品的点赞数和收藏数（1次查询替代2N次）"""
+        if not novel_ids:
+            return {"likes": {}, "bookmarks": {}}
+        rows = (
+            db.query(
+                WorkInteraction.novel_unique_id,
+                func.sum(WorkInteraction.is_like).label("likes"),
+                func.sum(WorkInteraction.is_bookmark).label("bookmarks")
+            )
+            .filter(WorkInteraction.novel_unique_id.in_(novel_ids))
+            .group_by(WorkInteraction.novel_unique_id)
+            .all()
+        )
+        likes = {r.novel_unique_id: int(r.likes or 0) for r in rows}
+        bookmarks = {r.novel_unique_id: int(r.bookmarks or 0) for r in rows}
+        return {"likes": likes, "bookmarks": bookmarks}
 
     # ---------- "我的" 聚合查询 ----------
     @staticmethod
