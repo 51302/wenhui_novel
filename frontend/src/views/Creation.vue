@@ -103,6 +103,14 @@
     <!-- ==================== 我的作品 ==================== -->
     <div v-if="tab === 'my'" class="tab-content">
       <div v-if="myNovels.length === 0" class="empty">暂无作品</div>
+      <!-- 非VIP展示剩余次数 -->
+      <div v-else-if="!isVip && freeQuota > 0" class="free-banner" style="margin-bottom:16px">
+        🎁 新用户免费体验 · 剩余 <b>{{ freeQuota }}</b> 次 AI 生成
+        <router-link to="/vip" class="btn-upgrade">开通VIP无限使用</router-link>
+      </div>
+      <div v-else-if="!isVip && freeQuota <= 0 && myNovels.length > 0" class="no-permission" style="padding:24px;margin-bottom:16px">
+        <p>免费次数已用完，请 <router-link to="/vip" class="link-vip">开通VIP</router-link> 继续生成</p>
+      </div>
       <div v-for="novel in myNovels" :key="novel.novel_unique_id" class="my-novel-card">
         <div class="my-novel-cover">
           <img v-if="novel.cover_image" :src="novel.cover_image" alt="封面" />
@@ -475,6 +483,12 @@ export default {
 
     const generateChapter = async () => {
       if (!chapterForm.chapter_name) return alert('请输入章节名称')
+      // 非VIP且次数用完的前端拦截
+      if (!isVip.value && freeQuota.value <= 0) {
+        alert('免费生成次数已用完，请开通VIP继续使用')
+        router.push('/vip')
+        return
+      }
       generating.value = true
       try {
         const res = await api.post('/chapters/generate', null, {
@@ -545,6 +559,12 @@ export default {
     }
 
     const continueChapter = async (d) => {
+      // 非VIP且次数用完的前端拦截
+      if (!isVip.value && freeQuota.value <= 0) {
+        alert('免费生成次数已用完，请开通VIP继续使用')
+        router.push('/vip')
+        return
+      }
       continuing[d.chapter_unique_id] = true
       try {
         const res = await api.post(`/chapters/continue/${d.chapter_unique_id}`, null, { params: { word_count: 800 } })
