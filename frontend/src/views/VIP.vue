@@ -108,8 +108,17 @@ export default {
       try {
         const res = await api.post(`/vip/confirm/${outTradeNo}`)
         if (res.状态码 === 200) {
-          // 刷新 VIP 状态
+          // 1. 刷新 VIP 状态
           await checkStatus()
+          // 2. 刷新 localStorage 中的用户信息（同步 VIP 状态到全站）
+          try {
+            const meRes = await api.get('/auth/me')
+            if (meRes.状态码 === 200) {
+              localStorage.setItem('novel_user', JSON.stringify(meRes.数据))
+              // 派发事件让其他页面感知
+              window.dispatchEvent(new Event('user-info-changed'))
+            }
+          } catch {}
         }
       } catch (e) { }
     }

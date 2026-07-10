@@ -239,7 +239,7 @@
 </template>
 
 <script>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import api from '../api'
 
 export default {
@@ -585,8 +585,32 @@ export default {
 
     const formatTime = (t) => t ? new Date(t).toLocaleString('zh-CN') : ''
 
+    const syncUserFromServer = async () => {
+      try {
+        const meRes = await api.get('/auth/me')
+        if (meRes.状态码 === 200) {
+          Object.assign(user, meRes.数据)
+          localStorage.setItem('novel_user', JSON.stringify(user))
+        }
+      } catch {}
+    }
+
+    const onUserChanged = () => {
+      const stored = localStorage.getItem('novel_user')
+      if (stored) {
+        try { Object.assign(user, JSON.parse(stored)) } catch {}
+      }
+    }
+
     onMounted(() => {
+      // 页面挂载时拉取最新用户状态（VIP开通后回来是最新）
+      syncUserFromServer()
+      window.addEventListener('user-info-changed', onUserChanged)
       fetchMyNovels()
+    })
+
+    onUnmounted(() => {
+      window.removeEventListener('user-info-changed', onUserChanged)
     })
 
     return { tab, isVip, freeQuota, novelForm, createError, createSuccess, handleCreateNovel,

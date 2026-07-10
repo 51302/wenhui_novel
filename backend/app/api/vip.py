@@ -170,12 +170,17 @@ async def demo_notify(request: Request, db: Session = Depends(get_db)):
 @router.get("/status")
 def vip_status(
     current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """查询当前用户 VIP 状态（含过期时间）"""
-    # 注意: vip_expire_at 不在 current_user 缓存中，只在 /auth/me 时需要查DB
+    from app.dao.user_dao import UserDAO
+    user = UserDAO.get_by_id(db, current_user["user_id"])
+    vip_expire_at = None
+    if user and user.vip_expire_at:
+        vip_expire_at = user.vip_expire_at.strftime("%Y-%m-%d %H:%M:%S")
     return success({
         "is_vip": current_user.get("is_vip", False),
-        "vip_expire_at": None,
+        "vip_expire_at": vip_expire_at,
         "username": current_user["username"],
     }, "查询成功")
 
