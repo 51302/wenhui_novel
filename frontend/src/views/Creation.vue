@@ -281,29 +281,26 @@ export default {
     const handleCoverUpload = async (event) => {
       const file = event.target.files[0]
       if (!file) return
-      
-      if (!file.type.startsWith('image/')) {
-        alert('请选择图片文件')
-        return
-      }
-      
-      if (file.size > 10 * 1024 * 1024) {
-        alert('图片大小不能超过 10MB')
-        return
-      }
-      
+      if (!file.type.startsWith('image/')) { alert('请选择图片文件'); return }
+      if (file.size > 10 * 1024 * 1024) { alert('图片大小不能超过 10MB'); return }
+
       const formData = new FormData()
       formData.append('file', file)
-      
+
       try {
         const res = await api.post('/upload/image', formData)
-        if (res.success) {
-          novelForm.cover_image = res.url
+        console.log('[上传响应]', res)
+        // 兼容两种返回格式: {success, url} 或 {状态码:200, 数据:{url}}
+        const url = res.url || res.数据?.url
+        if (url) {
+          novelForm.cover_image = url
+          console.log('[封面已设置]', url)
         } else {
-          alert('上传失败')
+          alert('上传失败: 未获取到图片地址')
         }
       } catch (e) {
-        alert('上传失败: ' + (e.response?.data?.detail || e.message))
+        console.error('[上传失败]', e)
+        alert('上传失败: ' + (e.response?.data?.detail || e.message || '网络错误'))
       }
     }
 
@@ -365,29 +362,25 @@ export default {
     const handleEditCoverUpload = async (event) => {
       const file = event.target.files[0]
       if (!file) return
-      
-      if (!file.type.startsWith('image/')) {
-        alert('请选择图片文件')
-        return
-      }
-      
-      if (file.size > 10 * 1024 * 1024) {
-        alert('图片大小不能超过 10MB')
-        return
-      }
-      
+      if (!file.type.startsWith('image/')) { alert('请选择图片文件'); return }
+      if (file.size > 10 * 1024 * 1024) { alert('图片大小不能超过 10MB'); return }
+
       const formData = new FormData()
       formData.append('file', file)
-      
+
       try {
         const res = await api.post('/upload/image', formData)
-        if (res.success) {
-          editForm.cover_image = res.url
+        console.log('[上传响应-编辑]', res)
+        const url = res.url || res.数据?.url
+        if (url) {
+          editForm.cover_image = url
+          console.log('[封面已设置-编辑]', url)
         } else {
-          alert('上传失败')
+          alert('上传失败: 未获取到图片地址')
         }
       } catch (e) {
-        alert('上传失败: ' + (e.response?.data?.detail || e.message))
+        console.error('[上传失败-编辑]', e)
+        alert('上传失败: ' + (e.response?.data?.detail || e.message || '网络错误'))
       }
     }
 
