@@ -21,8 +21,13 @@
       </div>
     </div>
 
-    <!-- 右侧内容区 -->
-    <div class="content-area">
+    <!-- 右侧内容区（整块禁止复制） -->
+    <div class="content-area protected-area"
+         @contextmenu.prevent="showCopyTip"
+         @copy.prevent="showCopyTip"
+         @selectstart="onSelectStart"
+         @mousedown="onBeforeSelect"
+         @mouseup="onBeforeSelect">
       <div v-if="!currentChapter" class="welcome">
         <div class="welcome-icon">📖</div>
         <h2>{{ novel.title }}</h2>
@@ -41,27 +46,8 @@
           </button>
         </div>
 
-        <!-- 非 VIP：模糊预览 + 遮罩 -->
-        <div class="vip-lock" v-if="!isVip">
-          <div class="lock-overlay">
-            <div class="lock-icon">🔒</div>
-            <h3>VIP 专享章节</h3>
-            <p>开通 VIP 即可畅读全部内容，解锁 AI 创作功能</p>
-            <router-link to="/vip" class="btn-go-vip">💎 开通 VIP</router-link>
-          </div>
-          <div class="chapter-body preview-blur" v-html="previewContent"></div>
-        </div>
-
-        <!-- VIP：正常阅读（禁止复制） -->
-        <div v-else class="chapter-body chapter-protected" v-html="formattedContent"
-             @contextmenu.prevent="showCopyTip"
-             @copy.prevent="showCopyTip"
-             @selectstart.prevent></div>
-
-    <!-- 复制提示弹窗 -->
-    <div class="copy-toast" :class="{ show: copyToastShow }">
-      🔒 该内容为 VIP 专属保护，请<a href="/vip" class="toast-vip-link">开通 VIP</a>后享受完整阅读体验
-    </div>
+        <!-- 正常阅读 -->
+        <div class="chapter-body" v-html="formattedContent"></div>
 
         <div class="chapter-nav">
           <button v-if="prevChapter" @click="openChapter(prevChapter)">‹ 上一章：{{ prevChapter.chapter_name }}</button>
@@ -71,11 +57,16 @@
         </div>
       </div>
     </div>
+
+    <!-- 复制提示弹窗 - 底部居中 -->
+    <div class="copy-toast" :class="{ show: copyToastShow }">
+      📖 复制小说内容需要 <a href="/vip" class="toast-vip-link">开通 VIP</a> 才能享受此功能
+    </div>
   </div>
 </template>
 
 <script>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../api'
 
@@ -88,9 +79,16 @@ export default {
     const currentChapter = ref(null)
     const currentChapterId = ref(null)
     const inBookshelf = ref(false)
-    const isVip = ref(false)
     const copyToastShow = ref(false)
     let copyToastTimer = null
+
+    // 全局 Ctrl+C 拦截
+    const onKeyDown = (e) => {
+      if (e.ctrlKey && (e.key === 'c' || e.key === 'C' || e.key === 'Insert')) {
+        e.preventDefault()
+        showCopyTip()
+      }
+    }
 
     const publishedChapters = computed(() => 
       allChapters.value.filter(c => c.is_published === 1)
@@ -115,39 +113,22 @@ export default {
         .join('')
     })
 
-    // 预览前 200 字
-    const previewContent = computed(() => {
-      if (!currentChapter.value || !currentChapter.value.content) return ''
-      const text = currentChapter.value.content.replace(/\n/g, ' ').slice(0, 200)
-      return `<p>${text}...</p>`
-    })
-
     const showCopyTip = () => {
       copyToastShow.value = true
       clearTimeout(copyToastTimer)
       copyToastTimer = setTimeout(() => { copyToastShow.value = false }, 2500)
     }
 
-    const checkVip = async () => {
-      // 先从 localStorage 快速判断
-      const stored = localStorage.getItem('novel_user')
-      if (stored) {
-        try {
-          const u = JSON.parse(stored)
-          if (u.is_super_admin === 1) { isVip.value = true; return }
-          if (u.vip_expire_at && new Date(u.vip_expire_at) > new Date()) { isVip.value = true; return }
-        } catch (e) { }
-      }
-      // 再从 API 实时查询
-      try {
-        const res = await api.get('/auth/me')
-        if (res.状态码 === 200) {
-          const u = res.数据
-          if (u.is_super_admin === 1) isVip.value = true
-          else if (u.vip_expire_at && new Date(u.vip_expire_at) > new Date()) isVip.value = true
-          else isVip.value = false
-        }
-      } catch (e) { isVip.value = false }
+    // 鼠标按下/松开时清除已有选中，防止出现浏览器复制弹窗
+    const onBeforeSelect = () => {
+      const sel = window.getSelection()
+      if (sel) sel.removeAllRanges()
+    }
+
+    // 尝试选中 → 弹提示 + 阻止选中
+    const onSelectStart = (e) => {
+      showCopyTip()
+      e.preventDefault()
     }
 
     const loadNovel = async () => {
@@ -202,8 +183,14 @@ export default {
       } catch (e) { }
     }
 
-    onMounted(async () => { await checkVip(); await loadNovel(); await loadChapters(); await checkBookshelf() })
-    return { novel, allChapters, publishedChapters, currentChapter, currentChapterId, prevChapter, nextChapter, openChapter, formattedContent, previewContent, inBookshelf, toggleBookshelf, isVip, copyToastShow, showCopyTip }
+    onMounted(async () => {
+      await loadNovel(); await loadChapters(); await checkBookshelf()
+      document.addEventListener('keydown', onKeyDown)
+    })
+    onUnmounted(() => {
+      document.removeEventListener('keydown', onKeyDown)
+    })
+    return { novel, allChapters, publishedChapters, currentChapter, currentChapterId, prevChapter, nextChapter, openChapter, formattedContent, inBookshelf, toggleBookshelf, copyToastShow, showCopyTip, onSelectStart, onBeforeSelect }
   }
 }
 </script>
@@ -260,6 +247,11 @@ export default {
   backdrop-filter: blur(10px);
   overflow-y: auto; min-width: 0;
 }
+/* 禁止选中文字（防止浏览器复制弹窗） */
+.protected-area {
+  -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none;
+}
 
 .welcome { text-align: center; padding: 100px 0; }
 .welcome-icon { font-size: 64px; margin-bottom: 16px; opacity: 0.6; }
@@ -291,35 +283,6 @@ export default {
   font-size: 16px; line-height: 2; color: #b0b8d0; text-indent: 2em; margin-bottom: 14px;
 }
 
-/* VIP 锁定区 */
-.vip-lock { position: relative; }
-.lock-overlay {
-  position: absolute; inset: -20px -30px; z-index: 10;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
-  background: rgba(8,8,30,0.75); backdrop-filter: blur(6px);
-  border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);
-}
-.lock-icon { font-size: 48px; }
-.lock-overlay h3 { font-size: 20px; color: #e0e0e0; margin: 0; }
-.lock-overlay p { font-size: 13px; color: #8892b0; margin: 0; text-indent: 0; }
-
-.btn-go-vip {
-  display: inline-block; padding: 12px 28px; border-radius: 10px; font-size: 15px; font-weight: 700;
-  background: linear-gradient(135deg, #f59e0b, #d97706); color: #fff; text-decoration: none;
-  box-shadow: 0 4px 20px rgba(245,158,11,0.3); transition: all 0.3s;
-}
-.btn-go-vip:hover { box-shadow: 0 4px 35px rgba(245,158,11,0.5); transform: translateY(-1px); }
-
-/* 模糊预览 */
-.preview-blur { filter: blur(6px); opacity: 0.4; position: relative; }
-.preview-blur p { color: #6b7280; }
-
-/* 禁止复制的正文 */
-.chapter-protected {
-  -webkit-user-select: none; user-select: none;
-  -webkit-touch-callout: none;
-}
-
 .chapter-nav { 
   display: flex; justify-content: space-between; margin-top: 40px; padding-top: 24px;
   border-top: 1px solid rgba(102, 126, 234, 0.15);
@@ -332,15 +295,16 @@ export default {
 }
 .chapter-nav button:hover { color: #06b6d4; border-color: rgba(6, 182, 212, 0.4); }
 
-/* 复制提示弹窗 */
+/* 复制提示弹窗 - 底部居中 */
 .copy-toast {
-  position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(20px);
+  position: fixed !important; bottom: 30px !important; top: auto !important;
+  left: 50% !important; transform: translateX(-50%) translateY(20px);
   background: rgba(15,15,40,0.95); border: 1px solid rgba(245,158,11,0.4);
   padding: 12px 24px; border-radius: 12px; font-size: 13px; color: #fbbf24;
-  z-index: 1000; opacity: 0; pointer-events: none; transition: all 0.35s ease;
+  z-index: 9999; opacity: 0; pointer-events: none; transition: all 0.35s ease;
   box-shadow: 0 8px 30px rgba(0,0,0,0.5), 0 0 20px rgba(245,158,11,0.1);
-  backdrop-filter: blur(12px); white-space: nowrap;
+  backdrop-filter: blur(12px); white-space: nowrap; max-width: 90vw;
 }
-.copy-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+.copy-toast.show { opacity: 1 !important; transform: translateX(-50%) translateY(0) !important; pointer-events: auto; }
 .toast-vip-link { color: #f59e0b; font-weight: 700; text-decoration: underline; margin: 0 2px; }
 </style>
