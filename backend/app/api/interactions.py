@@ -70,6 +70,7 @@ def get_comments(
 def get_feed(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=50),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
-    return InteractionService.get_feed(db, page, page_size)
+    return InteractionService.get_feed(db, page, page_size, current_user)

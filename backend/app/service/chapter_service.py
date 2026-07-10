@@ -254,6 +254,111 @@ class ChapterService:
                 return fail(f"AI生成失败: {str(e)}", code=500)
 
     @staticmethod
+    async def continue_with_ai(db: Session, chapter_unique_id: str, word_count: int = 800) -> dict:
+        """AI 续写指定章节：根据作品设定+前文+当前内容，续写本章后续内容"""
+        from app.dao.novel_dao import NovelDAO
+        chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
+        if not chapter:
+            return fail("章节不存在", code=404)
+
+        # 读取当前章节已有内容
+        novel_dir = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id)
+        chapter_file = os.path.join(novel_dir, f"{chapter.chapter_name}_{chapter.chapter_unique_id}.txt")
+        existing_content = ""
+        if os.path.exists(chapter_file):
+            with open(chapter_file, "r", encoding="utf-8") as f:
+                existing_content = f.read()
+
+        # 获取作品设定 + 所有已发布章节（取摘要，避免 prompt 过长）
+        novel_settings = ChapterService._get_novel_settings(chapter.novel_unique_id)
+        all_chapters = ChapterDAO.get_by_novel_id(db, chapter.novel_unique_id)
+        all_chapters_sorted = sorted(all_chapters, key=lambda c: c.created_at or "")
+
+        # 找到当前章节之前的章节
+        prev_chapters_summary = []
+        for ch in all_chapters_sorted:
+            if ch.chapter_unique_id == chapter_unique_id:
+                break
+            ch_file = os.path.join(novel_dir, f"{ch.chapter_name}_{ch.chapter_unique_id}.txt")
+            ch_content = ""
+            if os.path.exists(ch_file):
+                with open(ch_file, "r", encoding="utf-8") as f:
+                    ch_content = f.read()
+            prev_chapters_summary.append(
+                f"[{ch.chapter_name}] 概要: {ch.chapter_summary or '无'}\n"
+                f"内容摘要(前500字): {ch_content[:500]}"
+            )
+
+        # 当前章节已写内容（取末尾部分作为上下文）
+        context_content = existing_content[-2000:] if len(existing_content) > 2000 else existing_content
+
+        prompt = f"""你是一个专业的小说写作助手。请根据作品设定和已写内容，续写本章节。
+
+【作品设定】
+{novel_settings.get('content', '无作品设定')}
+
+【前面章节摘要】
+{chr(10).join(prev_chapters_summary) if prev_chapters_summary else '无前序章节'}
+
+【本章信息】
+章节名称：{chapter.chapter_name}
+本章概要：{chapter.chapter_summary or '无'}
+当前已写内容（末尾）：
+{context_content}
+
+【续写要求】
+1. 内容需紧密承接上文，保持情节连贯
+2. 人物性格、世界观设定保持一致
+3. 续写 {word_count} 字左右
+4. 只需输出续写内容，不要重复已有的文字，不要加"续写"等标题"""
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            try:
+                response = await client.post(
+                    f"{deepseek_base_url()}/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {deepseek_api_key()}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": deepseek_model(),
+                        "messages": [
+                            {"role": "system", "content": "你是一个专业的小说写作助手，擅长续写小说章节。"},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "max_tokens": word_count * 2,
+                        "temperature": 0.8
+                    }
+                )
+                data = response.json()
+                if "choices" not in data or not data["choices"]:
+                    return fail("AI续写失败: " + str(data.get("error", {}).get("message", "未知错误")), code=500)
+
+                generated_text = data["choices"][0]["message"]["content"]
+
+                # 追加续写内容到文件
+                new_content = existing_content + "\n\n" + generated_text
+                os.makedirs(novel_dir, exist_ok=True)
+                with open(chapter_file, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+
+                # 更新字数
+                ChapterDAO.update(db, chapter, word_count=len(new_content))
+
+                return success({
+                    "chapter_unique_id": chapter_unique_id,
+                    "chapter_name": chapter.chapter_name,
+                    "continued_text": generated_text,
+                    "word_count": len(new_content),
+                    "total_word_count": len(new_content)
+                }, f"续写成功，新增 {len(generated_text)} 字")
+
+            except httpx.TimeoutException:
+                return fail("AI接口调用超时，请重试", code=500)
+            except Exception as e:
+                return fail(f"AI续写失败: {str(e)}", code=500)
+
+    @staticmethod
     def get_drafts(db: Session, user_id: int) -> dict:
         cache_key = f"chapters:drafts:user:{user_id}"
         r = _redis()
@@ -357,6 +462,12 @@ class ChapterService:
                                     f"{chapter.chapter_name}_{chapter.chapter_unique_id}.txt")
         if os.path.exists(chapter_file):
             os.remove(chapter_file)
+
+        # 删除向量数据库中的记录
+        if chroma_memory:
+            chroma_doc_id = f"{chapter.novel_unique_id}_{chapter_unique_id}"
+            chroma_memory.delete_memory(chroma_doc_id)
+
         ChapterDAO.delete(db, chapter_unique_id)
         r4 = _redis()
         if r4:

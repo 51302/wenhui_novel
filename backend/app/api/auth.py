@@ -100,3 +100,13 @@ def get_me(current_user: dict = Depends(get_current_user), db: Session = Depends
         **current_user,
         "vip_expire_at": vip_expire_at,
     }, "已登录")
+
+
+@router.get("/my-profile")
+def my_profile(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """获取「我的」页面聚合数据：收藏/关注/点赞列表 + 粉丝数"""
+    from app.service.bookshelf_service import ProfileService
+    return ProfileService.get_profile(db, current_user["user_id"])

@@ -40,4 +40,26 @@ class ChromaMemoryStore:
             return []
 
 
+    def delete_memory(self, doc_id: str) -> bool:
+        """删除指定 ID 的向量记录"""
+        try:
+            self.collection.delete(ids=[doc_id])
+            return True
+        except Exception as e:
+            print(f"ChromaDB delete error: {e}")
+            return False
+
+    def delete_by_prefix(self, prefix: str) -> int:
+        """按 ID 前缀批量删除向量记录（如 'novel_id_' 前缀）"""
+        try:
+            ids = self.collection.get()
+            to_delete = [id for id in (ids.get("ids") or []) if id.startswith(prefix)]
+            if to_delete:
+                self.collection.delete(ids=to_delete)
+            return len(to_delete)
+        except Exception as e:
+            print(f"ChromaDB delete_by_prefix error: {e}")
+            return 0
+
+
 chroma_memory: Optional[ChromaMemoryStore] = None

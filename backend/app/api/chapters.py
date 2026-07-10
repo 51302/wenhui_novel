@@ -45,6 +45,18 @@ async def generate_chapter(
     )
 
 
+@router.post("/continue/{chapter_unique_id}")
+async def continue_chapter(
+    chapter_unique_id: str,
+    word_count: int = 800,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+    _vip=Depends(require_vip),
+):
+    """AI续写指定章节：根据作品设定、前序章节、当前内容续写"""
+    return await ChapterService.continue_with_ai(db, chapter_unique_id, word_count)
+
+
 @router.get("/drafts")
 def get_drafts(
     db: Session = Depends(get_db),

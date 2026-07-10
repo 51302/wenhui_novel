@@ -10,12 +10,14 @@ from app.models.novel import Novel
 from app.models.chapter import Chapter
 from app.models.interaction import WorkInteraction
 from app.models.vip_order import VIPOrder
+from app.models.bookshelf import Bookshelf
 from app.api.auth import router as auth_router
 from app.api.novels import router as novels_router
 from app.api.chapters import router as chapters_router
 from app.api.interactions import router as interactions_router
 from app.api.upload import router as upload_router
 from app.api.vip import router as vip_router
+from app.api.bookshelf import router as bookshelf_router
 from app.utils.redis_cache import RedisCache, redis_client as global_redis
 from app.utils.chroma_client import ChromaMemoryStore, chroma_memory as global_chroma
 from app.config import get as cfg_get
@@ -66,6 +68,7 @@ app.include_router(chapters_router)
 app.include_router(interactions_router)
 app.include_router(upload_router)
 app.include_router(vip_router)
+app.include_router(bookshelf_router)
 
 
 @app.get("/api/health")

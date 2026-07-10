@@ -118,3 +118,67 @@ class InteractionDAO:
         ).delete(synchronize_session=False)
         db.commit()
         return deleted
+
+    # ---------- "我的" 聚合查询 ----------
+    @staticmethod
+    def get_user_bookmarks(db: Session, user_id: int) -> list:
+        """我收藏的作品列表"""
+        rows = db.query(WorkInteraction, Novel).join(
+            Novel, WorkInteraction.novel_unique_id == Novel.novel_unique_id
+        ).filter(
+            WorkInteraction.interactor_id == user_id,
+            WorkInteraction.is_bookmark == 1
+        ).order_by(desc(WorkInteraction.created_at)).all()
+        return [{
+            "novel_unique_id": n.novel_unique_id,
+            "title": n.title,
+            "cover_image": n.cover_image,
+            "author_name": n.author_name,
+            "genre": n.genre,
+        } for _, n in rows]
+
+    @staticmethod
+    def get_user_following(db: Session, user_id: int) -> list:
+        """我关注的人列表"""
+        from app.models.user import User
+        rows = db.query(WorkInteraction, User).join(
+            User, WorkInteraction.user_id == User.id
+        ).filter(
+            WorkInteraction.interactor_id == user_id,
+            WorkInteraction.is_follow == 1
+        ).order_by(desc(WorkInteraction.created_at)).all()
+        seen = set()
+        result = []
+        for _, u in rows:
+            if u.id not in seen:
+                seen.add(u.id)
+                result.append({
+                    "user_id": u.id,
+                    "username": u.username,
+                })
+        return result
+
+    @staticmethod
+    def get_user_likes(db: Session, user_id: int) -> list:
+        """我点赞的作品列表"""
+        rows = db.query(WorkInteraction, Novel).join(
+            Novel, WorkInteraction.novel_unique_id == Novel.novel_unique_id
+        ).filter(
+            WorkInteraction.interactor_id == user_id,
+            WorkInteraction.is_like == 1
+        ).order_by(desc(WorkInteraction.created_at)).all()
+        return [{
+            "novel_unique_id": n.novel_unique_id,
+            "title": n.title,
+            "cover_image": n.cover_image,
+            "author_name": n.author_name,
+            "genre": n.genre,
+        } for _, n in rows]
+
+    @staticmethod
+    def get_followers_count(db: Session, user_id: int) -> int:
+        """关注我的人数（粉丝）"""
+        return db.query(WorkInteraction).filter(
+            WorkInteraction.user_id == user_id,
+            WorkInteraction.is_follow == 1
+        ).count()

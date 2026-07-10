@@ -209,6 +209,12 @@ class NovelService:
         if r:
             r.delete_pattern("novels:*")
             r.delete_pattern("chapters:*")
+
+        # 清除向量数据库中该作品的所有记录
+        from app.utils.chroma_client import chroma_memory
+        if chroma_memory:
+            chroma_memory.delete_by_prefix(f"{novel_unique_id}_")
+
         return success(None, "作品及所有章节已删除")
 
     @staticmethod

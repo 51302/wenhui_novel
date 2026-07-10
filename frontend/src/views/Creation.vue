@@ -212,6 +212,10 @@
           <textarea v-model="d.content" rows="10" />
         </div>
         <div class="draft-actions">
+          <button @click="continueChapter(d)" :disabled="continuing[d.chapter_unique_id]">
+            <span v-if="continuing[d.chapter_unique_id]" class="spinner"></span>
+            {{ continuing[d.chapter_unique_id] ? '正在续写...' : '🤖 AI续写' }}
+          </button>
           <button @click="publishChapter(d)">发布章节</button>
           <button class="btn-danger" @click="deleteDraft(d)">删除</button>
         </div>
@@ -495,6 +499,7 @@ export default {
 
     // 草稿
     const drafts = ref([])
+    const continuing = reactive({})
     const fetchDrafts = async () => {
       try {
         const res = await api.get('/chapters/drafts')
@@ -530,6 +535,21 @@ export default {
       } catch (e) { alert('删除失败') }
     }
 
+    const continueChapter = async (d) => {
+      continuing[d.chapter_unique_id] = true
+      try {
+        const res = await api.post(`/chapters/continue/${d.chapter_unique_id}`, null, { params: { word_count: 800 } })
+        if (res.状态码 === 200) {
+          // 续写完成后刷新草稿列表，确保内容正确显示
+          await fetchDrafts()
+          alert(`续写成功！新增 ${res.数据?.word_count || '?'} 字`)
+        } else {
+          alert(res.消息)
+        }
+      } catch (e) { alert('续写失败') }
+      finally { continuing[d.chapter_unique_id] = false }
+    }
+
     const deleteNovel = async (novel) => {
       if (!confirm(`确定删除作品「${novel.title}」？\n\n此操作将同时删除该作品的所有章节和设定文件，不可恢复！`)) return
       try {
@@ -551,7 +571,7 @@ export default {
       myNovels, fetchMyNovels,
       showChapterModal, chapterNovel, chapterMode, novelChapters, chapterForm, generating,
       openChapterModal, generateChapter,
-      drafts, fetchDrafts, publishChapter, deleteDraft, deleteNovel, formatTime,
+      drafts, fetchDrafts, publishChapter, deleteDraft, continueChapter, continuing, deleteNovel, formatTime,
       genreOptions, selectedGenres, toggleGenre, handleCoverUpload, removeCover,
       showEditModal, editForm, editSelectedGenres, editError, editSuccess,
       openEditModal, toggleEditGenre, handleEditCoverUpload, handleUpdateNovel

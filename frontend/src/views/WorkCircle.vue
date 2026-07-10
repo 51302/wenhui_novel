@@ -153,6 +153,14 @@ export default {
           const newData = res.数据?.items || []
           if (append) { feedItems.value.push(...newData) } else { feedItems.value = newData }
           if (res.数据?.pagination) { hasMore.value = res.数据.pagination.has_next }
+          
+          // 初始化当前用户的互动状态
+          newData.forEach(item => {
+            const nid = item.novel_unique_id
+            likedItems[nid] = item.user_is_like === 1
+            bookmarkedItems[nid] = item.user_is_bookmark === 1
+            followedItems[nid] = item.user_is_follow === 1
+          })
         }
       } catch (e) { errorMsg.value = '加载失败' }
       finally { loading.value = false; loadingMore.value = false }

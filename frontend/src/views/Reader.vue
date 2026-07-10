@@ -27,11 +27,19 @@
         <div class="welcome-icon">📖</div>
         <h2>{{ novel.title }}</h2>
         <p class="welcome-desc">{{ novel.description }}</p>
+        <button class="btn-bookshelf" @click="toggleBookshelf">
+          {{ inBookshelf ? '📚 已加入书架' : '📚 加入书架' }}
+        </button>
         <p v-if="publishedChapters.length > 0" class="hint">请从左侧选择章节开始阅读</p>
         <p v-else class="hint">作者还没发布章节，敬请期待 ✨</p>
       </div>
       <div v-else class="chapter-content">
-        <h2 class="chapter-title">{{ currentChapter.chapter_name }}</h2>
+        <div class="chapter-title-row">
+          <h2 class="chapter-title">{{ currentChapter.chapter_name }}</h2>
+          <button class="btn-bookshelf small" @click="toggleBookshelf">
+            {{ inBookshelf ? '📚 已加入' : '📚 加入书架' }}
+          </button>
+        </div>
         <div class="chapter-body" v-html="formattedContent"></div>
         <div class="chapter-nav">
           <button v-if="prevChapter" @click="openChapter(prevChapter)">‹ 上一章：{{ prevChapter.chapter_name }}</button>
@@ -57,6 +65,7 @@ export default {
     const allChapters = ref([])
     const currentChapter = ref(null)
     const currentChapterId = ref(null)
+    const inBookshelf = ref(false)
 
     const publishedChapters = computed(() => 
       allChapters.value.filter(c => c.is_published === 1)
@@ -107,8 +116,27 @@ export default {
       currentChapterId.value = ch.chapter_unique_id
     }
 
-    onMounted(async () => { await loadNovel(); await loadChapters() })
-    return { novel, allChapters, publishedChapters, currentChapter, currentChapterId, prevChapter, nextChapter, openChapter, formattedContent }
+    const checkBookshelf = async () => {
+      try {
+        const res = await api.get('/bookshelf/check', { params: { novel_unique_id: route.params.novel_unique_id } })
+        if (res.状态码 === 200) inBookshelf.value = res.数据?.in_bookshelf || false
+      } catch (e) { }
+    }
+
+    const toggleBookshelf = async () => {
+      try {
+        if (inBookshelf.value) {
+          await api.post('/bookshelf/remove', null, { params: { novel_unique_id: route.params.novel_unique_id } })
+          inBookshelf.value = false
+        } else {
+          await api.post('/bookshelf/add', null, { params: { novel_unique_id: route.params.novel_unique_id } })
+          inBookshelf.value = true
+        }
+      } catch (e) { }
+    }
+
+    onMounted(async () => { await loadNovel(); await loadChapters(); await checkBookshelf() })
+    return { novel, allChapters, publishedChapters, currentChapter, currentChapterId, prevChapter, nextChapter, openChapter, formattedContent, inBookshelf, toggleBookshelf }
   }
 }
 </script>
@@ -173,11 +201,25 @@ export default {
 .welcome-desc { color: #8892b0; font-size: 14px; line-height: 1.6; max-width: 500px; margin: 0 auto 16px; }
 .welcome .hint { color: #5a6080; font-size: 13px; margin-top: 8px; }
 
+.btn-bookshelf {
+  padding: 10px 22px; border-radius: 10px; cursor: pointer; font-size: 14px; font-weight: 600;
+  border: 1px solid rgba(6, 182, 212, 0.3);
+  background: var(--brand-gradient); color: #fff;
+  transition: all 0.3s; margin-top: 16px;
+}
+.btn-bookshelf:hover { box-shadow: 0 0 16px var(--accent-glow); }
+.btn-bookshelf.small { margin-top: 0; padding: 6px 14px; font-size: 12px; white-space: nowrap; }
+
+.chapter-title-row { 
+  display: flex; align-items: center; justify-content: center; gap: 16px;
+  margin-bottom: 32px; padding-bottom: 20px;
+  border-bottom: 1px solid rgba(102, 126, 234, 0.15);
+}
+
 .chapter-content { max-width: 760px; margin: 0 auto; }
 .chapter-title { 
-  font-size: 22px; font-weight: 700; color: #e0e0e0; 
-  text-align: center; margin-bottom: 32px; padding-bottom: 20px;
-  border-bottom: 1px solid rgba(102, 126, 234, 0.15);
+  font-size: 22px; font-weight: 700; color: #e0e0e0; text-align: center;
+  border-bottom: none; margin-bottom: 0; padding-bottom: 0;
 }
 .chapter-body p { 
   font-size: 16px; line-height: 2; color: #b0b8d0; text-indent: 2em; margin-bottom: 14px;

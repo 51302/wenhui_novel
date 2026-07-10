@@ -14,6 +14,8 @@
         <nav class="nav-links">
           <router-link to="/"><span class="nav-icon">🏠</span> 首页</router-link>
           <router-link to="/circle"><span class="nav-icon">🌐</span> 作品圈</router-link>
+          <router-link v-if="user" to="/bookshelf"><span class="nav-icon">📚</span> 书架</router-link>
+          <router-link v-if="user" to="/vip"><span class="nav-icon">💎</span> VIP</router-link>
           <router-link to="/creation"><span class="nav-icon">✏️</span> 创作中心</router-link>
         </nav>
       </div>
@@ -25,8 +27,8 @@
             <span v-if="user.is_super_admin === 1" class="vip-tag" :title="'到期: ' + (user.vip_expire_at || '未知')">· VIP</span>
           </span>
           <router-link v-if="user.is_super_admin !== 1" to="/vip" class="btn-vip pulse-glow">💎 开通VIP</router-link>
-          <router-link to="/settings" class="btn-settings" title="设置">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          <router-link to="/my" class="btn-my">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
           </router-link>
           <button class="btn-logout" @click="logout">退出</button>
         </template>

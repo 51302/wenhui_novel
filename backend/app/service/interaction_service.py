@@ -88,10 +88,14 @@ class InteractionService:
         return success(result)
 
     @staticmethod
-    def get_feed(db: Session, page: int = 1, page_size: int = 20) -> dict:
+    def get_feed(db: Session, page: int = 1, page_size: int = 20, current_user: dict = None) -> dict:
         from app.dao.chapter_dao import ChapterDAO
         feed, total = InteractionDAO.get_feed(db, page, page_size)
         items = []
+        
+        # 获取当前用户ID
+        current_user_id = current_user.get("user_id") if current_user else None
+        
         for i in feed:
             interaction = i[0]
             novel = i[1]
@@ -103,6 +107,13 @@ class InteractionService:
                 published.sort(key=lambda c: c.created_at, reverse=True)
                 if published:
                     latest_chapter = published[0]
+
+            # 查询当前用户对该作品的互动状态
+            user_interaction = None
+            if current_user_id and novel:
+                user_interaction = InteractionDAO.get_user_interaction(
+                    db, interaction.novel_unique_id, current_user_id
+                )
 
             items.append({
                 "id": interaction.id,
@@ -124,7 +135,13 @@ class InteractionService:
                     "chapter_unique_id": latest_chapter.chapter_unique_id,
                     "chapter_name": latest_chapter.chapter_name,
                     "chapter_summary": latest_chapter.chapter_summary
-                } if latest_chapter else None
+                } if latest_chapter else None,
+                # 当前用户的互动状态
+                "user_is_like": user_interaction.is_like if user_interaction else 0,
+                "user_is_bookmark": user_interaction.is_bookmark if user_interaction else 0,
+                "user_is_follow": user_interaction.is_follow if user_interaction else 0,
+                "likes_count": InteractionDAO.get_likes_count(db, interaction.novel_unique_id),
+                "bookmarks_count": InteractionDAO.get_bookmarks_count(db, interaction.novel_unique_id)
             })
         return success({
             "items": items,
