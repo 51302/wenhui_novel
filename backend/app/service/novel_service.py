@@ -2,6 +2,7 @@ import json
 import os
 import uuid
 import shutil
+import threading
 from sqlalchemy.orm import Session
 from app.dao.novel_dao import NovelDAO
 from app.utils.response import success, fail
@@ -9,6 +10,17 @@ import app.utils.redis_cache as redis_mod
 from app.service.es_service import es_service
 
 NOVEL_DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "novel_structure_data")
+
+# ====== 缓存击穿保护：每个 cache_key 一个锁，并发时只有第一个请求去 DB ======
+_cache_locks: dict = {}
+_cache_locks_lock = threading.Lock()
+
+
+def _get_cache_lock(key: str) -> threading.Lock:
+    with _cache_locks_lock:
+        if key not in _cache_locks:
+            _cache_locks[key] = threading.Lock()
+        return _cache_locks[key]
 
 
 def _redis():
@@ -80,9 +92,19 @@ class NovelService:
             cached = r.get(cache_key)
             if cached:
                 return success(cached)
-        novels, total = NovelDAO.list_novels(db, target_reader, genre, page, page_size)
-        result = {
-            "items": [{
+
+        # 缓存击穿保护：并发时只有第一个请求去 DB
+        lock = _get_cache_lock(cache_key)
+        with lock:
+            # 双重检查：等锁期间可能已有其他线程写入了缓存
+            if r:
+                cached = r.get(cache_key)
+                if cached:
+                    return success(cached)
+
+            novels, total = NovelDAO.list_novels(db, target_reader, genre, page, page_size)
+            result = {
+                "items": [{
                 "novel_unique_id": n.novel_unique_id,
                 "title": n.title,
                 "author_name": n.author_name,

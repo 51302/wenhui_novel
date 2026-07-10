@@ -71,8 +71,22 @@ app.include_router(vip_router)
 app.include_router(bookshelf_router)
 
 
+# ====== 健康检查缓存（避免每次请求都建 DB 连接） ======
+_health_cache = {"mysql": True, "redis": True, "updated_at": 0}
+_HEALTH_CACHE_TTL = 5  # 5 秒内用缓存，不重复检查
+
+
 @app.get("/api/health")
 def health_check():
+    import time
+    now = time.time()
+    if now - _health_cache["updated_at"] < _HEALTH_CACHE_TTL:
+        return {
+            "状态码": 200, "消息": "服务正常",
+            "数据": {"mysql": _health_cache["mysql"], "redis": _health_cache["redis"],
+                     "status": "ok" if _health_cache["mysql"] else "degraded"}
+        }
+
     redis_alive = global_redis.ping() if global_redis else False
     try:
         with engine.connect() as conn:
@@ -80,14 +94,15 @@ def health_check():
         mysql_alive = True
     except Exception:
         mysql_alive = False
+
+    _health_cache["mysql"] = mysql_alive
+    _health_cache["redis"] = redis_alive
+    _health_cache["updated_at"] = now
+
     return {
-        "状态码": 200,
-        "消息": "服务正常",
-        "数据": {
-            "mysql": mysql_alive,
-            "redis": redis_alive,
-            "status": "ok" if mysql_alive else "degraded"
-        }
+        "状态码": 200, "消息": "服务正常",
+        "数据": {"mysql": mysql_alive, "redis": redis_alive,
+                 "status": "ok" if mysql_alive else "degraded"}
     }
 
 
