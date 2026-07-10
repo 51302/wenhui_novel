@@ -1,45 +1,104 @@
 <template>
   <div class="login-page">
-    <div class="login-card">
-      <div class="card-icon">✦</div>
-      <h2>登录文辉小说</h2>
-      <p class="card-sub">探索无尽的创作宇宙</p>
-      <form @submit.prevent="handleLogin">
-        <div class="input-group">
-          <span class="input-icon">👤</span>
-          <input v-model="form.username" placeholder="用户名" required />
-        </div>
-        <div class="input-group">
-          <span class="input-icon">🔒</span>
-          <input v-model="form.password" type="password" placeholder="密码" required />
-        </div>
+    <!-- 左侧：品牌宣传 -->
+    <div class="hero-panel">
+      <div class="hero-glow"></div>
+      <div class="hero-content">
+        <div class="hero-badge">✨ AI 赋能创作</div>
+        <h1 class="hero-title">
+          让创作<span class="highlight">更简单</span>
+        </h1>
+        <p class="hero-desc">
+          输入你的灵感，AI 帮你完成故事。从世界观搭建到章节续写，<br/>每一步都有智能助手相伴。
+        </p>
 
-        <!-- 滑块验证码 -->
-        <div class="captcha-section" v-if="showCaptcha">
-          <p class="captcha-label">安全验证</p>
-          <div class="captcha-track" ref="captchaTrack"
-               @mousedown="startDrag"
-               @touchstart.prevent="startDrag">
-            <div class="track-fill" :style="{ width: sliderLeft + 36 + 'px' }"></div>
-            <div class="captcha-btn" ref="captchaSlider" :style="{ left: sliderLeft + 'px' }" :class="{ done: verified }">
-              <span v-if="!verified">⟫</span>
-              <span v-else>✓</span>
+        <!-- 三大卖点 -->
+        <div class="feature-list">
+          <div class="feature-item">
+            <span class="feature-icon">🤖</span>
+            <div>
+              <strong>AI 智能续写</strong>
+              <p>基于你的故事设定，一键生成后续章节，灵感永不枯竭</p>
             </div>
-            <span class="track-text" v-if="!verified">向右滑动验证</span>
-            <span class="track-text done-text" v-else>验证通过</span>
           </div>
-          <p v-if="errMsg" class="captcha-error">{{ errMsg }}</p>
+          <div class="feature-item">
+            <span class="feature-icon">📖</span>
+            <div>
+              <strong>全部免费阅读</strong>
+              <p>所有创作者的作品对读者完全免费，让好故事被更多人看到</p>
+            </div>
+          </div>
+          <div class="feature-item">
+            <span class="feature-icon">🌟</span>
+            <div>
+              <strong>作品圈互动</strong>
+              <p>点赞、评论、关注你喜爱的作者，创作路上不再孤单</p>
+            </div>
+          </div>
         </div>
 
-        <p v-if="error" class="error">{{ error }}</p>
-        <button type="submit" :disabled="loggingIn">
-          <span v-if="loggingIn" class="login-spinner"></span>
-          {{ loggingIn ? '登录中...' : '登 录' }}
-        </button>
-      </form>
-      <p class="tip">没有账号？<router-link to="/register">去注册 →</router-link></p>
+        <div class="hero-stats">
+          <div class="stat"><strong>AI 驱动</strong><span>智能创作引擎</span></div>
+          <div class="stat"><strong>免费阅读</strong><span>所有作品开放</span></div>
+          <div class="stat"><strong>即时发布</strong><span>写即所享</span></div>
+        </div>
+      </div>
     </div>
-    <div class="bg-text">文 辉 小 说</div>
+
+    <!-- 右侧：登录卡片 -->
+    <div class="login-panel">
+      <div class="login-card">
+        <div class="card-header">
+          <div class="card-icon">✦</div>
+          <h2>登录文辉小说</h2>
+          <p class="card-sub">开启你的 AI 创作之旅</p>
+        </div>
+
+        <form @submit.prevent="handleLogin">
+          <div class="input-group">
+            <span class="input-icon">👤</span>
+            <input v-model="form.username" placeholder="用户名" required />
+          </div>
+          <div class="input-group">
+            <span class="input-icon">🔒</span>
+            <input v-model="form.password" type="password" placeholder="密码" required />
+          </div>
+
+          <!-- 滑块验证码 -->
+          <div class="captcha-section" v-if="showCaptcha">
+            <p class="captcha-label">安全验证</p>
+            <div class="captcha-track" ref="captchaTrack"
+                 @mousedown="startDrag"
+                 @touchstart.prevent="startDrag">
+              <div class="track-fill" :style="{ width: sliderLeft + 36 + 'px' }"></div>
+              <div class="captcha-btn" ref="captchaSlider" :style="{ left: sliderLeft + 'px' }" :class="{ done: verified }">
+                <span v-if="!verified">⟫</span>
+                <span v-else>✓</span>
+              </div>
+              <span class="track-text" v-if="!verified">向右滑动验证</span>
+              <span class="track-text done-text" v-else>验证通过</span>
+            </div>
+            <p v-if="errMsg" class="captcha-error">{{ errMsg }}</p>
+          </div>
+
+          <p v-if="error" class="error">{{ error }}</p>
+          <button type="submit" :disabled="loggingIn">
+            <span v-if="loggingIn" class="login-spinner"></span>
+            {{ loggingIn ? '登录中...' : '登 录' }}
+          </button>
+        </form>
+
+        <p class="tip">没有账号？<router-link to="/register">立即注册 →</router-link></p>
+      </div>
+    </div>
+
+    <!-- 背景装饰 -->
+    <div class="bg-decor">
+      <div class="decor-circle c1"></div>
+      <div class="decor-circle c2"></div>
+      <div class="decor-circle c3"></div>
+      <div class="decor-line l1"></div>
+    </div>
   </div>
 </template>
 
@@ -131,16 +190,80 @@ export default {
 </script>
 
 <style scoped>
-.login-page { display: flex; justify-content: center; align-items: center; min-height: 80vh; position: relative; overflow: hidden; }
-.login-card { 
-  background: rgba(15,15,40,0.85); border: 1px solid rgba(102,126,234,0.15); 
-  border-radius: 18px; padding: 40px; width: 420px;
-  backdrop-filter: blur(20px); box-shadow: 0 20px 60px rgba(0,0,0,0.4);
-  position: relative; z-index: 2;
+.login-page {
+  display: flex; min-height: calc(100vh - 120px); position: relative; overflow: hidden;
+  align-items: center;
 }
-.card-icon { font-size: 48px; text-align: center; margin-bottom: 6px; background: linear-gradient(135deg, #06b6d4, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 0 12px rgba(6,182,212,0.4)); }
-.login-card h2 { text-align: center; margin-bottom: 4px; font-size: 22px; color: #e0e0e0; }
-.card-sub { text-align: center; margin-bottom: 24px; font-size: 13px; color: #5a6080; }
+
+/* ====== 左侧品牌区 ====== */
+.hero-panel {
+  flex: 1.2; display: flex; align-items: center; justify-content: center;
+  padding: 40px 60px; position: relative; z-index: 2;
+}
+.hero-glow {
+  position: absolute; width: 500px; height: 500px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(6,182,212,0.08) 0%, transparent 70%);
+  top: 50%; left: 50%; transform: translate(-50%, -50%); pointer-events: none;
+}
+.hero-content { position: relative; z-index: 2; max-width: 520px; }
+
+.hero-badge {
+  display: inline-block; padding: 6px 16px; border-radius: 20px;
+  background: rgba(6,182,212,0.1); border: 1px solid rgba(6,182,212,0.2);
+  color: #06b6d4; font-size: 12px; font-weight: 600; margin-bottom: 20px;
+}
+
+.hero-title {
+  font-size: 40px; font-weight: 800; color: #e8eaed; line-height: 1.2; margin-bottom: 16px;
+  letter-spacing: 2px;
+}
+.highlight {
+  background: linear-gradient(135deg, #06b6d4, #8b5cf6);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+
+.hero-desc {
+  font-size: 14px; color: #8892b0; line-height: 1.8; margin-bottom: 32px;
+}
+
+/* 三大卖点 */
+.feature-list { display: flex; flex-direction: column; gap: 18px; margin-bottom: 32px; }
+.feature-item { display: flex; gap: 14px; align-items: flex-start; }
+.feature-icon {
+  font-size: 28px; width: 48px; height: 48px; border-radius: 14px;
+  background: rgba(15,15,40,0.8); border: 1px solid rgba(102,126,234,0.12);
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.feature-item strong { display: block; font-size: 14px; color: #e0e0e0; margin-bottom: 3px; }
+.feature-item p { font-size: 12px; color: #5a6080; line-height: 1.5; margin: 0; }
+
+/* 底部数据 */
+.hero-stats { display: flex; gap: 40px; }
+.stat strong { display: block; font-size: 18px; color: #e0e0e0; }
+.stat span { font-size: 12px; color: #5a6080; }
+
+/* ====== 右侧登录卡 ====== */
+.login-panel {
+  flex: 0.8; display: flex; align-items: center; justify-content: center;
+  padding: 40px 20px; position: relative; z-index: 2;
+}
+
+.login-card {
+  background: rgba(15,15,40,0.88); border: 1px solid rgba(102,126,234,0.12);
+  border-radius: 20px; padding: 40px 36px; width: 400px; max-width: 100%;
+  backdrop-filter: blur(24px); box-shadow: 0 20px 60px rgba(0,0,0,0.4),
+              0 0 80px rgba(6,182,212,0.04);
+}
+
+.card-header { text-align: center; margin-bottom: 28px; }
+.card-icon {
+  font-size: 44px; margin-bottom: 8px;
+  background: linear-gradient(135deg, #06b6d4, #8b5cf6);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 0 12px rgba(6,182,212,0.4));
+}
+.card-header h2 { font-size: 22px; color: #e0e0e0; margin-bottom: 6px; }
+.card-sub { font-size: 13px; color: #5a6080; }
 
 .input-group {
   display: flex; align-items: center; gap: 10px;
@@ -186,10 +309,10 @@ export default {
 
 .captcha-error { color: #f87171; font-size: 12px; margin-top: 3px; }
 
-.login-card > form > button { 
-  width: 100%; padding: 12px; background: linear-gradient(135deg, #06b6d4, #8b5cf6); 
-  color: #fff; border: none; border-radius: 10px; font-size: 15px; cursor: pointer; 
-  font-weight: 700; transition: all 0.3s; margin-top: 4px; 
+.login-card > form > button {
+  width: 100%; padding: 13px; background: linear-gradient(135deg, #06b6d4, #8b5cf6);
+  color: #fff; border: none; border-radius: 10px; font-size: 15px; cursor: pointer;
+  font-weight: 700; transition: all 0.3s; margin-top: 4px;
   box-shadow: 0 4px 20px rgba(6,182,212,0.3);
   display: flex; align-items: center; justify-content: center; gap: 8px;
 }
@@ -201,5 +324,32 @@ export default {
 .error { color: #f87171; font-size: 13px; margin-bottom: 4px; text-align: center; }
 .tip { text-align: center; margin-top: 16px; font-size: 13px; color: #5a6080; }
 .tip a { color: #06b6d4; font-weight: 600; }
-.bg-text { position: absolute; font-size: 180px; font-weight: 900; color: rgba(255,255,255,0.03); white-space: nowrap; z-index: 1; user-select: none; pointer-events: none; }
+
+/* ====== 背景装饰 ====== */
+.bg-decor { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
+.decor-circle {
+  position: absolute; border-radius: 50%; border: 1px solid rgba(102,126,234,0.06);
+}
+.c1 { width: 600px; height: 600px; top: -200px; right: -200px; }
+.c2 { width: 400px; height: 400px; bottom: -150px; left: -100px; border-color: rgba(6,182,212,0.04); }
+.c3 { width: 300px; height: 300px; top: 40%; left: 30%; border-color: rgba(139,92,246,0.04); }
+
+.decor-line {
+  position: absolute; width: 1px; height: 200px;
+  background: linear-gradient(to bottom, transparent, rgba(6,182,212,0.1), transparent);
+}
+.l1 { top: 20%; left: 25%; }
+
+/* ====== 响应式 ====== */
+@media (max-width: 900px) {
+  .login-page { flex-direction: column; }
+  .hero-panel { flex: none; padding: 30px 24px 10px; }
+  .hero-title { font-size: 28px; }
+  .hero-desc { font-size: 13px; margin-bottom: 20px; }
+  .feature-list { gap: 12px; margin-bottom: 20px; }
+  .feature-icon { width: 40px; height: 40px; font-size: 22px; }
+  .hero-stats { gap: 20px; }
+  .login-panel { flex: none; padding: 10px 16px 40px; }
+  .login-card { padding: 30px 24px; }
+}
 </style>
