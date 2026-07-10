@@ -102,7 +102,8 @@ export default {
         const res = await api.get(`/chapters/novel/${route.params.novel_unique_id}`)
         if (res.状态码 === 200) {
           allChapters.value = res.数据 || []
-          const chapterId = route.params.chapter_unique_id
+          // 支持 ?chapter=xxx 查询参数（从书架跳转）
+          const chapterId = route.params.chapter_unique_id || route.query.chapter
           if (chapterId) {
             const target = allChapters.value.find(c => c.chapter_unique_id === chapterId)
             if (target) openChapter(target)
@@ -114,6 +115,14 @@ export default {
     const openChapter = (ch) => {
       currentChapter.value = ch
       currentChapterId.value = ch.chapter_unique_id
+      // 自动保存阅读进度
+      api.post('/bookshelf/progress', null, {
+        params: {
+          novel_unique_id: route.params.novel_unique_id,
+          chapter_unique_id: ch.chapter_unique_id,
+          chapter_name: ch.chapter_name || ''
+        }
+      }).catch(() => {})
     }
 
     const checkBookshelf = async () => {

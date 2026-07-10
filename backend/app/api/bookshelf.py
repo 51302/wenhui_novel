@@ -44,3 +44,17 @@ def list_bookshelf(
 ):
     """获取我的书架列表"""
     return BookshelfService.list_bookshelf(db, current_user["user_id"])
+
+
+@router.post("/progress")
+def save_progress(
+    novel_unique_id: str,
+    chapter_unique_id: str,
+    chapter_name: str = "",
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """保存阅读进度（书架中的书）"""
+    return BookshelfService.save_progress(
+        db, current_user["user_id"], novel_unique_id, chapter_unique_id, chapter_name
+    )

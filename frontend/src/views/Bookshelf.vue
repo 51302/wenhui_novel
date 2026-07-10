@@ -16,14 +16,25 @@
     </div>
 
     <div v-else class="book-grid">
-      <div v-for="book in items" :key="book.novel_unique_id" class="book-card" @click="goReader(book.novel_unique_id)">
-        <img v-if="book.cover_image" :src="book.cover_image" class="book-cover" />
-        <div v-else class="book-cover placeholder">📖</div>
-        <div class="book-info">
-          <strong class="book-title">{{ book.title }}</strong>
-          <span class="book-author">{{ book.author_name }}</span>
-          <span class="book-genre" v-if="book.genre">{{ book.genre }}</span>
-          <p class="book-desc" v-if="book.description">{{ book.description }}</p>
+      <div v-for="book in items" :key="book.novel_unique_id" class="book-card">
+        <!-- 封面区域（点击继续阅读） -->
+        <div class="book-main" @click="continueRead(book)">
+          <img v-if="book.cover_image" :src="book.cover_image" class="book-cover" />
+          <div v-else class="book-cover placeholder">📖</div>
+          <div class="book-info">
+            <strong class="book-title">{{ book.title }}</strong>
+            <span class="book-author">{{ book.author_name }}</span>
+            <span class="book-genre" v-if="book.genre">{{ book.genre }}</span>
+            <p class="book-desc" v-if="book.description">{{ book.description }}</p>
+            <!-- 阅读进度 -->
+            <div class="progress-bar" v-if="book.last_chapter_name">
+              <span class="progress-label">📌 上次看到：{{ book.last_chapter_name }}</span>
+              <span class="progress-hint">点击继续阅读 →</span>
+            </div>
+            <div class="progress-bar new" v-else>
+              <span class="progress-label">🆕 还没开始读</span>
+            </div>
+          </div>
         </div>
         <button class="btn-remove" @click.stop="removeBook(book)">移除</button>
       </div>
@@ -59,11 +70,18 @@ export default {
       } catch (e) { }
     }
 
-    const goReader = (nid) => router.push(`/reader/${nid}`)
+    // 有进度 → 跳转到上次章节；没进度 → 跳转到作品首页
+    const continueRead = (book) => {
+      if (book.last_chapter_unique_id) {
+        router.push(`/reader/${book.novel_unique_id}?chapter=${book.last_chapter_unique_id}`)
+      } else {
+        router.push(`/reader/${book.novel_unique_id}`)
+      }
+    }
 
     onMounted(() => fetchBookshelf())
 
-    return { items, loading, removeBook, goReader }
+    return { items, loading, removeBook, continueRead }
   }
 }
 </script>
@@ -87,10 +105,12 @@ export default {
 .book-card {
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: 14px; padding: 16px; display: flex; gap: 14px;
-  cursor: pointer; transition: all 0.3s; position: relative;
+  transition: all 0.3s; position: relative;
   backdrop-filter: blur(20px); box-shadow: var(--card-shadow);
 }
 .book-card:hover { border-color: var(--border-hover); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
+
+.book-main { display: flex; gap: 14px; cursor: pointer; flex: 1; min-width: 0; }
 
 .book-cover { width: 72px; height: 96px; border-radius: 8px; object-fit: cover; flex-shrink: 0; }
 .book-cover.placeholder { display: flex; align-items: center; justify-content: center; background: var(--btn-bg); font-size: 32px; }
@@ -100,6 +120,12 @@ export default {
 .book-author { color: var(--accent); font-size: 12px; }
 .book-genre { color: var(--text-muted); font-size: 11px; background: var(--btn-bg); padding: 2px 8px; border-radius: 4px; display: inline-block; width: fit-content; }
 .book-desc { color: var(--text-secondary); font-size: 12px; line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; margin-top: 4px; }
+
+.progress-bar { margin-top: 8px; padding: 6px 10px; border-radius: 6px; background: rgba(6,182,212,0.08); border: 1px solid rgba(6,182,212,0.15); display: flex; justify-content: space-between; align-items: center; }
+.progress-bar.new { background: rgba(148,163,184,0.06); border-color: rgba(148,163,184,0.1); }
+.progress-label { font-size: 11px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.progress-bar.new .progress-label { color: var(--text-muted); }
+.progress-hint { font-size: 10px; color: var(--text-muted); white-space: nowrap; margin-left: 8px; }
 
 .btn-remove {
   position: absolute; top: 10px; right: 10px; padding: 4px 10px;
