@@ -1,7 +1,9 @@
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from app.models.base import engine, get_db
 from app.models.base import Base
@@ -61,6 +63,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 挂载静态文件目录（upload上传的封面图片 + AI生成封面）
+_UPLOAD_STATIC = Path(__file__).resolve().parent.parent.parent / "frontend" / "public" / "uploads"
+_UPLOAD_STATIC.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(_UPLOAD_STATIC)), name="uploads")
+_COVERS_STATIC = Path(__file__).resolve().parent.parent.parent / "frontend" / "public" / "covers"
+_COVERS_STATIC.mkdir(parents=True, exist_ok=True)
+app.mount("/covers", StaticFiles(directory=str(_COVERS_STATIC)), name="covers")
 
 app.include_router(auth_router)
 app.include_router(novels_router)
