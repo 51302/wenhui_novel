@@ -11,7 +11,7 @@
 
     <!-- ==================== 新建作品 ==================== -->
     <div v-if="tab === 'create'" class="tab-content">
-      <div v-if="!isSuperAdmin" class="no-permission">创作功能仅超级用户可用，当前不可用</div>
+      <div v-if="!isVip" class="no-permission">创作功能仅VIP用户可用，当前不可用</div>
       <form v-else class="create-form" @submit.prevent="handleCreateNovel">
         <div class="form-row">
           <label>作品名称</label><input v-model="novelForm.title" required />
@@ -234,7 +234,7 @@ export default {
     const tab = ref('create')
 
     const user = JSON.parse(localStorage.getItem('novel_user') || '{}')
-    const isSuperAdmin = computed(() => user.is_super_admin === 1)
+    const isVip = computed(() => user.is_vip === 1)
 
     // 新建作品
     const novelForm = reactive({
@@ -567,7 +567,7 @@ export default {
       fetchMyNovels()
     })
 
-    return { tab, isSuperAdmin, novelForm, createError, createSuccess, handleCreateNovel,
+    return { tab, isVip, novelForm, createError, createSuccess, handleCreateNovel,
       myNovels, fetchMyNovels,
       showChapterModal, chapterNovel, chapterMode, novelChapters, chapterForm, generating,
       openChapterModal, generateChapter,
