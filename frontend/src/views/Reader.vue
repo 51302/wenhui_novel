@@ -223,6 +223,10 @@ export default {
     onMounted(async () => {
       await loadNovel(); await loadChapters(); await checkBookshelf()
       document.addEventListener('keydown', onKeyDown)
+      // 普通用户进入阅读页弹窗引导VIP
+      if (!isVip.value) {
+        setTimeout(() => { vipModalShow.value = true }, 800)
+      }
     })
     onUnmounted(() => {
       document.removeEventListener('keydown', onKeyDown)
