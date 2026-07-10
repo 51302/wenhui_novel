@@ -234,7 +234,7 @@ export default {
     const tab = ref('create')
 
     const user = JSON.parse(localStorage.getItem('novel_user') || '{}')
-    const isVip = computed(() => user.is_vip === 1)
+    const isVip = computed(() => !!user.is_vip)
 
     // 新建作品
     const novelForm = reactive({

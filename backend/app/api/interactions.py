@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from app.models.base import get_db
 from app.service.interaction_service import InteractionService
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, require_vip
 
 router = APIRouter(prefix="/api/interactions", tags=["互动"])
 
@@ -12,7 +12,8 @@ def comment(
     novel_unique_id: str, comment_text: str,
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    _vip=Depends(require_vip),
 ):
     return InteractionService.comment(
         db, novel_unique_id, user_id,
@@ -24,7 +25,8 @@ def comment(
 def like(
     novel_unique_id: str, user_id: int,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    _vip=Depends(require_vip),
 ):
     return InteractionService.like(
         db, novel_unique_id, user_id,
@@ -36,7 +38,8 @@ def like(
 def follow(
     novel_unique_id: str, user_id: int,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    _vip=Depends(require_vip),
 ):
     return InteractionService.follow(
         db, novel_unique_id, user_id,
@@ -48,7 +51,8 @@ def follow(
 def bookmark(
     novel_unique_id: str, user_id: int,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
+    _vip=Depends(require_vip),
 ):
     return InteractionService.bookmark(
         db, novel_unique_id, user_id,

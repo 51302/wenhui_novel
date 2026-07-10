@@ -113,11 +113,16 @@
         {{ loadingMore ? '加载中...' : '加载更多' }}
       </button>
     </div>
+
+    <!-- VIP提示弹窗 -->
+    <div class="vip-toast" :class="{ show: vipToastShow }">
+      💎 互动功能需要 <a href="/vip" class="toast-vip-link">开通 VIP</a> 才能使用
+    </div>
   </div>
 </template>
 
 <script>
-import { ref, onMounted, reactive } from 'vue'
+import { ref, onMounted, reactive, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
 
@@ -131,6 +136,18 @@ export default {
     const page = ref(1)
     const hasMore = ref(false)
     const loadingMore = ref(false)
+
+    // VIP 判断
+    const user = JSON.parse(localStorage.getItem('novel_user') || '{}')
+    const isVip = computed(() => !!user.is_vip)
+    const vipToastShow = ref(false)
+    let vipToastTimer = null
+
+    const showVipTip = () => {
+      vipToastShow.value = true
+      clearTimeout(vipToastTimer)
+      vipToastTimer = setTimeout(() => { vipToastShow.value = false }, 2500)
+    }
 
     // 评论展开/收起
     const expandedNovels = reactive({})
@@ -175,6 +192,7 @@ export default {
     const toggleComments = async (item) => {
       const nid = item.novel_unique_id
       if (expandedNovels[nid]) { expandedNovels[nid] = false; return }
+      if (!isVip.value) { showVipTip(); return }
       expandedNovels[nid] = true
       if (!novelComments[nid]) {
         commentsLoading[nid] = true
@@ -189,6 +207,7 @@ export default {
     }
 
     const submitComment = async (item) => {
+      if (!isVip.value) { showVipTip(); return }
       const nid = item.novel_unique_id
       const text = (commentTexts[nid] || '').trim()
       if (!text) return
@@ -207,6 +226,7 @@ export default {
     }
 
     const doLike = async (item) => {
+      if (!isVip.value) { showVipTip(); return }
       likedItems[item.novel_unique_id] = !likedItems[item.novel_unique_id]
       try {
         await api.post('/interactions/like', null, { params: { novel_unique_id: item.novel_unique_id, user_id: item.user_id } })
@@ -214,6 +234,7 @@ export default {
     }
 
     const doBookmark = async (item) => {
+      if (!isVip.value) { showVipTip(); return }
       bookmarkedItems[item.novel_unique_id] = !bookmarkedItems[item.novel_unique_id]
       try {
         await api.post('/interactions/bookmark', null, { params: { novel_unique_id: item.novel_unique_id, user_id: item.user_id } })
@@ -221,6 +242,7 @@ export default {
     }
 
     const doFollow = async (item) => {
+      if (!isVip.value) { showVipTip(); return }
       followedItems[item.novel_unique_id] = !followedItems[item.novel_unique_id]
       try {
         await api.post('/interactions/follow', null, { params: { novel_unique_id: item.novel_unique_id, user_id: item.user_id } })
@@ -248,7 +270,8 @@ export default {
       commentTexts, submittingIds,
       likedItems, bookmarkedItems, followedItems,
       toggleComments, submitComment, doLike, doBookmark, doFollow,
-      loadMore, formatTime, goReader
+      loadMore, formatTime, goReader,
+      isVip, vipToastShow, showVipTip
     }
   }
 }
@@ -357,4 +380,16 @@ export default {
   cursor: pointer; font-size: 14px; font-weight: 600; margin-top: 16px; transition: all 0.3s;
 }
 .btn-more:hover { border-color: var(--border-hover); box-shadow: 0 0 16px var(--accent-glow); }
+
+/* VIP 提示弹窗 */
+.vip-toast {
+  position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(20px);
+  background: rgba(15,15,40,0.95); border: 1px solid rgba(245,158,11,0.4);
+  padding: 12px 24px; border-radius: 12px; font-size: 13px; color: #fbbf24;
+  z-index: 9999; opacity: 0; pointer-events: none; transition: all 0.35s ease;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.5), 0 0 20px rgba(245,158,11,0.1);
+  backdrop-filter: blur(12px); white-space: nowrap; max-width: 90vw;
+}
+.vip-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+.toast-vip-link { color: #f59e0b; font-weight: 700; text-decoration: underline; margin: 0 2px; }
 </style>

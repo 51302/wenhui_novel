@@ -178,6 +178,7 @@ class AuthService:
             "user_id": user.id,
             "username": user.username,
             "is_super_admin": user.is_super_admin,
+            "is_vip": user.is_super_admin == 1,
             "token": token
         }, "注册成功")
 
@@ -212,6 +213,7 @@ class AuthService:
             "user_id": user.id,
             "username": user.username,
             "is_super_admin": user.is_super_admin,
+            "is_vip": user.is_super_admin == 1,
             "token": token
         }, "登录成功")
 

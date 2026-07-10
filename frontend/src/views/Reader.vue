@@ -21,10 +21,10 @@
       </div>
     </div>
 
-    <!-- 右侧内容区（整块禁止复制） -->
-    <div class="content-area protected-area"
-         @contextmenu.prevent="showCopyTip"
-         @copy.prevent="showCopyTip"
+    <!-- 右侧内容区（VIP可复制，普通用户禁止复制） -->
+    <div :class="['content-area', { 'protected-area': !isVip }]"
+         @contextmenu="onContextMenu"
+         @copy="onCopy"
          @selectstart="onSelectStart"
          @mousedown="onBeforeSelect"
          @mouseup="onBeforeSelect">
@@ -82,8 +82,13 @@ export default {
     const copyToastShow = ref(false)
     let copyToastTimer = null
 
-    // 全局 Ctrl+C 拦截
+    // VIP 判断
+    const user = JSON.parse(localStorage.getItem('novel_user') || '{}')
+    const isVip = computed(() => !!user.is_vip)
+
+    // 全局 Ctrl+C 拦截（仅非VIP）
     const onKeyDown = (e) => {
+      if (isVip.value) return
       if (e.ctrlKey && (e.key === 'c' || e.key === 'C' || e.key === 'Insert')) {
         e.preventDefault()
         showCopyTip()
@@ -119,14 +124,32 @@ export default {
       copyToastTimer = setTimeout(() => { copyToastShow.value = false }, 2500)
     }
 
-    // 鼠标按下/松开时清除已有选中，防止出现浏览器复制弹窗
+    // 右键菜单：VIP允许，非VIP拦截
+    const onContextMenu = (e) => {
+      if (!isVip.value) {
+        e.preventDefault()
+        showCopyTip()
+      }
+    }
+
+    // 复制操作：VIP允许，非VIP拦截
+    const onCopy = (e) => {
+      if (!isVip.value) {
+        e.preventDefault()
+        showCopyTip()
+      }
+    }
+
+    // 鼠标按下/松开时清除已有选中（仅非VIP）
     const onBeforeSelect = () => {
+      if (isVip.value) return
       const sel = window.getSelection()
       if (sel) sel.removeAllRanges()
     }
 
-    // 尝试选中 → 弹提示 + 阻止选中
+    // 尝试选中（仅非VIP拦截）
     const onSelectStart = (e) => {
+      if (isVip.value) return
       showCopyTip()
       e.preventDefault()
     }
@@ -190,7 +213,7 @@ export default {
     onUnmounted(() => {
       document.removeEventListener('keydown', onKeyDown)
     })
-    return { novel, allChapters, publishedChapters, currentChapter, currentChapterId, prevChapter, nextChapter, openChapter, formattedContent, inBookshelf, toggleBookshelf, copyToastShow, showCopyTip, onSelectStart, onBeforeSelect }
+    return { novel, allChapters, publishedChapters, currentChapter, currentChapterId, prevChapter, nextChapter, openChapter, formattedContent, inBookshelf, toggleBookshelf, copyToastShow, showCopyTip, isVip, onContextMenu, onCopy, onSelectStart, onBeforeSelect }
   }
 }
 </script>
