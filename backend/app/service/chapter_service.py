@@ -1174,6 +1174,7 @@ class ChapterService:
             return fail("章节不存在", code=404)
 
         novel_unique_id = chapter.novel_unique_id
+        chapter_name = chapter.chapter_name
 
         # 1. 删除本地 txt 文件
         novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
@@ -1185,7 +1186,7 @@ class ChapterService:
                     print(f"[删除章节] 已删除本地文件: {fpath}")
                     break
 
-        # 2. 删除数据库记录
+        # 2. 删除数据库记录（先提交，确保成功）
         ChapterDAO.delete(db, chapter_unique_id)
 
         # 3. 清理 Redis 缓存
@@ -1194,29 +1195,19 @@ class ChapterService:
             r4.delete_pattern("chapters:*")
             r4.delete_pattern("interactions:*")
 
-        # 4. 重建记忆体（从剩余文件逐章重新提取）
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    future = pool.submit(
-                        asyncio.run,
-                        ChapterService._rebuild_memory_from_files(novel_unique_id, db)
-                    )
-                    future.result(timeout=300)
-            else:
-                loop.run_until_complete(
-                    ChapterService._rebuild_memory_from_files(novel_unique_id, db)
-                )
-        except RuntimeError:
-            asyncio.run(ChapterService._rebuild_memory_from_files(novel_unique_id, db))
-        except Exception as e:
-            print(f"[删除章节] 记忆体重建失败: {e}")
+        # 4. 异步重建记忆体（不阻塞响应，失败也不回滚 DB）
+        import asyncio, threading
+        def _async_rebuild():
+            try:
+                asyncio.run(ChapterService._rebuild_memory_from_files(novel_unique_id, db=None))
+            except BaseException as e:
+                print(f"[删除章节] 记忆体重建失败: {e}")
 
-        print(f"[删除章节] {chapter.chapter_name} 已删除，记忆体已重建")
-        return success(None, "章节删除成功，记忆体已更新")
+        t = threading.Thread(target=_async_rebuild, daemon=True)
+        t.start()
+
+        print(f"[删除章节] {chapter_name} 已删除，记忆体后台重建中")
+        return success(None, "章节删除成功，记忆体后台更新中")
 
     @staticmethod
     def get_novel_chapters(db: Session, novel_unique_id: str) -> dict:
