@@ -155,7 +155,7 @@
             <div v-for="(ch, idx) in novelChapters" :key="ch.chapter_unique_id" class="chapter-item">
               <span>第{{ idx + 1 }}章 - {{ ch.chapter_name }} ({{ ch.word_count }}字)</span>
               <span class="chapter-status">{{ ch.is_published ? '✓ 已发布' : '草稿' }}</span>
-              <button class="btn-delete-chapter" @click="deleteChapter(ch)" title="删除章节">🗑</button>
+              <button class="btn-delete-chapter" @click="deleteChapter(ch)" title="删除章节">✕ 删除</button>
             </div>
           </div>
         </div>
@@ -863,8 +863,16 @@ export default {
 .existing-chapters h3 { margin-bottom: 12px; font-size: 15px; color: #8892b0; }
 .chapter-item { padding: 10px 14px; background: rgba(15,15,40,0.4); border: 1px solid rgba(102,126,234,0.1); border-radius: 8px; margin-bottom: 6px; display: flex; justify-content: space-between; font-size: 13px; color: #b0b8d0; }
 .chapter-status { color: #34d399; font-size: 12px; font-weight: 600; }
-.btn-delete-chapter { background: none; border: none; cursor: pointer; font-size: 14px; padding: 2px 6px; opacity: 0.5; transition: opacity 0.2s; }
-.btn-delete-chapter:hover { opacity: 1; color: #ef4444; }
+.btn-delete-chapter {
+  background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.25);
+  color: #f87171; cursor: pointer; font-size: 11px; font-weight: 600;
+  padding: 4px 12px; border-radius: 6px; transition: all 0.2s;
+  white-space: nowrap;
+}
+.btn-delete-chapter:hover {
+  background: rgba(239, 68, 68, 0.22); border-color: #ef4444;
+  color: #fca5a5; box-shadow: 0 2px 12px rgba(239, 68, 68, 0.2);
+}
 
 /* Draft */
 .draft-card { background: rgba(15,15,40,0.7); border: 1px solid rgba(102,126,234,0.12); border-radius: 14px; padding: 20px; margin-bottom: 16px; backdrop-filter: blur(10px); }
