@@ -17,6 +17,7 @@ class Chapter(Base):
     word_count = Column(Integer, default=0, comment="章节字数")
     chapter_summary = Column(String(512), nullable=True, comment="本章概要")
     is_published = Column(SmallInteger, default=0, comment="是否发布: 0=草稿, 1=已发布")
+    content = Column(Text, nullable=True, comment="章节正文内容")
     created_by = Column(String(64), nullable=True, comment="创建人")
     created_at = Column(DateTime, default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), comment="更新时间")

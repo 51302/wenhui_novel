@@ -31,18 +31,52 @@ class ChapterService:
         return {"content": "", "path": ""}
 
     @staticmethod
-    def _get_last_chapter_content(novel_unique_id: str) -> str:
+    def _get_last_chapter_content(db: Session, novel_unique_id: str, exclude_chapter_name: str = None) -> str:
+        """从数据库按 created_at 顺序取上一章的正文内容"""
+        chapters = ChapterDAO.get_by_novel_id(db, novel_unique_id)
+        if not chapters or len(chapters) < 2:
+            # 只有一章或没有，尝试从本地文件读（兼容旧数据）
+            return ChapterService._get_last_chapter_from_file(novel_unique_id, exclude_chapter_name)
+        # 按创建时间排序，找到当前章节的前一章
+        sorted_chapters = sorted(chapters, key=lambda c: c.created_at or "")
+        # 排除当前要生成的章节名
+        candidates = [c for c in sorted_chapters if c.chapter_name != exclude_chapter_name]
+        if not candidates:
+            return ""
+        last = candidates[-1]
+        if last.content:
+            return last.content
+        # content 为空时从本地文件读取（兼容旧数据）
+        novel_dir = os.path.join(NOVEL_DATA_PATH, last.novel_unique_id)
+        chapter_file = os.path.join(novel_dir, f"{last.chapter_name}_{last.chapter_unique_id}.txt")
+        if os.path.exists(chapter_file):
+            with open(chapter_file, "r", encoding="utf-8") as f:
+                txt = f.read().strip()
+                # 判断是不是 JSON 元数据（旧格式），跳过
+                if txt.startswith("{"):
+                    return ""
+                return txt
+        return ""
+
+    @staticmethod
+    def _get_last_chapter_from_file(novel_unique_id: str, exclude_chapter_name: str = None) -> str:
+        """从本地文件读取最后章节内容（兼容旧数据）"""
         novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
         if not os.path.exists(novel_dir):
             return ""
         txt_files = sorted(
             [f for f in os.listdir(novel_dir) if f.endswith(".txt") and f != "作品设定.txt"],
             key=lambda x: os.path.getmtime(os.path.join(novel_dir, x)),
-            reverse=True
         )
-        if txt_files:
-            with open(os.path.join(novel_dir, txt_files[0]), "r", encoding="utf-8") as f:
-                return f.read()
+        for fname in reversed(txt_files):
+            if exclude_chapter_name and fname.startswith(exclude_chapter_name + "_"):
+                continue
+            filepath = os.path.join(novel_dir, fname)
+            with open(filepath, "r", encoding="utf-8") as f:
+                txt = f.read().strip()
+                if txt.startswith("{"):
+                    continue
+                return txt
         return ""
 
     @staticmethod
@@ -153,7 +187,7 @@ class ChapterService:
             chapter_name = f"第{chinese_num}章 {chapter_name}"
         
         novel_settings = ChapterService._get_novel_settings(novel_unique_id)
-        last_chapter = ChapterService._get_last_chapter_content(novel_unique_id)
+        last_chapter = ChapterService._get_last_chapter_content(db, novel_unique_id, chapter_name)
         chapter_setting = f"""本章设定：
 章节名称：{chapter_name}
 本章概要：{chapter_summary or '无'}
@@ -222,6 +256,7 @@ class ChapterService:
                     word_count=len(generated_text),
                     chapter_summary=chapter_summary,
                     is_published=0,
+                    content=generated_text,
                     created_by=created_by
                 )
 
@@ -261,29 +296,32 @@ class ChapterService:
         if not chapter:
             return fail("章节不存在", code=404)
 
-        # 读取当前章节已有内容
-        novel_dir = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id)
-        chapter_file = os.path.join(novel_dir, f"{chapter.chapter_name}_{chapter.chapter_unique_id}.txt")
-        existing_content = ""
-        if os.path.exists(chapter_file):
-            with open(chapter_file, "r", encoding="utf-8") as f:
-                existing_content = f.read()
+        # 读取当前章节已有内容：优先从 DB content 字段，兜底本地文件
+        existing_content = chapter.content or ""
+        if not existing_content:
+            novel_dir = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id)
+            chapter_file = os.path.join(novel_dir, f"{chapter.chapter_name}_{chapter.chapter_unique_id}.txt")
+            if os.path.exists(chapter_file):
+                with open(chapter_file, "r", encoding="utf-8") as f:
+                    existing_content = f.read()
 
-        # 获取作品设定 + 所有已发布章节（取摘要，避免 prompt 过长）
+        # 获取作品设定 + 所有章节
         novel_settings = ChapterService._get_novel_settings(chapter.novel_unique_id)
         all_chapters = ChapterDAO.get_by_novel_id(db, chapter.novel_unique_id)
         all_chapters_sorted = sorted(all_chapters, key=lambda c: c.created_at or "")
 
-        # 找到当前章节之前的章节
+        # 构建前序章节摘要：优先 DB content，兜底本地文件
         prev_chapters_summary = []
+        novel_dir = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id)
         for ch in all_chapters_sorted:
             if ch.chapter_unique_id == chapter_unique_id:
                 break
-            ch_file = os.path.join(novel_dir, f"{ch.chapter_name}_{ch.chapter_unique_id}.txt")
-            ch_content = ""
-            if os.path.exists(ch_file):
-                with open(ch_file, "r", encoding="utf-8") as f:
-                    ch_content = f.read()
+            ch_content = ch.content or ""
+            if not ch_content:
+                ch_file = os.path.join(novel_dir, f"{ch.chapter_name}_{ch.chapter_unique_id}.txt")
+                if os.path.exists(ch_file):
+                    with open(ch_file, "r", encoding="utf-8") as f:
+                        ch_content = f.read()
             prev_chapters_summary.append(
                 f"[{ch.chapter_name}] 概要: {ch.chapter_summary or '无'}\n"
                 f"内容摘要(前500字): {ch_content[:500]}"
@@ -336,14 +374,15 @@ class ChapterService:
 
                 generated_text = data["choices"][0]["message"]["content"]
 
-                # 追加续写内容到文件
+                # 追加续写内容到文件（兼容）和数据库
                 new_content = existing_content + "\n\n" + generated_text
                 os.makedirs(novel_dir, exist_ok=True)
+                chapter_file = os.path.join(novel_dir, f"{chapter.chapter_name}_{chapter.chapter_unique_id}.txt")
                 with open(chapter_file, "w", encoding="utf-8") as f:
                     f.write(new_content)
 
-                # 更新字数
-                ChapterDAO.update(db, chapter, word_count=len(new_content))
+                # 更新数据库字数 + 内容
+                ChapterDAO.update(db, chapter, word_count=len(new_content), content=new_content)
 
                 return success({
                     "chapter_unique_id": chapter_unique_id,
