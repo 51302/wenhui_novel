@@ -35,24 +35,19 @@ class ChapterService:
         """从数据库按 created_at 顺序取上一章的正文内容"""
         chapters = ChapterDAO.get_by_novel_id(db, novel_unique_id)
         if not chapters or len(chapters) < 2:
-            # 只有一章或没有，尝试从本地文件读（兼容旧数据）
             return ChapterService._get_last_chapter_from_file(novel_unique_id, exclude_chapter_name)
-        # 按创建时间排序，找到当前章节的前一章
         sorted_chapters = sorted(chapters, key=lambda c: c.created_at or "")
-        # 排除当前要生成的章节名
         candidates = [c for c in sorted_chapters if c.chapter_name != exclude_chapter_name]
         if not candidates:
             return ""
         last = candidates[-1]
         if last.content:
             return last.content
-        # content 为空时从本地文件读取（兼容旧数据）
         novel_dir = os.path.join(NOVEL_DATA_PATH, last.novel_unique_id)
         chapter_file = os.path.join(novel_dir, f"{last.chapter_name}_{last.chapter_unique_id}.txt")
         if os.path.exists(chapter_file):
             with open(chapter_file, "r", encoding="utf-8") as f:
                 txt = f.read().strip()
-                # 判断是不是 JSON 元数据（旧格式），跳过
                 if txt.startswith("{"):
                     return ""
                 return txt
@@ -78,6 +73,105 @@ class ChapterService:
                     continue
                 return txt
         return ""
+
+    # ==================== 记忆体系统 ====================
+
+    @staticmethod
+    def _load_memory(novel_unique_id: str) -> str:
+        """从向量数据库加载记忆体"""
+        if chroma_memory:
+            memories = chroma_memory.search_memory(
+                f"记忆体:{novel_unique_id}", n_results=1
+            )
+            for m in memories:
+                if m.get("metadata", {}).get("doc_type") == "novel_memory":
+                    return m["document"]
+        return ""
+
+    @staticmethod
+    def _save_memory(novel_unique_id: str, memory_text: str):
+        """保存记忆体到向量数据库（覆盖写入）"""
+        if chroma_memory:
+            doc_id = f"memory:{novel_unique_id}"
+            # 删除旧记忆
+            chroma_memory.delete_memory(doc_id)
+            # 写入新记忆
+            chroma_memory.collection.add(
+                documents=[memory_text],
+                ids=[doc_id],
+                metadatas=[{"doc_type": "novel_memory", "novel_unique_id": novel_unique_id}]
+            )
+
+    @staticmethod
+    def _build_memory(db: Session, novel_unique_id: str) -> str:
+        """
+        全量构建记忆体：读取所有章节内容（DB + 本地文件兜底），
+        生成结构化的记忆摘要，存入向量数据库。
+        """
+        novel_settings = ChapterService._get_novel_settings(novel_unique_id)
+        chapters = ChapterDAO.get_by_novel_id(db, novel_unique_id)
+        sorted_chapters = sorted(chapters, key=lambda c: c.created_at or "")
+        novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
+
+        lines = []
+        lines.append("=" * 40)
+        lines.append("【作品全局设定】")
+        lines.append(novel_settings.get('content', '无'))
+
+        if sorted_chapters:
+            lines.append("")
+            lines.append("=" * 40)
+            lines.append("【已写章节记忆】")
+            for i, ch in enumerate(sorted_chapters, 1):
+                content = ch.content or ""
+                # DB content 为空时从本地文件兜底
+                if not content:
+                    ch_file = os.path.join(novel_dir, f"{ch.chapter_name}_{ch.chapter_unique_id}.txt")
+                    if os.path.exists(ch_file):
+                        with open(ch_file, "r", encoding="utf-8") as f:
+                            content = f.read()
+                            if content.strip().startswith("{"):
+                                content = ""
+
+                summary_parts = [f"第{i}章 {ch.chapter_name}"]
+                if ch.chapter_summary:
+                    summary_parts.append(f"概要: {ch.chapter_summary}")
+                if content:
+                    # 取前400字（覆盖更多情节信息）
+                    snippet = content[:400].replace("\n", " ").strip()
+                    summary_parts.append(f"内容: {snippet}...")
+                lines.append(" | ".join(summary_parts))
+
+        memory = "\n".join(lines)
+        # 存入向量数据库
+        ChapterService._save_memory(novel_unique_id, memory)
+        return memory
+
+    @staticmethod
+    def _ensure_memory(db: Session, novel_unique_id: str) -> str:
+        """获取记忆体：向量库有则直接用，没有则全量构建"""
+        memory = ChapterService._load_memory(novel_unique_id)
+        if memory:
+            return memory
+        return ChapterService._build_memory(db, novel_unique_id)
+
+    @staticmethod
+    def _update_memory(novel_unique_id: str, chapter_name: str,
+                       chapter_summary: str, generated_text: str):
+        """增量更新记忆体：从向量库加载 → 追加新章节 → 写回向量库"""
+        memory = ChapterService._load_memory(novel_unique_id)
+        if not memory:
+            # 记忆体不存在（不应该发生，但兜底）
+            return
+
+        snippet = generated_text[:400].replace("\n", " ").strip()
+        new_entry = f"\n{chapter_name}"
+        if chapter_summary:
+            new_entry += f" | 概要: {chapter_summary}"
+        new_entry += f" | 内容: {snippet}..."
+
+        memory += new_entry
+        ChapterService._save_memory(novel_unique_id, memory)
 
     @staticmethod
     def create_chapter(db: Session, novel_unique_id: str, user_id: int,
@@ -187,7 +281,12 @@ class ChapterService:
             chapter_name = f"第{chinese_num}章 {chapter_name}"
         
         novel_settings = ChapterService._get_novel_settings(novel_unique_id)
+
+        # ===== 记忆体：一次加载，终身复用 =====
+        memory_body = ChapterService._ensure_memory(db, novel_unique_id)
+        # 上一章末尾内容（用于紧密衔接）
         last_chapter = ChapterService._get_last_chapter_content(db, novel_unique_id, chapter_name)
+
         chapter_setting = f"""本章设定：
 章节名称：{chapter_name}
 本章概要：{chapter_summary or '无'}
@@ -197,56 +296,22 @@ class ChapterService:
 涉及技能：{skills or '无'}
 目标字数：{word_count}字"""
 
-        # ===== 向量记忆：多维度语义检索，让AI真正了解上下文 =====
-        memory_contexts = []
-        if chroma_memory:
-            # 1. 搜索本章涉及人物的相关记忆
-            if characters_involved:
-                char_memories = chroma_memory.search_memory(f"人物 {characters_involved} 经历 剧情", n_results=5)
-                for m in char_memories:
-                    memory_contexts.append(f"[人物相关] {m['document'][:600]}")
+        prompt = f"""你是一个专业的小说写作助手。请根据以下记忆和设定生成小说章节内容。
 
-            # 2. 搜索本章情节方向的相关记忆
-            plot_query = f"{chapter_name} {chapter_summary or ''} 剧情发展"
-            plot_memories = chroma_memory.search_memory(plot_query, n_results=4)
-            for m in plot_memories:
-                memory_contexts.append(f"[剧情相关] {m['document'][:600]}")
+【作品记忆体】（已写章节的全貌）
+{memory_body}
 
-            # 3. 搜索最近章节的记忆（时间维度的上下文）
-            recent_memories = chroma_memory.search_memory(f"{novel_settings.get('content', '')[:100]} 最近章节", n_results=3)
-            for m in recent_memories:
-                if m['document'] not in ''.join(memory_contexts):
-                    memory_contexts.append(f"[世界观/背景] {m['document'][:600]}")
-
-        # 去重后用换行连接
-        seen = set()
-        unique_memories = []
-        for m in memory_contexts:
-            key = m[:80]
-            if key not in seen:
-                seen.add(key)
-                unique_memories.append(m)
-        memory_text = "\n---\n".join(unique_memories[:8])  # 最多8条
-
-        prompt = f"""你是一个专业的小说写作助手。请根据以下设定生成小说章节内容。
-
-【作品设定】
-{novel_settings.get('content', '无作品设定')}
-
-【上一章节内容】（必须紧密承接）
+【上一章节结尾】（必须紧密承接）
 {last_chapter[-2500:] if last_chapter else '这是第一章，无需承接'}
-
-【相关记忆】（从往章节中检索到的上下文）
-{memory_text if memory_text else '无相关记忆'}
 
 {chapter_setting}
 
 要求：
-1. 必须承接上一章节的内容，故事连续、人物性格一致
-2. 如果上一章节结尾有悬念/事件，本章必须自然延续
+1. 必须承接上一章的结尾，故事连续、人物性格一致
+2. 如果上一章结尾有悬念/事件，本章必须自然延续
 3. 字数控制在{word_count}字左右
 4. 语言流畅，情节合理，描写生动
-5. 只需输出章节正文，不需要额外的说明文字"""
+5. 只需输出章节正文，不要额外的说明文字"""
 
         async with httpx.AsyncClient(timeout=120) as client:
             try:
@@ -297,17 +362,18 @@ class ChapterService:
                     f.write(generated_text)
 
                 if chroma_memory:
-                    # 存完整内容 + 章节摘要到向量库（不只是前2000字）
-                    full_text = f"[{chapter_name}] 概要: {chapter_summary or '无'}\n正文: {generated_text}"
+                    full_text = f"[{chapter_name}] {chapter_summary or ''}\n{generated_text[:2000]}"
                     chroma_memory.add_memory(
                         doc_id=f"{novel_unique_id}_{chapter_unique_id}",
                         text=full_text,
                         metadata={"novel_unique_id": novel_unique_id, "chapter_name": chapter_name, "word_count": len(generated_text)}
                     )
 
-                r2 = _redis()
-                if r2:
-                    r2.delete_pattern(f"chapters:novel:{novel_unique_id}:*")
+                # ===== 增量更新记忆体 =====
+                ChapterService._update_memory(
+                    novel_unique_id, chapter_name,
+                    chapter_summary or '', generated_text
+                )
 
                 return success({
                     "chapter_unique_id": chapter_unique_id,
@@ -337,65 +403,16 @@ class ChapterService:
                 with open(chapter_file, "r", encoding="utf-8") as f:
                     existing_content = f.read()
 
-        # 获取作品设定 + 所有章节
-        novel_settings = ChapterService._get_novel_settings(chapter.novel_unique_id)
-        all_chapters = ChapterDAO.get_by_novel_id(db, chapter.novel_unique_id)
-        all_chapters_sorted = sorted(all_chapters, key=lambda c: c.created_at or "")
-
-        # 构建前序章节摘要：优先 DB content，兜底本地文件
-        prev_chapters_summary = []
-        novel_dir = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id)
-        for ch in all_chapters_sorted:
-            if ch.chapter_unique_id == chapter_unique_id:
-                break
-            ch_content = ch.content or ""
-            if not ch_content:
-                ch_file = os.path.join(novel_dir, f"{ch.chapter_name}_{ch.chapter_unique_id}.txt")
-                if os.path.exists(ch_file):
-                    with open(ch_file, "r", encoding="utf-8") as f:
-                        ch_content = f.read()
-            prev_chapters_summary.append(
-                f"[{ch.chapter_name}] 概要: {ch.chapter_summary or '无'}\n"
-                f"内容摘要(前500字): {ch_content[:500]}"
-            )
-
         # 当前章节已写内容（取末尾部分作为上下文）
         context_content = existing_content[-2000:] if len(existing_content) > 2000 else existing_content
 
-        # ===== 向量记忆：多维度语义检索 =====
-        memory_contexts = []
-        if chroma_memory:
-            # 搜索本章涉及人物
-            if chapter.characters_involved:
-                char_mem = chroma_memory.search_memory(f"人物 {chapter.characters_involved} 经历 剧情", n_results=4)
-                for m in char_mem:
-                    memory_contexts.append(f"[人物相关] {m['document'][:600]}")
+        # ===== 记忆体：一次加载 =====
+        memory_body = ChapterService._ensure_memory(db, chapter.novel_unique_id)
 
-            # 搜索本章情节方向
-            plot_mem = chroma_memory.search_memory(f"{chapter.chapter_name} {chapter.chapter_summary or ''} 剧情发展", n_results=4)
-            for m in plot_mem:
-                memory_contexts.append(f"[剧情相关] {m['document'][:600]}")
+        prompt = f"""你是一个专业的小说写作助手。请根据记忆体和已写内容，续写本章节。
 
-        # 去重
-        seen_cont = set()
-        unique_mem_cont = []
-        for m in memory_contexts:
-            k = m[:80]
-            if k not in seen_cont:
-                seen_cont.add(k)
-                unique_mem_cont.append(m)
-        vec_memory_text = "\n---\n".join(unique_mem_cont[:6])
-
-        prompt = f"""你是一个专业的小说写作助手。请根据作品设定和已写内容，续写本章节。
-
-【作品设定】
-{novel_settings.get('content', '无作品设定')}
-
-【前面章节摘要】
-{chr(10).join(prev_chapters_summary) if prev_chapters_summary else '无前序章节'}
-
-【向量记忆上下文】
-{vec_memory_text if vec_memory_text else '无相关记忆'}
+【作品记忆体】
+{memory_body}
 
 【本章信息】
 章节名称：{chapter.chapter_name}
@@ -435,6 +452,7 @@ class ChapterService:
 
                 # 追加续写内容到文件（兼容）和数据库
                 new_content = existing_content + "\n\n" + generated_text
+                novel_dir = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id)
                 os.makedirs(novel_dir, exist_ok=True)
                 chapter_file = os.path.join(novel_dir, f"{chapter.chapter_name}_{chapter.chapter_unique_id}.txt")
                 with open(chapter_file, "w", encoding="utf-8") as f:
