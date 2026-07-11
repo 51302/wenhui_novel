@@ -426,39 +426,55 @@ class ChapterService:
             ChapterService._save_memory(novel_unique_id, memory)
             return memory
 
-        # 逐章提取关键信息（每章独立调用轻量API）
-        chapter_summaries = []
-        chapter_num = 0
-        for fname in txt_files:
-            fpath = os.path.join(novel_dir, fname)
-            try:
-                with open(fpath, "r", encoding="utf-8") as f:
-                    full_text = f.read()
-            except Exception:
-                continue
+        # 逐章提取关键信息（asyncio 并发，线程数从 config.yaml 读取）
+        from app.config import get as cfg
+        concurrency = cfg("chromadb.memory_extract_threads", 10)
 
-            if full_text.strip().startswith("{"):
-                continue
+        async def extract_one(idx: int, fname: str, sem: asyncio.Semaphore):
+            """并发提取单个章节的关键信息，返回 (idx, summary_str)"""
+            async with sem:
+                fpath = os.path.join(novel_dir, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        full_text = f.read()
+                except Exception:
+                    return (idx, None)
 
-            chapter_num += 1
-            chapter_name = fname.rsplit("_", 1)[0] if "_" in fname else fname.replace(".txt", "")
+                if full_text.strip().startswith("{"):
+                    return (idx, None)
 
-            # 逐章调用轻量提取
-            print(f"[记忆体] 提取: 第{chapter_num}章 {chapter_name}")
-            info = await ChapterService.extract_chapter_info(full_text, chapter_name)
+                chapter_name = fname.rsplit("_", 1)[0] if "_" in fname else fname.replace(".txt", "")
+                print(f"[记忆体] 提取第{idx+1}/{total}章: {chapter_name}")
 
-            if info.get("success") and info.get("data"):
-                data = info["data"]
-                lines = [f"=== 第{chapter_num}章 {chapter_name} ==="]
-                for field in ["人物", "组织", "功法技能", "关键事件", "地点", "时间", "关键物品", "实力变化", "伏笔"]:
-                    val = data.get(field, "")
-                    if val and val != "无":
-                        lines.append(f"  {field}: {val}")
-                chapter_summaries.append("\n".join(lines))
-            else:
-                # 提取失败，用前300字兜底
-                snippet = full_text[:300].replace("\n", " ")
-                chapter_summaries.append(f"=== 第{chapter_num}章 {chapter_name} ===\n  (提取失败，概要): {snippet}")
+                info = await ChapterService.extract_chapter_info(full_text, chapter_name)
+
+                if info.get("success") and info.get("data"):
+                    data = info["data"]
+                    lines = [f"=== 第{idx+1}章 {chapter_name} ==="]
+                    for field in ["人物", "组织", "功法技能", "关键事件", "地点", "时间", "关键物品", "实力变化", "伏笔"]:
+                        val = data.get(field, "")
+                        if val and val != "无":
+                            lines.append(f"  {field}: {val}")
+                    result_text = "\n".join(lines)
+                    print(f"[记忆体] 第{idx+1}章 {chapter_name} 提取完成:\n{result_text}")
+                    return (idx, result_text)
+                else:
+                    snippet = full_text[:300].replace("\n", " ")
+                    print(f"[记忆体] 第{idx+1}章 {chapter_name} 提取失败，兜底: {snippet[:80]}...")
+                    return (idx, f"=== 第{idx+1}章 {chapter_name} ===\n  (提取失败，概要): {snippet}")
+
+        import asyncio
+        total = len(txt_files)
+        sem = asyncio.Semaphore(concurrency)
+        print(f"[记忆体] 开始并发提取，共{total}章，并发数={concurrency}")
+
+        tasks = [extract_one(i, fname, sem) for i, fname in enumerate(txt_files)]
+        results_list = await asyncio.gather(*tasks)
+
+        # 按原始顺序整理结果
+        results_sorted = sorted([r for r in results_list if r[1] is not None], key=lambda x: x[0])
+        chapter_summaries = [r[1] for r in results_sorted]
+        chapter_num = len(chapter_summaries)
 
         chapters_text = "\n\n".join(chapter_summaries)
         print(f"[记忆体] 逐章提取完成，共{chapter_num}章，摘要总长度={len(chapters_text)}")

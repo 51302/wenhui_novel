@@ -37,6 +37,7 @@ deepseek:
 chromadb:
   persist_path: "./vector_db_data"
   collection_name: "novel_memory"
+  memory_extract_threads: 10
 
 # ========================================================================
 #  邮件 & 短信配置
