@@ -545,6 +545,10 @@ class ChapterService:
         if r:
             r.delete_pattern("chapters:*")
             r.delete_pattern("interactions:*")
+
+        # 发布章节后刷新记忆体（基于本地txt文件）
+        ChapterService._refresh_memory_after_generate(chapter.novel_unique_id, db)
+
         return success({"chapter_unique_id": chapter_unique_id, "chapter_name": chapter.chapter_name}, "章节发布成功，已同步到作品圈")
 
     @staticmethod
@@ -575,6 +579,9 @@ class ChapterService:
         r3 = _redis()
         if r3:
             r3.delete_pattern(f"chapters:*")
+        # 章节内容更新后刷新记忆体
+        if content is not None:
+            ChapterService._refresh_memory_after_generate(chapter.novel_unique_id, db)
         return success(None, "章节更新成功")
 
     @staticmethod
