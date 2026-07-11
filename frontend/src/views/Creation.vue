@@ -568,7 +568,7 @@ export default {
       }
       extracting[d.chapter_unique_id] = true
       try {
-        const res = await api.post('/chapters/extract-info', { content: d.content, chapter_name: d.chapter_name })
+        const res = await api.post('/chapters/extract-info', { content: d.content, chapter_name: d.chapter_name, novel_unique_id: d.novel_unique_id })
         console.log('[提取信息] 响应:', JSON.stringify(res, null, 2))
         if (res.状态码 === 200 && res.数据) {
           // 用 $set 或重新赋值确保响应式

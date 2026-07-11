@@ -278,6 +278,28 @@ class ChapterService:
             print(f"[记忆体] 追加维度 {category} 失败: {e}")
 
     @staticmethod
+    def save_extracted_to_memory(novel_unique_id: str, info_data: dict, chapter_name: str):
+        """
+        extract-info 提取成功后，将9维数据直接追加到 ChromaDB 记忆体
+        info_data 格式: {"人物": "...", "组织": "...", ...}
+        """
+        # 映射前端字段 → ChromaDB 标准维度
+        field_map = {
+            "人物": "人物", "组织": "组织势力", "功法技能": "功法技能法宝",
+            "关键事件": "关键事件", "地点": "地点", "时间": "时间线",
+            "关键物品": "关键物品", "实力变化": "实力变化", "伏笔": "伏笔悬念",
+        }
+        for front_field, chroma_cat in field_map.items():
+            val = info_data.get(front_field, "")
+            if not val or val == "无":
+                continue
+            # 给每条加上章节标注
+            text = f"{val}（{chapter_name}）"
+            ChapterService._append_to_dimension(novel_unique_id, chroma_cat, text)
+            print(f"[记忆体] extract后追加 {chroma_cat}: +{len(text)}字符")
+        print(f"[记忆体] {chapter_name} 提取信息已追加到记忆体")
+
+    @staticmethod
     async def _incremental_memory_update(novel_unique_id: str, db: Session,
                                           chapter_content: str, chapter_name: str,
                                           chapter_summary: str = ""):
@@ -1104,14 +1126,6 @@ class ChapterService:
         if r:
             r.delete_pattern("chapters:*")
             r.delete_pattern("interactions:*")
-
-        # 发布章节后增量更新记忆体（提取本章关键信息，追加到已有记忆体）
-        ChapterService.incremental_memory_sync(
-            chapter.novel_unique_id, db,
-            content or "",
-            chapter.chapter_name,
-            chapter.chapter_summary or ""
-        )
 
         return success({"chapter_unique_id": chapter_unique_id, "chapter_name": chapter.chapter_name}, "章节发布成功，已同步到作品圈")
 

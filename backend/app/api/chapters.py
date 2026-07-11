@@ -106,6 +106,7 @@ def publish_chapter(
 class ExtractInfoBody(BaseModel):
     content: str
     chapter_name: str = ""
+    novel_unique_id: str = ""
 
 @router.post("/extract-info")
 async def extract_chapter_info(
@@ -124,6 +125,13 @@ async def extract_chapter_info(
         print(f"[提取信息] result keys: {result.keys() if isinstance(result, dict) else type(result)}")
         print(f"[提取信息] success={result.get('success')}, data_keys={list(result.get('data', {}).keys()) if result.get('data') else 'N/A'}")
         if result.get("success"):
+            # 提取成功 → 更新记忆体
+            if body.novel_unique_id and body.chapter_name:
+                ChapterService.save_extracted_to_memory(
+                    body.novel_unique_id,
+                    result["data"],
+                    body.chapter_name
+                )
             return success(result["data"], "提取成功")
         return fail(result.get("error", "提取失败"))
     except Exception as e:
