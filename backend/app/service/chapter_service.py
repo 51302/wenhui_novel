@@ -97,49 +97,103 @@ class ChapterService:
             print(f"[记忆体] ChromaDB 初始化失败: {e}")
             return False
 
+    # ----------------------------------------------------------------
+    #  记忆体存储：按维度拆分存入 ChromaDB，检索时按需合并
+    # ----------------------------------------------------------------
+    _MEMORY_CATEGORIES = [
+        "作品设定",
+        "人物", "组织势力", "功法技能法宝", "关键事件",
+        "地点", "时间线", "人物关系", "伏笔悬念", "实力变化", "关键物品"
+    ]
+
+    _CATEGORY_ALIASES = {"组织势力": "组织势力", "功法技能法宝": "功法技能法宝",
+                          "关键事件": "关键事件", "人物关系": "人物关系",
+                          "伏笔悬念": "伏笔悬念", "实力变化": "实力变化", "关键物品": "关键物品"}
+
     @staticmethod
     def _load_memory(novel_unique_id: str) -> str:
-        """从向量数据库加载记忆体"""
+        """从向量数据库加载所有维度记忆体并合并"""
         if not ChapterService._ensure_chroma():
             return ""
-        if chroma_memory:
-            memories = chroma_memory.search_memory(
-                f"记忆体:{novel_unique_id}", n_results=1
-            )
-            for m in memories:
-                if m.get("metadata", {}).get("doc_type") == "novel_memory":
-                    return m["document"]
-        return ""
+        parts = []
+        for cat in ChapterService._MEMORY_CATEGORIES:
+            doc_id = f"memory:{novel_unique_id}:{cat}"
+            try:
+                results = chroma_memory.collection.get(ids=[doc_id])
+                if results and results["documents"] and results["documents"][0]:
+                    parts.append(f"【{cat}】\n{results['documents'][0]}")
+            except Exception:
+                pass
+        return "\n\n".join(parts) if parts else ""
 
     @staticmethod
     def _save_memory(novel_unique_id: str, memory_text: str):
-        """保存记忆体到向量数据库（覆盖写入）"""
+        """按维度拆分保存记忆体到向量数据库"""
         if not ChapterService._ensure_chroma():
             return
-        if chroma_memory:
-            doc_id = f"memory:{novel_unique_id}"
-            chroma_memory.delete_memory(doc_id)
-            chroma_memory.collection.add(
-                documents=[memory_text],
-                ids=[doc_id],
-                metadatas=[{"doc_type": "novel_memory", "novel_unique_id": novel_unique_id}]
-            )
+        # 解析 AI 输出的记忆体文本，按【XX】分割
+        import re
+        sections = re.split(r'\n(?=【)', memory_text)
+        cat_map = {}
+        current_cat = "概览"
+        for sec in sections:
+            m = re.match(r'【(.+?)】\s*\n?(.*)', sec, re.DOTALL)
+            if m:
+                current_cat = m.group(1)
+                content = m.group(2).strip()
+                if content and content != "无新增":
+                    cat_map[current_cat] = content
+            else:
+                if current_cat not in cat_map:
+                    cat_map[current_cat] = ""
+                cat_map[current_cat] += "\n" + sec.strip()
+
+        # 映射到标准分类名，存入 ChromaDB
+        for std_cat in ChapterService._MEMORY_CATEGORIES:
+            doc_id = f"memory:{novel_unique_id}:{std_cat}"
+            # 模糊匹配：AI 输出的分类名可能略有差异
+            content = ""
+            for key in cat_map:
+                if std_cat in key or key in std_cat or any(
+                    kw in key for kw in std_cat.split()
+                ):
+                    content = cat_map[key]
+                    break
+            if content:
+                chroma_memory.collection.upsert(
+                    documents=[content],
+                    ids=[doc_id],
+                    metadatas=[{"doc_type": "novel_memory", "category": std_cat, "novel_unique_id": novel_unique_id}]
+                )
+            else:
+                # 空内容也写空串，标记该维度已处理
+                chroma_memory.collection.upsert(
+                    documents=[""],
+                    ids=[doc_id],
+                    metadatas=[{"doc_type": "novel_memory", "category": std_cat, "novel_unique_id": novel_unique_id}]
+                )
 
     # ----------------------------------------------------------------
     #  AI 提取记忆：用 DeepSeek 从章节文本中提取结构化信息
     # ----------------------------------------------------------------
-    _MEMORY_EXTRACT_PROMPT = """你是一位资深小说编辑。请仔细阅读以下章节内容，从中提取关键信息，按以下五个维度整理：
+    _MEMORY_EXTRACT_PROMPT = """你是一位资深小说编辑。请仔细阅读以下章节内容，按10个维度提取关键信息，**每条不超过60字，只记核心事实，不要废话**：
 
-1.【人物】列出所有出场角色：姓名、身份、性格特点、与其他角色的关系、当前状态（存活/受伤/失踪等）
-2.【组织/势力】列出所有出现的门派、家族、组织、势力：名称、性质、目标、成员
-3.【功法/技能/法宝】列出所有修炼功法、战斗技能、法宝、丹药等：名称、效果、归属
-4.【关键事件】按时间顺序列出每章发生的重要事件（战斗、突破、发现、结盟、背叛等）
-5.【世界观/设定】补充任何关于世界规则、修炼体系、地理、历史的设定
+1.【人物】姓名|身份|性格|当前状态，如：张三|散修|阴险多疑|第3章加入青云宗
+2.【组织/势力】名称|性质|成员|动向，如：青云宗|正道宗门|弟子3000|正追查魔教
+3.【功法/技能/法宝】名称|效果|归属，如：天雷诀|召唤雷电|张三从古墓获得
+4.【关键事件】事件描述，如：张三击败李四，夺得天雷诀（第5章）
+5.【地点】地名|特征|发生事件，如：青云山|灵气充沛|宗门所在|张三是此地修炼突破
+6.【时间线】关键时间节点，如：第3章-春季入宗；第5章-一月后突破练气三层
+7.【人物关系】A→B|关系类型，如：张三→李四|仇敌；王五→张三|师父
+8.【伏笔/悬念】未解之谜，如：张三身上玉佩来历不明，疑似与上古遗迹有关
+9.【实力变化】角色|修为变化，如：张三|练气一层→练气三层（第5章突破）
+10.【关键物品】物品名|功能|归属，如：神秘玉佩|发光时提升修炼速度|张三所有
 
-格式要求：
-- 每个条目后标注出自哪一章，如「（第3章）」
-- 如果某维度没有新信息，写「无新增」
-- 如果已有信息在后续章节有变化/补充，请标注变化内容
+格式规则：
+- 每条一行，纯文本，不要加序号和列表符号
+- 每条后标注「（第X章）」
+- 没有新信息的维度写「无新增」
+- 后续章节有变化的，追加新行而非覆盖旧行
 
 以下是要分析的章节内容：
 {chapter_texts}
@@ -200,8 +254,7 @@ class ChapterService:
         txt_files.sort(key=lambda f: os.path.getmtime(os.path.join(novel_dir, f)))
 
         if not txt_files:
-            # 没有章节 → 记忆体就是作品设定
-            memory = f"【作品设定】\n{settings_text}\n\n【记忆体】\n暂未生成章节，无额外记忆。"
+            memory = f"""【作品设定】\n{settings_text}"""
             ChapterService._save_memory(novel_unique_id, memory)
             return memory
 
@@ -253,11 +306,10 @@ class ChapterService:
         # 调用 AI 提取结构化记忆
         extracted = await ChapterService._extract_memory_with_ai(settings_text, chapters_text)
 
-        # 拼成最终记忆体
+        # 拼成最终记忆体：作品设定 + AI提取的10个维度
         memory = f"""【作品设定】
 {settings_text}
 
-【AI提取记忆体】
 {extracted if extracted else 'AI提取失败，请稍后重试'}"""
 
         ChapterService._save_memory(novel_unique_id, memory)
