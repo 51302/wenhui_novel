@@ -1172,21 +1172,51 @@ class ChapterService:
         chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
         if not chapter:
             return fail("章节不存在", code=404)
-        chapter_file = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id,
-                                    f"{chapter.chapter_name}_{chapter.chapter_unique_id}.txt")
-        if os.path.exists(chapter_file):
-            os.remove(chapter_file)
 
-        # 删除向量数据库中的记录
-        if chroma_memory:
-            chroma_doc_id = f"{chapter.novel_unique_id}_{chapter_unique_id}"
-            chroma_memory.delete_memory(chroma_doc_id)
+        novel_unique_id = chapter.novel_unique_id
 
+        # 1. 删除本地 txt 文件
+        novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
+        if os.path.exists(novel_dir):
+            for fname in os.listdir(novel_dir):
+                if chapter_unique_id in fname:
+                    fpath = os.path.join(novel_dir, fname)
+                    os.remove(fpath)
+                    print(f"[删除章节] 已删除本地文件: {fpath}")
+                    break
+
+        # 2. 删除数据库记录
         ChapterDAO.delete(db, chapter_unique_id)
+
+        # 3. 清理 Redis 缓存
         r4 = _redis()
         if r4:
-            r4.delete_pattern(f"chapters:*")
-        return success(None, "章节删除成功")
+            r4.delete_pattern("chapters:*")
+            r4.delete_pattern("interactions:*")
+
+        # 4. 重建记忆体（从剩余文件逐章重新提取）
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(
+                        asyncio.run,
+                        ChapterService._rebuild_memory_from_files(novel_unique_id, db)
+                    )
+                    future.result(timeout=300)
+            else:
+                loop.run_until_complete(
+                    ChapterService._rebuild_memory_from_files(novel_unique_id, db)
+                )
+        except RuntimeError:
+            asyncio.run(ChapterService._rebuild_memory_from_files(novel_unique_id, db))
+        except Exception as e:
+            print(f"[删除章节] 记忆体重建失败: {e}")
+
+        print(f"[删除章节] {chapter.chapter_name} 已删除，记忆体已重建")
+        return success(None, "章节删除成功，记忆体已更新")
 
     @staticmethod
     def get_novel_chapters(db: Session, novel_unique_id: str) -> dict:
