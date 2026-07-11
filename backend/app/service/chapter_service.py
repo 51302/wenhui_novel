@@ -77,8 +77,31 @@ class ChapterService:
     # ==================== 记忆体系统（基于本地txt + 向量数据库） ====================
 
     @staticmethod
+    def _ensure_chroma():
+        """懒加载：如果 chroma_memory 未初始化，自动创建"""
+        global chroma_memory
+        if chroma_memory is not None:
+            return True
+        try:
+            from app.utils.chroma_client import ChromaMemoryStore
+            persist_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "vector_db_data")
+            chroma_memory = ChromaMemoryStore(
+                persist_path=persist_path,
+                collection_name="novel_memory"
+            )
+            import app.utils.chroma_client as mod_chroma
+            mod_chroma.chroma_memory = chroma_memory
+            print("[记忆体] ChromaDB 懒加载成功")
+            return True
+        except Exception as e:
+            print(f"[记忆体] ChromaDB 初始化失败: {e}")
+            return False
+
+    @staticmethod
     def _load_memory(novel_unique_id: str) -> str:
         """从向量数据库加载记忆体"""
+        if not ChapterService._ensure_chroma():
+            return ""
         if chroma_memory:
             memories = chroma_memory.search_memory(
                 f"记忆体:{novel_unique_id}", n_results=1
@@ -91,6 +114,8 @@ class ChapterService:
     @staticmethod
     def _save_memory(novel_unique_id: str, memory_text: str):
         """保存记忆体到向量数据库（覆盖写入）"""
+        if not ChapterService._ensure_chroma():
+            return
         if chroma_memory:
             doc_id = f"memory:{novel_unique_id}"
             chroma_memory.delete_memory(doc_id)
