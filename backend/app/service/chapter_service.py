@@ -74,7 +74,7 @@ class ChapterService:
                 return txt
         return ""
 
-    # ==================== 记忆体系统（基于本地txt + 向量数据库） ====================
+    # ==================== 记忆体系统（AI提取关键信息 → 向量数据库） ====================
 
     @staticmethod
     def _ensure_chroma():
@@ -125,86 +125,173 @@ class ChapterService:
                 metadatas=[{"doc_type": "novel_memory", "novel_unique_id": novel_unique_id}]
             )
 
+    # ----------------------------------------------------------------
+    #  AI 提取记忆：用 DeepSeek 从章节文本中提取结构化信息
+    # ----------------------------------------------------------------
+    _MEMORY_EXTRACT_PROMPT = """你是一位资深小说编辑。请仔细阅读以下章节内容，从中提取关键信息，按以下五个维度整理：
+
+1.【人物】列出所有出场角色：姓名、身份、性格特点、与其他角色的关系、当前状态（存活/受伤/失踪等）
+2.【组织/势力】列出所有出现的门派、家族、组织、势力：名称、性质、目标、成员
+3.【功法/技能/法宝】列出所有修炼功法、战斗技能、法宝、丹药等：名称、效果、归属
+4.【关键事件】按时间顺序列出每章发生的重要事件（战斗、突破、发现、结盟、背叛等）
+5.【世界观/设定】补充任何关于世界规则、修炼体系、地理、历史的设定
+
+格式要求：
+- 每个条目后标注出自哪一章，如「（第3章）」
+- 如果某维度没有新信息，写「无新增」
+- 如果已有信息在后续章节有变化/补充，请标注变化内容
+
+以下是要分析的章节内容：
+{chapter_texts}
+
+请开始分析："""
+
     @staticmethod
-    def _rebuild_memory_from_files(novel_unique_id: str, db: Session = None) -> str:
+    async def _extract_memory_with_ai(novel_settings: str, chapters_text: str) -> str:
+        """调用 DeepSeek 从所有章节文本中提取结构化记忆体"""
+        prompt = ChapterService._MEMORY_EXTRACT_PROMPT.replace(
+            "{chapter_texts}", chapters_text
+        )
+        # 前面加上作品设定
+        full_prompt = f"以下小说的作品设定：\n{novel_settings}\n\n{prompt}"
+
+        async with httpx.AsyncClient(timeout=180) as client:
+            response = await client.post(
+                f"{deepseek_base_url()}/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {deepseek_api_key()}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": deepseek_model(),
+                    "messages": [
+                        {"role": "system", "content": "你是一位资深小说编辑，擅长从文本中提取结构化信息。"},
+                        {"role": "user", "content": full_prompt}
+                    ],
+                    "max_tokens": 4096,
+                    "temperature": 0.3
+                }
+            )
+            data = response.json()
+            if "choices" not in data or not data["choices"]:
+                print(f"[记忆体] AI提取失败: {data.get('error', {})}")
+                return ""
+            result = data["choices"][0]["message"]["content"]
+            print(f"[记忆体] AI提取完成，{len(result)} 字符")
+            return result
+
+    @staticmethod
+    async def _rebuild_memory_from_files(novel_unique_id: str, db: Session = None) -> str:
         """
-        全量重建记忆体：扫描本地 novel_structure_data/{novel_id}/ 下所有 .txt 章节文件，
-        按文件修改时间排序，提取作品设定 + 每章概要（前500字），存入向量数据库。
-        不依赖 DB content 字段，100% 从本地文件构建。
+        全量重建记忆体：
+        1. 扫描本地所有章节txt文件（按修改时间排序）
+        2. 拼接所有章节内容（每章取概要+前800字+后200字），发送给 DeepSeek
+        3. DeepSeek 提取人物/组织/功法/事件/世界观 → 结构化记忆体
+        4. 存入 ChromaDB 向量数据库
         """
         novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
         os.makedirs(novel_dir, exist_ok=True)
 
-        # 作品设定
         novel_settings = ChapterService._get_novel_settings(novel_unique_id)
+        settings_text = novel_settings.get('content', '无')
 
-        # 扫描所有章节 txt 文件（排除作品设定.txt）
+        # 扫描章节 txt
         txt_files = [f for f in os.listdir(novel_dir) if f.endswith(".txt") and f != "作品设定.txt"]
-        # 按文件修改时间排序（创作顺序）
         txt_files.sort(key=lambda f: os.path.getmtime(os.path.join(novel_dir, f)))
 
-        lines = []
-        lines.append("=" * 40)
-        lines.append("【作品全局设定】")
-        lines.append(novel_settings.get('content', '无'))
+        if not txt_files:
+            # 没有章节 → 记忆体就是作品设定
+            memory = f"【作品设定】\n{settings_text}\n\n【记忆体】\n暂未生成章节，无额外记忆。"
+            ChapterService._save_memory(novel_unique_id, memory)
+            return memory
 
-        if txt_files:
-            lines.append("")
-            lines.append("=" * 40)
-            lines.append("【已写章节记忆】")
-            chapter_num = 0
-            for fname in txt_files:
-                fpath = os.path.join(novel_dir, fname)
-                try:
-                    with open(fpath, "r", encoding="utf-8") as f:
-                        content = f.read()
-                except Exception:
-                    continue
+        # 拼接所有章节文本（每章取概要+前800字+后200字，控制token）
+        chapter_texts_parts = []
+        chapter_num = 0
+        for fname in txt_files:
+            fpath = os.path.join(novel_dir, fname)
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    full_text = f.read()
+            except Exception:
+                continue
 
-                # 跳过纯 JSON 元数据文件
-                if content.strip().startswith("{"):
-                    continue
+            if full_text.strip().startswith("{"):
+                continue
 
-                chapter_num += 1
-                # 从文件名提取章节名:  第X章 xxx_uniqueid.txt
-                chapter_name = fname.rsplit("_", 1)[0] if "_" in fname else fname.replace(".txt", "")
+            chapter_num += 1
+            chapter_name = fname.rsplit("_", 1)[0] if "_" in fname else fname.replace(".txt", "")
 
-                # DB 查章节概要（可选）
-                chapter_summary = ""
-                if db:
-                    ch_id = fname.rsplit("_", 1)[-1].replace(".txt", "") if "_" in fname else ""
-                    if ch_id and len(ch_id) == 32:
-                        try:
-                            ch = ChapterDAO.get_by_unique_id(db, ch_id)
-                            if ch and ch.chapter_summary:
-                                chapter_summary = ch.chapter_summary
-                        except Exception:
-                            pass
+            # DB 概要
+            chapter_summary = ""
+            if db:
+                ch_id = fname.rsplit("_", 1)[-1].replace(".txt", "") if "_" in fname else ""
+                if ch_id and len(ch_id) == 32:
+                    try:
+                        ch = ChapterDAO.get_by_unique_id(db, ch_id)
+                        if ch and ch.chapter_summary:
+                            chapter_summary = ch.chapter_summary
+                    except Exception:
+                        pass
 
-                summary_parts = [f"第{chapter_num}章 {chapter_name}"]
-                if chapter_summary:
-                    summary_parts.append(f"概要: {chapter_summary}")
-                # 取前500字
-                snippet = content[:500].replace("\n", " ").strip()
-                summary_parts.append(f"内容: {snippet}...")
-                lines.append(" | ".join(summary_parts))
+            # 截取：前800字 + 后200字（覆盖起因和结局）
+            text_len = len(full_text)
+            if text_len <= 1200:
+                snippet = full_text
+            else:
+                snippet = full_text[:800] + "\n...\n" + full_text[-200:]
 
-        memory = "\n".join(lines)
+            part = f"=== 第{chapter_num}章 {chapter_name} ==="
+            if chapter_summary:
+                part += f"\n概要：{chapter_summary}"
+            part += f"\n内容：{snippet}\n"
+            chapter_texts_parts.append(part)
+
+        chapters_text = "\n".join(chapter_texts_parts)
+        print(f"[记忆体] 待提取章节数={chapter_num}，拼接后总长度={len(chapters_text)}")
+
+        # 调用 AI 提取结构化记忆
+        extracted = await ChapterService._extract_memory_with_ai(settings_text, chapters_text)
+
+        # 拼成最终记忆体
+        memory = f"""【作品设定】
+{settings_text}
+
+【AI提取记忆体】
+{extracted if extracted else 'AI提取失败，请稍后重试'}"""
+
         ChapterService._save_memory(novel_unique_id, memory)
         return memory
 
     @staticmethod
-    def _ensure_memory(novel_unique_id: str, db: Session = None) -> str:
+    async def _ensure_memory(novel_unique_id: str, db: Session = None) -> str:
         """获取记忆体：向量库有则直接用，没有则从本地txt全量构建"""
         memory = ChapterService._load_memory(novel_unique_id)
         if memory:
             return memory
-        return ChapterService._rebuild_memory_from_files(novel_unique_id, db)
+        return await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
 
     @staticmethod
-    def _refresh_memory_after_generate(novel_unique_id: str, db: Session = None):
-        """AI生成章节后，全量刷新记忆体（基于本地txt文件）"""
-        return ChapterService._rebuild_memory_from_files(novel_unique_id, db)
+    async def _refresh_memory_after_generate(novel_unique_id: str, db: Session = None):
+        """AI生成章节后，全量刷新记忆体（重新AI提取）"""
+        return await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
+
+    @staticmethod
+    def refresh_memory_sync(novel_unique_id: str, db: Session = None):
+        """同步版：供 publish_chapter / update_chapter 等同步方法调用"""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # 已有的 event loop 正在跑（不太可能但兜底）
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(asyncio.run, ChapterService._refresh_memory_after_generate(novel_unique_id, db))
+                    future.result(timeout=180)
+            else:
+                loop.run_until_complete(ChapterService._refresh_memory_after_generate(novel_unique_id, db))
+        except RuntimeError:
+            asyncio.run(ChapterService._refresh_memory_after_generate(novel_unique_id, db))
 
     @staticmethod
     def create_chapter(db: Session, novel_unique_id: str, user_id: int,
@@ -316,7 +403,7 @@ class ChapterService:
         novel_settings = ChapterService._get_novel_settings(novel_unique_id)
 
         # ===== 记忆体：一次加载，终身复用 =====
-        memory_body = ChapterService._ensure_memory(novel_unique_id, db)
+        memory_body = await ChapterService._ensure_memory(novel_unique_id, db)
         # 上一章末尾内容（用于紧密衔接）
         last_chapter = ChapterService._get_last_chapter_content(db, novel_unique_id, chapter_name)
 
@@ -394,16 +481,8 @@ class ChapterService:
                 with open(chapter_file, "w", encoding="utf-8") as f:
                     f.write(generated_text)
 
-                if chroma_memory:
-                    full_text = f"[{chapter_name}] {chapter_summary or ''}\n{generated_text[:2000]}"
-                    chroma_memory.add_memory(
-                        doc_id=f"{novel_unique_id}_{chapter_unique_id}",
-                        text=full_text,
-                        metadata={"novel_unique_id": novel_unique_id, "chapter_name": chapter_name, "word_count": len(generated_text)}
-                    )
-
-                # ===== AI生成后全量刷新记忆体（基于本地txt文件）=====
-                ChapterService._refresh_memory_after_generate(novel_unique_id, db)
+                # ===== AI生成后全量刷新记忆体（AI提取关键信息）=====
+                await ChapterService._refresh_memory_after_generate(novel_unique_id, db)
 
                 return success({
                     "chapter_unique_id": chapter_unique_id,
@@ -437,7 +516,7 @@ class ChapterService:
         context_content = existing_content[-2000:] if len(existing_content) > 2000 else existing_content
 
         # ===== 记忆体：一次加载 =====
-        memory_body = ChapterService._ensure_memory(chapter.novel_unique_id, db)
+        memory_body = await ChapterService._ensure_memory(chapter.novel_unique_id, db)
 
         prompt = f"""你是一个专业的小说写作助手。请根据记忆体和已写内容，续写本章节。
 
@@ -492,7 +571,7 @@ class ChapterService:
                 ChapterDAO.update(db, chapter, word_count=len(new_content), content=new_content)
 
                 # 续写后刷新记忆体
-                ChapterService._refresh_memory_after_generate(chapter.novel_unique_id, db)
+                await ChapterService._refresh_memory_after_generate(chapter.novel_unique_id, db)
 
                 return success({
                     "chapter_unique_id": chapter_unique_id,
@@ -571,8 +650,8 @@ class ChapterService:
             r.delete_pattern("chapters:*")
             r.delete_pattern("interactions:*")
 
-        # 发布章节后刷新记忆体（基于本地txt文件）
-        ChapterService._refresh_memory_after_generate(chapter.novel_unique_id, db)
+        # 发布章节后刷新记忆体（AI提取关键信息）
+        ChapterService.refresh_memory_sync(chapter.novel_unique_id, db)
 
         return success({"chapter_unique_id": chapter_unique_id, "chapter_name": chapter.chapter_name}, "章节发布成功，已同步到作品圈")
 
@@ -606,7 +685,7 @@ class ChapterService:
             r3.delete_pattern(f"chapters:*")
         # 章节内容更新后刷新记忆体
         if content is not None:
-            ChapterService._refresh_memory_after_generate(chapter.novel_unique_id, db)
+            ChapterService.refresh_memory_sync(chapter.novel_unique_id, db)
         return success(None, "章节更新成功")
 
     @staticmethod
