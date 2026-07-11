@@ -900,27 +900,6 @@ class ChapterService:
                 with open(chapter_file, "w", encoding="utf-8") as f:
                     f.write(generated_text)
 
-                # AI生成后：自动提取章节关键信息 + 保存到DB + 增量更新记忆体
-                print(f"[生成后] 自动提取章节关键信息: {chapter_name}")
-                try:
-                    info_res = await ChapterService.extract_chapter_info(generated_text, chapter_name)
-                    if info_res.get("success") and info_res.get("data"):
-                        info_data = info_res["data"]
-                        ChapterDAO.update(db, chapter,
-                            characters_involved=info_data.get("人物", ""),
-                            organizations=info_data.get("组织", ""),
-                            skills=info_data.get("功法技能", ""),
-                            events=info_data.get("关键事件", ""),
-                            locations=info_data.get("地点", ""),
-                            time_info=info_data.get("时间", ""),
-                            key_items=info_data.get("关键物品", ""),
-                            power_changes=info_data.get("实力变化", ""),
-                            foreshadowing=info_data.get("伏笔", ""),
-                        )
-                        print(f"[生成后] 章节关键信息已存入DB")
-                except Exception as e:
-                    print(f"[生成后] 自动提取失败: {e}")
-
                 # 增量更新记忆体（仅追加本章新增信息）
                 await ChapterService._refresh_memory_after_generate(
                     novel_unique_id, db, generated_text, chapter_name, chapter_summary or ""
@@ -1011,26 +990,6 @@ class ChapterService:
 
                 # 更新数据库字数 + 内容
                 ChapterDAO.update(db, chapter, word_count=len(new_content), content=new_content)
-
-                # 续写后：自动提取本章关键信息 + 增量更新记忆体
-                print(f"[续写后] 自动提取章节关键信息: {chapter.chapter_name}")
-                try:
-                    info_res = await ChapterService.extract_chapter_info(new_content, chapter.chapter_name)
-                    if info_res.get("success") and info_res.get("data"):
-                        info_data = info_res["data"]
-                        ChapterDAO.update(db, chapter,
-                            characters_involved=info_data.get("人物", ""),
-                            organizations=info_data.get("组织", ""),
-                            skills=info_data.get("功法技能", ""),
-                            events=info_data.get("关键事件", ""),
-                            locations=info_data.get("地点", ""),
-                            time_info=info_data.get("时间", ""),
-                            key_items=info_data.get("关键物品", ""),
-                            power_changes=info_data.get("实力变化", ""),
-                            foreshadowing=info_data.get("伏笔", ""),
-                        )
-                except Exception as e:
-                    print(f"[续写后] 自动提取失败: {e}")
 
                 await ChapterService._refresh_memory_after_generate(
                     chapter.novel_unique_id, db, new_content, chapter.chapter_name,
