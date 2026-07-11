@@ -423,6 +423,7 @@ class ChapterService:
             return memory
 
         # 逐章提取关键信息（asyncio 并发，线程数从 config.yaml 读取）
+        import asyncio
         from app.config import get as cfg
         concurrency = cfg("chromadb.memory_extract_threads", 10)
 
