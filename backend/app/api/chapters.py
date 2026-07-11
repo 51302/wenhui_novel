@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from app.models.base import get_db
 from app.service.chapter_service import ChapterService
 from app.api.deps import get_current_user, check_generate_permission, check_creation_access
-from app.utils.response import fail
+from app.utils.response import fail, success
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/chapters", tags=["章节"])
