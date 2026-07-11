@@ -200,6 +200,32 @@ class ChapterService:
 
 请开始分析："""
 
+    # ----------------------------------------------------------------
+    #  增量提取：仅分析单个新章节，追加到已有记忆
+    # ----------------------------------------------------------------
+    _MEMORY_INCREMENTAL_PROMPT = """你是一位资深小说编辑。以下是一章新出的内容，请从中提取关键信息（每条≤60字，纯事实不废话），按10个维度输出：
+
+1.【人物】姓名|身份|性格|当前状态
+2.【组织/势力】名称|性质|成员|动向
+3.【功法/技能/法宝】名称|效果|归属
+4.【关键事件】事件描述
+5.【地点】地名|特征|发生事件
+6.【时间线】关键时间节点
+7.【人物关系】A→B|关系类型
+8.【伏笔/悬念】未解之谜
+9.【实力变化】角色|修为变化
+10.【关键物品】物品名|功能|归属
+
+格式规则：每条一行纯文本不需序号，每条末尾标注「（本章新增）」，无新信息写「无新增」。
+
+=== 本章内容 ===
+{chapter_content}
+
+=== 已有记忆（只做参考，不要重复） ===
+{existing_memory}
+
+请仅输出本章新增/变化的信息："""
+
     @staticmethod
     async def _extract_memory_with_ai(novel_settings: str, chapters_text: str) -> str:
         """调用 DeepSeek 从所有章节文本中提取结构化记忆体"""
@@ -234,6 +260,122 @@ class ChapterService:
             print(f"[记忆体] AI提取完成，{len(result)} 字符")
             return result
 
+    # ----------------------------------------------------------------
+    #  增量记忆体：发布/更新章节时从单个新章节提取并追加
+    # ----------------------------------------------------------------
+    @staticmethod
+    def _append_to_dimension(novel_unique_id: str, category: str, new_text: str):
+        """向 ChromaDB 中某个维度的文档追加新内容"""
+        if not ChapterService._ensure_chroma():
+            return
+        doc_id = f"memory:{novel_unique_id}:{category}"
+        try:
+            existing = chroma_memory.collection.get(ids=[doc_id])
+            old_text = existing["documents"][0] if existing and existing.get("documents") and existing["documents"][0] else ""
+            merged = (old_text + "\n" + new_text).strip() if old_text else new_text.strip()
+            chroma_memory.collection.upsert(
+                documents=[merged],
+                ids=[doc_id],
+                metadatas=[{"doc_type": "novel_memory", "category": category, "novel_unique_id": novel_unique_id}]
+            )
+        except Exception as e:
+            print(f"[记忆体] 追加维度 {category} 失败: {e}")
+
+    @staticmethod
+    async def _incremental_memory_update(novel_unique_id: str, db: Session,
+                                          chapter_content: str, chapter_name: str,
+                                          chapter_summary: str = ""):
+        """
+        增量更新记忆体：
+        1. 加载现有全量记忆体
+        2. 仅对本章节内容调用 AI 提取新信息
+        3. 按维度追加到现有记忆中
+        保持已有记忆不变，只累加新章节的信息。
+        """
+        novel_settings = ChapterService._get_novel_settings(novel_unique_id)
+        settings_text = novel_settings.get('content', '无')
+
+        # 加载现有记忆体
+        existing = ChapterService._load_memory(novel_unique_id)
+        if not existing:
+            # 记忆体不存在 → 全量构建
+            print("[记忆体] 首次构建，走全量模式")
+            await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
+            return
+
+        # 截取章节内容（前1500字 + 后300字，控制token）
+        text_len = len(chapter_content)
+        if text_len <= 2000:
+            snippet = chapter_content
+        else:
+            snippet = chapter_content[:1500] + "\n...\n" + chapter_content[-300:]
+
+        chapter_text = f"=== {chapter_name} ==="
+        if chapter_summary:
+            chapter_text += f"\n概要：{chapter_summary}"
+        chapter_text += f"\n内容：{snippet}"
+
+        # 构建增量提取 prompt
+        prompt = ChapterService._MEMORY_INCREMENTAL_PROMPT.replace(
+            "{chapter_content}", chapter_text
+        ).replace("{existing_memory}", existing[-3000:] if len(existing) > 3000 else existing)
+
+        full_prompt = f"以下小说的作品设定：\n{settings_text}\n\n 只参考设定不重复输出，只提取本章新增内容。\n\n{prompt}"
+
+        # 调 AI 提取本章新增信息
+        async with httpx.AsyncClient(timeout=120) as client:
+            try:
+                response = await client.post(
+                    f"{deepseek_base_url()}/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {deepseek_api_key()}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": deepseek_model(),
+                        "messages": [
+                            {"role": "system", "content": "你是一位资深小说编辑，只提取文本中的新增关键信息。"},
+                            {"role": "user", "content": full_prompt}
+                        ],
+                        "max_tokens": 2048,
+                        "temperature": 0.3
+                    }
+                )
+                data = response.json()
+                if "choices" not in data or not data["choices"]:
+                    print(f"[记忆体] 增量提取失败: {data.get('error', {})}")
+                    return
+                result = data["choices"][0]["message"]["content"]
+                print(f"[记忆体] 增量提取完成，{len(result)} 字符")
+                print(f"[记忆体] 提取内容预览：\n{result[:300]}...")
+            except Exception as e:
+                print(f"[记忆体] 增量提取异常: {e}")
+                return
+
+        # 解析并按维度追加
+        import re
+        sections = re.split(r'\n(?=【)', result)
+        for sec in sections:
+            m = re.match(r'【(.+?)】\s*\n?(.*)', sec, re.DOTALL)
+            if not m:
+                continue
+            ai_cat = m.group(1)
+            new_content = m.group(2).strip()
+            if not new_content or new_content == "无新增":
+                continue
+
+            # 模糊匹配标准维度名
+            for std_cat in ChapterService._MEMORY_CATEGORIES:
+                if std_cat in ai_cat or ai_cat in std_cat or any(kw in ai_cat for kw in std_cat.split()):
+                    ChapterService._append_to_dimension(novel_unique_id, std_cat, new_content)
+                    print(f"[记忆体] 增量追加 {std_cat}: +{len(new_content)} 字符")
+                    break
+
+        print(f"[记忆体] 章节 {chapter_name} 增量更新完成")
+
+    # ----------------------------------------------------------------
+    #  全量记忆体：从本地txt重建
+    # ----------------------------------------------------------------
     @staticmethod
     async def _rebuild_memory_from_files(novel_unique_id: str, db: Session = None) -> str:
         """
@@ -330,12 +472,11 @@ class ChapterService:
 
     @staticmethod
     def refresh_memory_sync(novel_unique_id: str, db: Session = None):
-        """同步版：供 publish_chapter / update_chapter 等同步方法调用"""
+        """同步版：全量刷新（AI生成章节后调用）"""
         import asyncio
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                # 已有的 event loop 正在跑（不太可能但兜底）
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as pool:
                     future = pool.submit(asyncio.run, ChapterService._refresh_memory_after_generate(novel_unique_id, db))
@@ -344,6 +485,37 @@ class ChapterService:
                 loop.run_until_complete(ChapterService._refresh_memory_after_generate(novel_unique_id, db))
         except RuntimeError:
             asyncio.run(ChapterService._refresh_memory_after_generate(novel_unique_id, db))
+
+    @staticmethod
+    def incremental_memory_sync(novel_unique_id: str, db: Session,
+                                 chapter_content: str, chapter_name: str,
+                                 chapter_summary: str = ""):
+        """同步版：增量更新记忆体（发布/编辑章节后调用）"""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(
+                        asyncio.run,
+                        ChapterService._incremental_memory_update(
+                            novel_unique_id, db, chapter_content, chapter_name, chapter_summary
+                        )
+                    )
+                    future.result(timeout=120)
+            else:
+                loop.run_until_complete(
+                    ChapterService._incremental_memory_update(
+                        novel_unique_id, db, chapter_content, chapter_name, chapter_summary
+                    )
+                )
+        except RuntimeError:
+            asyncio.run(
+                ChapterService._incremental_memory_update(
+                    novel_unique_id, db, chapter_content, chapter_name, chapter_summary
+                )
+            )
 
     @staticmethod
     def create_chapter(db: Session, novel_unique_id: str, user_id: int,
@@ -702,8 +874,13 @@ class ChapterService:
             r.delete_pattern("chapters:*")
             r.delete_pattern("interactions:*")
 
-        # 发布章节后刷新记忆体（AI提取关键信息）
-        ChapterService.refresh_memory_sync(chapter.novel_unique_id, db)
+        # 发布章节后增量更新记忆体（提取本章关键信息，追加到已有记忆体）
+        ChapterService.incremental_memory_sync(
+            chapter.novel_unique_id, db,
+            content or "",
+            chapter.chapter_name,
+            chapter.chapter_summary or ""
+        )
 
         return success({"chapter_unique_id": chapter_unique_id, "chapter_name": chapter.chapter_name}, "章节发布成功，已同步到作品圈")
 
@@ -735,9 +912,14 @@ class ChapterService:
         r3 = _redis()
         if r3:
             r3.delete_pattern(f"chapters:*")
-        # 章节内容更新后刷新记忆体
+        # 章节内容更新后增量更新记忆体
         if content is not None:
-            ChapterService.refresh_memory_sync(chapter.novel_unique_id, db)
+            ChapterService.incremental_memory_sync(
+                chapter.novel_unique_id, db,
+                content,
+                chapter_name or chapter.chapter_name,
+                chapter_summary or chapter.chapter_summary or ""
+            )
         return success(None, "章节更新成功")
 
     @staticmethod
