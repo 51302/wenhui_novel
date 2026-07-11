@@ -197,26 +197,56 @@ class ChapterService:
 涉及技能：{skills or '无'}
 目标字数：{word_count}字"""
 
+        # ===== 向量记忆：多维度语义检索，让AI真正了解上下文 =====
+        memory_contexts = []
+        if chroma_memory:
+            # 1. 搜索本章涉及人物的相关记忆
+            if characters_involved:
+                char_memories = chroma_memory.search_memory(f"人物 {characters_involved} 经历 剧情", n_results=5)
+                for m in char_memories:
+                    memory_contexts.append(f"[人物相关] {m['document'][:600]}")
+
+            # 2. 搜索本章情节方向的相关记忆
+            plot_query = f"{chapter_name} {chapter_summary or ''} 剧情发展"
+            plot_memories = chroma_memory.search_memory(plot_query, n_results=4)
+            for m in plot_memories:
+                memory_contexts.append(f"[剧情相关] {m['document'][:600]}")
+
+            # 3. 搜索最近章节的记忆（时间维度的上下文）
+            recent_memories = chroma_memory.search_memory(f"{novel_settings.get('content', '')[:100]} 最近章节", n_results=3)
+            for m in recent_memories:
+                if m['document'] not in ''.join(memory_contexts):
+                    memory_contexts.append(f"[世界观/背景] {m['document'][:600]}")
+
+        # 去重后用换行连接
+        seen = set()
+        unique_memories = []
+        for m in memory_contexts:
+            key = m[:80]
+            if key not in seen:
+                seen.add(key)
+                unique_memories.append(m)
+        memory_text = "\n---\n".join(unique_memories[:8])  # 最多8条
+
         prompt = f"""你是一个专业的小说写作助手。请根据以下设定生成小说章节内容。
 
+【作品设定】
 {novel_settings.get('content', '无作品设定')}
 
-{('上一章节内容：' + last_chapter[-2000:]) if last_chapter else '无上一章节'}
+【上一章节内容】（必须紧密承接）
+{last_chapter[-2500:] if last_chapter else '这是第一章，无需承接'}
+
+【相关记忆】（从往章节中检索到的上下文）
+{memory_text if memory_text else '无相关记忆'}
 
 {chapter_setting}
 
 要求：
-1. 生成的小说内容需要与作品设定和上一章节保持一致
-2. 字数控制在{word_count}字左右
-3. 语言流畅，情节合理，描写生动
-4. 只需输出章节正文，不需要额外的说明文字"""
-
-        memory_query = f"作品设定 上一章节 {chapter_name} {chapter_summary}"
-        if chroma_memory:
-            relevant_memories = chroma_memory.search_memory(memory_query, n_results=3)
-            memory_text = "\n".join([m["document"] for m in relevant_memories])
-            if memory_text:
-                prompt += f"\n\n参考记忆：{memory_text[:1000]}"
+1. 必须承接上一章节的内容，故事连续、人物性格一致
+2. 如果上一章节结尾有悬念/事件，本章必须自然延续
+3. 字数控制在{word_count}字左右
+4. 语言流畅，情节合理，描写生动
+5. 只需输出章节正文，不需要额外的说明文字"""
 
         async with httpx.AsyncClient(timeout=120) as client:
             try:
@@ -267,10 +297,12 @@ class ChapterService:
                     f.write(generated_text)
 
                 if chroma_memory:
+                    # 存完整内容 + 章节摘要到向量库（不只是前2000字）
+                    full_text = f"[{chapter_name}] 概要: {chapter_summary or '无'}\n正文: {generated_text}"
                     chroma_memory.add_memory(
                         doc_id=f"{novel_unique_id}_{chapter_unique_id}",
-                        text=generated_text[:2000],
-                        metadata={"novel_unique_id": novel_unique_id, "chapter_name": chapter_name}
+                        text=full_text,
+                        metadata={"novel_unique_id": novel_unique_id, "chapter_name": chapter_name, "word_count": len(generated_text)}
                     )
 
                 r2 = _redis()
@@ -330,6 +362,30 @@ class ChapterService:
         # 当前章节已写内容（取末尾部分作为上下文）
         context_content = existing_content[-2000:] if len(existing_content) > 2000 else existing_content
 
+        # ===== 向量记忆：多维度语义检索 =====
+        memory_contexts = []
+        if chroma_memory:
+            # 搜索本章涉及人物
+            if chapter.characters_involved:
+                char_mem = chroma_memory.search_memory(f"人物 {chapter.characters_involved} 经历 剧情", n_results=4)
+                for m in char_mem:
+                    memory_contexts.append(f"[人物相关] {m['document'][:600]}")
+
+            # 搜索本章情节方向
+            plot_mem = chroma_memory.search_memory(f"{chapter.chapter_name} {chapter.chapter_summary or ''} 剧情发展", n_results=4)
+            for m in plot_mem:
+                memory_contexts.append(f"[剧情相关] {m['document'][:600]}")
+
+        # 去重
+        seen_cont = set()
+        unique_mem_cont = []
+        for m in memory_contexts:
+            k = m[:80]
+            if k not in seen_cont:
+                seen_cont.add(k)
+                unique_mem_cont.append(m)
+        vec_memory_text = "\n---\n".join(unique_mem_cont[:6])
+
         prompt = f"""你是一个专业的小说写作助手。请根据作品设定和已写内容，续写本章节。
 
 【作品设定】
@@ -337,6 +393,9 @@ class ChapterService:
 
 【前面章节摘要】
 {chr(10).join(prev_chapters_summary) if prev_chapters_summary else '无前序章节'}
+
+【向量记忆上下文】
+{vec_memory_text if vec_memory_text else '无相关记忆'}
 
 【本章信息】
 章节名称：{chapter.chapter_name}
