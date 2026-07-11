@@ -155,6 +155,7 @@
             <div v-for="(ch, idx) in novelChapters" :key="ch.chapter_unique_id" class="chapter-item">
               <span>第{{ idx + 1 }}章 - {{ ch.chapter_name }} ({{ ch.word_count }}字)</span>
               <span class="chapter-status">{{ ch.is_published ? '✓ 已发布' : '草稿' }}</span>
+              <button class="btn-delete-chapter" @click="deleteChapter(ch)" title="删除章节">🗑</button>
             </div>
           </div>
         </div>
@@ -629,6 +630,19 @@ export default {
       } catch (e) { alert('删除失败') }
     }
 
+    const deleteChapter = async (ch) => {
+      if (!confirm(`确定删除章节「${ch.chapter_name}」？此操作不可恢复。`)) return
+      try {
+        const res = await api.delete(`/chapters/delete/${ch.chapter_unique_id}`)
+        if (res.状态码 === 200) {
+          alert('删除成功')
+          // 重新加载章节列表
+          const r2 = await api.get(`/chapters/novel/${chapterNovel.value.novel_unique_id}`)
+          if (r2.状态码 === 200) novelChapters.value = r2.数据
+        } else alert(res.消息)
+      } catch (e) { alert('删除失败') }
+    }
+
     const continueChapter = async (d) => {
       // 非VIP且次数用完的前端拦截
       if (!isVip.value && freeQuota.value <= 0) {
@@ -695,7 +709,7 @@ export default {
       myNovels, fetchMyNovels,
       showChapterModal, chapterNovel, chapterMode, novelChapters, chapterForm, generating,
       openChapterModal, generateChapter,
-      drafts, fetchDrafts, publishChapter, deleteDraft, continueChapter, continuing, deleteNovel, formatTime,
+      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, continueChapter, continuing, deleteNovel, formatTime,
       extracting, extractDraftInfo,
       genreOptions, selectedGenres, toggleGenre, handleCoverUpload, removeCover,
       showEditModal, editForm, editSelectedGenres, editError, editSuccess,
@@ -849,6 +863,8 @@ export default {
 .existing-chapters h3 { margin-bottom: 12px; font-size: 15px; color: #8892b0; }
 .chapter-item { padding: 10px 14px; background: rgba(15,15,40,0.4); border: 1px solid rgba(102,126,234,0.1); border-radius: 8px; margin-bottom: 6px; display: flex; justify-content: space-between; font-size: 13px; color: #b0b8d0; }
 .chapter-status { color: #34d399; font-size: 12px; font-weight: 600; }
+.btn-delete-chapter { background: none; border: none; cursor: pointer; font-size: 14px; padding: 2px 6px; opacity: 0.5; transition: opacity 0.2s; }
+.btn-delete-chapter:hover { opacity: 1; color: #ef4444; }
 
 /* Draft */
 .draft-card { background: rgba(15,15,40,0.7); border: 1px solid rgba(102,126,234,0.12); border-radius: 14px; padding: 20px; margin-bottom: 16px; backdrop-filter: blur(10px); }
