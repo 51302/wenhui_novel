@@ -538,7 +538,26 @@ export default {
     const fetchDrafts = async () => {
       try {
         const res = await api.get('/chapters/drafts')
-        if (res.状态码 === 200) drafts.value = res.数据
+        if (res.状态码 === 200) {
+          drafts.value = res.数据.map(d => {
+            // 如果DB有提取信息，自动展示
+            const hasInfo = d.characters_involved || d.organizations || d.skills || d.events || d.locations || d.time_info || d.key_items || d.power_changes || d.foreshadowing
+            if (hasInfo && !d._info) {
+              d._info = {
+                人物: d.characters_involved || '',
+                组织: d.organizations || '',
+                功法技能: d.skills || '',
+                关键事件: d.events || '',
+                地点: d.locations || '',
+                时间: d.time_info || '',
+                关键物品: d.key_items || '',
+                实力变化: d.power_changes || '',
+                伏笔: d.foreshadowing || '',
+              }
+            }
+            return d
+          })
+        }
       } catch (e) { }
     }
 

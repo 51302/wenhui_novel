@@ -374,16 +374,42 @@ class ChapterService:
         print(f"[记忆体] 章节 {chapter_name} 增量更新完成")
 
     # ----------------------------------------------------------------
-    #  全量记忆体：从本地txt重建
+    #  全量记忆体：逐章提取9维信息 → 聚合 → 存ChromaDB
     # ----------------------------------------------------------------
+    _AGGREGATE_MEMORY_PROMPT = """你是一位资深小说编辑。以下是从小说第1章到最后一章逐章提取的关键信息汇总（人物、组织、功法技能、关键事件、地点、时间、关键物品、实力变化、伏笔）。
+
+请根据以下汇总和作品设定，整理出完整的小说记忆体，按10个维度输出（每条≤60字，只记核心事实，标注出自哪章）：
+
+1.【人物】姓名|身份|性格|当前状态，如：张三|散修|阴险多疑|第3章加入青云宗
+2.【组织/势力】名称|性质|成员|动向，如：青云宗|正道宗门|弟子3000|正追查魔教（第3章）
+3.【功法/技能/法宝】名称|效果|归属，如：天雷诀|召唤雷电|张三从古墓获得（第5章）
+4.【关键事件】事件描述，如：张三击败李四夺得天雷诀（第5章）
+5.【地点】地名|特征|发生事件，如：青云山|灵气充沛|宗门所在|张三修炼突破（第3章）
+6.【时间线】关键时间节点，如：第3章-春季入宗；第5章-一月后突破练气三层
+7.【人物关系】A→B|关系类型，如：张三→李四|仇敌；王五→张三|师父
+8.【伏笔/悬念】未解之谜，如：张三身上玉佩来历不明，疑似与上古遗迹有关（第3章）
+9.【实力变化】角色|修为变化，如：张三|练气一层→练气三层（第5章突破）
+10.【关键物品】物品名|功能|归属，如：神秘玉佩|发光时提升修炼速度|张三所有（第3章）
+
+格式：每条一行纯文本，不需序号，无新信息写「无新增」。
+
+=== 作品设定 ===
+{settings}
+
+=== 逐章提取汇总 ===
+{chapters_summary}
+
+请整理出完整的记忆体："""
+
     @staticmethod
     async def _rebuild_memory_from_files(novel_unique_id: str, db: Session = None) -> str:
         """
-        全量重建记忆体：
-        1. 扫描本地所有章节txt文件（按修改时间排序）
-        2. 拼接所有章节内容（每章取概要+前800字+后200字），发送给 DeepSeek
-        3. DeepSeek 提取人物/组织/功法/事件/世界观 → 结构化记忆体
-        4. 存入 ChromaDB 向量数据库
+        全量重建记忆体（逐章提取版）：
+        1. 扫描本地所有章节 txt 文件（按修改时间排序）
+        2. 每章调用轻量 extract_chapter_info 提取 人物/组织/功法/事件/地点/时间/物品/实力/伏笔
+        3. 汇总所有章节的提取信息，拼接为摘要文本
+        4. 发给 AI 合成最终的 10 维度记忆体
+        5. 存入 ChromaDB
         """
         novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
         os.makedirs(novel_dir, exist_ok=True)
@@ -400,8 +426,8 @@ class ChapterService:
             ChapterService._save_memory(novel_unique_id, memory)
             return memory
 
-        # 拼接所有章节文本（每章取概要+前800字+后200字，控制token）
-        chapter_texts_parts = []
+        # 逐章提取关键信息（每章独立调用轻量API）
+        chapter_summaries = []
         chapter_num = 0
         for fname in txt_files:
             fpath = os.path.join(novel_dir, fname)
@@ -417,42 +443,62 @@ class ChapterService:
             chapter_num += 1
             chapter_name = fname.rsplit("_", 1)[0] if "_" in fname else fname.replace(".txt", "")
 
-            # DB 概要
-            chapter_summary = ""
-            if db:
-                ch_id = fname.rsplit("_", 1)[-1].replace(".txt", "") if "_" in fname else ""
-                if ch_id and len(ch_id) == 32:
-                    try:
-                        ch = ChapterDAO.get_by_unique_id(db, ch_id)
-                        if ch and ch.chapter_summary:
-                            chapter_summary = ch.chapter_summary
-                    except Exception:
-                        pass
+            # 逐章调用轻量提取
+            print(f"[记忆体] 提取: 第{chapter_num}章 {chapter_name}")
+            info = await ChapterService.extract_chapter_info(full_text, chapter_name)
 
-            # 截取：前800字 + 后200字（覆盖起因和结局）
-            text_len = len(full_text)
-            if text_len <= 1200:
-                snippet = full_text
+            if info.get("success") and info.get("data"):
+                data = info["data"]
+                lines = [f"=== 第{chapter_num}章 {chapter_name} ==="]
+                for field in ["人物", "组织", "功法技能", "关键事件", "地点", "时间", "关键物品", "实力变化", "伏笔"]:
+                    val = data.get(field, "")
+                    if val and val != "无":
+                        lines.append(f"  {field}: {val}")
+                chapter_summaries.append("\n".join(lines))
             else:
-                snippet = full_text[:800] + "\n...\n" + full_text[-200:]
+                # 提取失败，用前300字兜底
+                snippet = full_text[:300].replace("\n", " ")
+                chapter_summaries.append(f"=== 第{chapter_num}章 {chapter_name} ===\n  (提取失败，概要): {snippet}")
 
-            part = f"=== 第{chapter_num}章 {chapter_name} ==="
-            if chapter_summary:
-                part += f"\n概要：{chapter_summary}"
-            part += f"\n内容：{snippet}\n"
-            chapter_texts_parts.append(part)
+        chapters_text = "\n\n".join(chapter_summaries)
+        print(f"[记忆体] 逐章提取完成，共{chapter_num}章，摘要总长度={len(chapters_text)}")
 
-        chapters_text = "\n".join(chapter_texts_parts)
-        print(f"[记忆体] 待提取章节数={chapter_num}，拼接后总长度={len(chapters_text)}")
+        # 用聚合摘要发给AI合成最终记忆体
+        prompt = ChapterService._AGGREGATE_MEMORY_PROMPT.replace(
+            "{settings}", settings_text
+        ).replace("{chapters_summary}", chapters_text)
 
-        # 调用 AI 提取结构化记忆
-        extracted = await ChapterService._extract_memory_with_ai(settings_text, chapters_text)
+        extracted = ""
+        async with httpx.AsyncClient(timeout=120) as client:
+            try:
+                response = await client.post(
+                    f"{deepseek_base_url()}/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {deepseek_api_key()}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": deepseek_model(),
+                        "messages": [
+                            {"role": "system", "content": "你是一位资深小说编辑，擅长整理关键信息为结构化记忆体。"},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "max_tokens": 4096,
+                        "temperature": 0.3
+                    }
+                )
+                data = response.json()
+                if "choices" in data and data["choices"]:
+                    extracted = data["choices"][0]["message"]["content"]
+                else:
+                    print(f"[记忆体] 聚合失败: {data.get('error', {})}")
+            except Exception as e:
+                print(f"[记忆体] 聚合异常: {e}")
 
-        # 拼成最终记忆体：作品设定 + AI提取的10个维度
         memory = f"""【作品设定】
 {settings_text}
 
-{extracted if extracted else 'AI提取失败，请稍后重试'}"""
+{extracted if extracted else 'AI聚合失败，请稍后重试'}"""
 
         ChapterService._save_memory(novel_unique_id, memory)
         return memory
@@ -466,9 +512,17 @@ class ChapterService:
         return await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
 
     @staticmethod
-    async def _refresh_memory_after_generate(novel_unique_id: str, db: Session = None):
-        """AI生成章节后，全量刷新记忆体（重新AI提取）"""
-        return await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
+    async def _refresh_memory_after_generate(novel_unique_id: str, db: Session = None,
+                                              chapter_content: str = "", chapter_name: str = "",
+                                              chapter_summary: str = ""):
+        """AI生成章节后，增量更新记忆体（提取本章关键信息追加到已有记忆体）"""
+        if chapter_content:
+            await ChapterService._incremental_memory_update(
+                novel_unique_id, db, chapter_content, chapter_name, chapter_summary
+            )
+        else:
+            # 无内容时走全量重建（兜底）
+            await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
 
     # ----------------------------------------------------------------
     #  前端草稿箱：AI提取章节关键信息（只读，不存记忆体）
@@ -578,19 +632,19 @@ class ChapterService:
 
     @staticmethod
     def refresh_memory_sync(novel_unique_id: str, db: Session = None):
-        """同步版：全量刷新（AI生成章节后调用）"""
+        """同步版：全量刷新（仅在无内容或手动触发时用）"""
         import asyncio
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as pool:
-                    future = pool.submit(asyncio.run, ChapterService._refresh_memory_after_generate(novel_unique_id, db))
+                    future = pool.submit(asyncio.run, ChapterService._rebuild_memory_from_files(novel_unique_id, db))
                     future.result(timeout=180)
             else:
-                loop.run_until_complete(ChapterService._refresh_memory_after_generate(novel_unique_id, db))
+                loop.run_until_complete(ChapterService._rebuild_memory_from_files(novel_unique_id, db))
         except RuntimeError:
-            asyncio.run(ChapterService._refresh_memory_after_generate(novel_unique_id, db))
+            asyncio.run(ChapterService._rebuild_memory_from_files(novel_unique_id, db))
 
     @staticmethod
     def incremental_memory_sync(novel_unique_id: str, db: Session,
@@ -811,8 +865,31 @@ class ChapterService:
                 with open(chapter_file, "w", encoding="utf-8") as f:
                     f.write(generated_text)
 
-                # ===== AI生成后全量刷新记忆体（AI提取关键信息）=====
-                await ChapterService._refresh_memory_after_generate(novel_unique_id, db)
+                # AI生成后：自动提取章节关键信息 + 保存到DB + 增量更新记忆体
+                print(f"[生成后] 自动提取章节关键信息: {chapter_name}")
+                try:
+                    info_res = await ChapterService.extract_chapter_info(generated_text, chapter_name)
+                    if info_res.get("success") and info_res.get("data"):
+                        info_data = info_res["data"]
+                        ChapterDAO.update(db, chapter,
+                            characters_involved=info_data.get("人物", ""),
+                            organizations=info_data.get("组织", ""),
+                            skills=info_data.get("功法技能", ""),
+                            events=info_data.get("关键事件", ""),
+                            locations=info_data.get("地点", ""),
+                            time_info=info_data.get("时间", ""),
+                            key_items=info_data.get("关键物品", ""),
+                            power_changes=info_data.get("实力变化", ""),
+                            foreshadowing=info_data.get("伏笔", ""),
+                        )
+                        print(f"[生成后] 章节关键信息已存入DB")
+                except Exception as e:
+                    print(f"[生成后] 自动提取失败: {e}")
+
+                # 增量更新记忆体（仅追加本章新增信息）
+                await ChapterService._refresh_memory_after_generate(
+                    novel_unique_id, db, generated_text, chapter_name, chapter_summary or ""
+                )
 
                 return success({
                     "chapter_unique_id": chapter_unique_id,
@@ -900,8 +977,30 @@ class ChapterService:
                 # 更新数据库字数 + 内容
                 ChapterDAO.update(db, chapter, word_count=len(new_content), content=new_content)
 
-                # 续写后刷新记忆体
-                await ChapterService._refresh_memory_after_generate(chapter.novel_unique_id, db)
+                # 续写后：自动提取本章关键信息 + 增量更新记忆体
+                print(f"[续写后] 自动提取章节关键信息: {chapter.chapter_name}")
+                try:
+                    info_res = await ChapterService.extract_chapter_info(new_content, chapter.chapter_name)
+                    if info_res.get("success") and info_res.get("data"):
+                        info_data = info_res["data"]
+                        ChapterDAO.update(db, chapter,
+                            characters_involved=info_data.get("人物", ""),
+                            organizations=info_data.get("组织", ""),
+                            skills=info_data.get("功法技能", ""),
+                            events=info_data.get("关键事件", ""),
+                            locations=info_data.get("地点", ""),
+                            time_info=info_data.get("时间", ""),
+                            key_items=info_data.get("关键物品", ""),
+                            power_changes=info_data.get("实力变化", ""),
+                            foreshadowing=info_data.get("伏笔", ""),
+                        )
+                except Exception as e:
+                    print(f"[续写后] 自动提取失败: {e}")
+
+                await ChapterService._refresh_memory_after_generate(
+                    chapter.novel_unique_id, db, new_content, chapter.chapter_name,
+                    chapter.chapter_summary or ""
+                )
 
                 return success({
                     "chapter_unique_id": chapter_unique_id,
