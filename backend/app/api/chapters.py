@@ -87,8 +87,37 @@ def publish_chapter(
     current_user: dict = Depends(get_current_user),
     _vip=Depends(check_creation_access),
 ):
-    """发布章节到作品圈"""
-    return ChapterService.publish_chapter(db, chapter_unique_id, body.get("content"))
+    """发布章节到作品圈，附带AI提取的关键信息"""
+    return ChapterService.publish_chapter(
+        db, chapter_unique_id,
+        content=body.get("content"),
+        characters_involved=body.get("characters_involved"),
+        organizations=body.get("organizations"),
+        locations=body.get("locations"),
+        skills=body.get("skills"),
+        events=body.get("events"),
+        time_info=body.get("time_info"),
+        key_items=body.get("key_items"),
+        power_changes=body.get("power_changes"),
+        foreshadowing=body.get("foreshadowing"),
+    )
+
+
+class ExtractInfoBody(BaseModel):
+    content: str
+    chapter_name: str = ""
+
+@router.post("/extract-info")
+async def extract_chapter_info(
+    body: ExtractInfoBody,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    前端草稿箱：从章节内容中 AI 提取关键信息
+    返回: 人物、组织、功法/技能、关键事件、地点、时间线、关键物品、实力变化、伏笔/悬念
+    """
+    return await ChapterService.extract_chapter_info(body.content, body.chapter_name)
 
 
 @router.delete("/delete/{chapter_unique_id}")

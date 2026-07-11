@@ -470,6 +470,112 @@ class ChapterService:
         """AI生成章节后，全量刷新记忆体（重新AI提取）"""
         return await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
 
+    # ----------------------------------------------------------------
+    #  前端草稿箱：AI提取章节关键信息（只读，不存记忆体）
+    # ----------------------------------------------------------------
+    _LIGHT_EXTRACT_PROMPT = """你是一位资深小说编辑。请从以下章节内容中提取关键信息，格式如下（每条≤50字，不要废话）：
+
+---人物---
+张三|散修|阴险|练气三层
+李四|青云宗弟子|正直|练气五层
+（若没有新人物则写「无」）
+---组织---
+青云宗|正道|弟子3000|正追查魔教
+（若没有新组织则写「无」）
+---功法技能---
+天雷诀|召唤雷电|张三从古墓获得
+（若没有新功法技能则写「无」）
+---关键事件---
+张三击败李四夺得天雷诀
+（若没有关键事件则写「无」）
+---地点---
+青云山|灵气充沛|宗门所在
+（若没有新地点则写「无」）
+---时间---
+春季清晨|入宗第三日
+（若没有时间信息则写「无」）
+---关键物品---
+神秘玉佩|发光时提升修炼速度|张三随身佩戴
+（若没有关键物品则写「无」）
+---实力变化---
+张三|练气一层→练气三层
+（若没有实力变化则写「无」）
+---伏笔---
+张三身上玉佩来历不明
+（若没有伏笔则写「无」）
+
+=== 章节内容 ===
+{content}
+
+请开始提取："""
+
+    @staticmethod
+    async def extract_chapter_info(content: str, chapter_name: str = "") -> dict:
+        """
+        从章节内容中 AI 提取关键信息（轻量级，不存记忆体）
+        返回结构化 dict 供前端展示
+        """
+        if not content or len(content) < 50:
+            return {"success": True, "data": {"人物": "", "组织": "", "功法技能": "",
+                     "关键事件": "", "地点": "", "时间": "",
+                     "关键物品": "", "实力变化": "", "伏笔": ""}}
+
+        prompt = ChapterService._LIGHT_EXTRACT_PROMPT.replace("{content}", content[:3000])
+
+        result = {}
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.post(
+                    f"{deepseek_base_url()}/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {deepseek_api_key()}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": deepseek_model(),
+                        "messages": [
+                            {"role": "system", "content": "你是一位小说编辑，只输出提取结果，不要解释。"},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "max_tokens": 1024,
+                        "temperature": 0.2
+                    }
+                )
+                data = response.json()
+                if "choices" in data and data["choices"]:
+                    ai_output = data["choices"][0]["message"]["content"]
+                    # 解析 ---标签--- 格式
+                    import re
+                    current_key = ""
+                    for line in ai_output.split("\n"):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        m = re.match(r'^---(.+?)---$', line)
+                        if m:
+                            current_key = m.group(1).strip()
+                            if current_key not in result:
+                                result[current_key] = []
+                        elif current_key:
+                            if line != "无":
+                                result[current_key].append(line)
+                else:
+                    return {"success": False, "error": "AI提取失败: " + str(data.get("error", {}).get("message", "未知错误"))}
+
+            # list → string
+            for key in list(result.keys()):
+                result[key] = "\n".join(result[key])
+
+            # 确保所有字段存在
+            for field in ["人物", "组织", "功法技能", "关键事件", "地点", "时间", "关键物品", "实力变化", "伏笔"]:
+                if field not in result:
+                    result[field] = ""
+
+            return {"success": True, "data": result}
+        except Exception as e:
+            print(f"[提取信息] 异常: {e}")
+            return {"success": False, "error": str(e)}
+
     @staticmethod
     def refresh_memory_sync(novel_unique_id: str, db: Session = None):
         """同步版：全量刷新（AI生成章节后调用）"""
@@ -835,15 +941,29 @@ class ChapterService:
                 "chapter_summary": ch.chapter_summary,
                 "content": content,
                 "is_published": ch.is_published,
-                "created_at": ch.created_at.isoformat() if ch.created_at else None
+                "created_at": ch.created_at.isoformat() if ch.created_at else None,
+                "characters_involved": ch.characters_involved,
+                "organizations": ch.organizations,
+                "locations": ch.locations,
+                "skills": ch.skills,
+                "events": ch.events,
+                "time_info": ch.time_info,
+                "key_items": ch.key_items,
+                "power_changes": ch.power_changes,
+                "foreshadowing": ch.foreshadowing,
             })
         if r:
             r.set(cache_key, result)
         return success(result)
 
     @staticmethod
-    def publish_chapter(db: Session, chapter_unique_id: str, content: str = None) -> dict:
-        """发布章节：保存内容到txt、标记已发布、同步到作品圈"""
+    def publish_chapter(db: Session, chapter_unique_id: str, content: str = None,
+                        characters_involved: str = None, organizations: str = None,
+                        locations: str = None, skills: str = None,
+                        events: str = None, time_info: str = None,
+                        key_items: str = None, power_changes: str = None,
+                        foreshadowing: str = None) -> dict:
+        """发布章节：保存内容到txt、保存AI提取信息、标记已发布、同步到作品圈"""
         from app.dao.interaction_dao import InteractionDAO
         chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
         if not chapter:
@@ -858,6 +978,16 @@ class ChapterService:
             with open(chapter_file, "w", encoding="utf-8") as f:
                 f.write(content)
             update_data["word_count"] = len(content)
+        # 保存前端 AI 提取的关键信息
+        if characters_involved: update_data["characters_involved"] = characters_involved
+        if organizations: update_data["organizations"] = organizations
+        if locations: update_data["locations"] = locations
+        if skills: update_data["skills"] = skills
+        if events: update_data["events"] = events
+        if time_info: update_data["time_info"] = time_info
+        if key_items: update_data["key_items"] = key_items
+        if power_changes: update_data["power_changes"] = power_changes
+        if foreshadowing: update_data["foreshadowing"] = foreshadowing
         ChapterDAO.update(db, chapter, **update_data)
         # 发布到作品圈：创建一条动态
         interaction_text = f"发布了新章节「{chapter.chapter_name}」"

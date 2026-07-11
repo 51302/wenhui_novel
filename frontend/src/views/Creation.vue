@@ -225,6 +225,24 @@
         <div class="draft-content">
           <textarea v-model="d.content" rows="10" />
         </div>
+        <!-- AI提取信息面板 -->
+        <div class="draft-info-panel">
+          <button class="btn-extract" @click="extractDraftInfo(d)" :disabled="extracting[d.chapter_unique_id]">
+            <span v-if="extracting[d.chapter_unique_id]" class="spinner"></span>
+            {{ extracting[d.chapter_unique_id] ? '正在提取...' : (d._info ? '重新提取信息' : '🔍 AI提取关键信息') }}
+          </button>
+          <div v-if="d._info" class="info-grid">
+            <div class="info-cell" v-if="d._info.人物"><label>人物</label><input v-model="d._info.人物" /></div>
+            <div class="info-cell" v-if="d._info.组织 || d._info_extracting"><label>组织</label><input v-model="d._info.组织" /></div>
+            <div class="info-cell" v-if="d._info.功法技能 || d._info_extracting"><label>功法技能</label><input v-model="d._info.功法技能" /></div>
+            <div class="info-cell" v-if="d._info.关键事件 || d._info_extracting"><label>关键事件</label><input v-model="d._info.关键事件" /></div>
+            <div class="info-cell" v-if="d._info.地点 || d._info_extracting"><label>地点</label><input v-model="d._info.地点" /></div>
+            <div class="info-cell" v-if="d._info.时间 || d._info_extracting"><label>时间</label><input v-model="d._info.时间" /></div>
+            <div class="info-cell" v-if="d._info.关键物品 || d._info_extracting"><label>关键物品</label><input v-model="d._info.关键物品" /></div>
+            <div class="info-cell" v-if="d._info.实力变化 || d._info_extracting"><label>实力变化</label><input v-model="d._info.实力变化" /></div>
+            <div class="info-cell" v-if="d._info.伏笔 || d._info_extracting"><label>伏笔</label><input v-model="d._info.伏笔" /></div>
+          </div>
+        </div>
         <div class="draft-actions">
           <button @click="continueChapter(d)" :disabled="continuing[d.chapter_unique_id]">
             <span v-if="continuing[d.chapter_unique_id]" class="spinner"></span>
@@ -516,11 +534,32 @@ export default {
     // 草稿
     const drafts = ref([])
     const continuing = reactive({})
+    const extracting = reactive({})
     const fetchDrafts = async () => {
       try {
         const res = await api.get('/chapters/drafts')
         if (res.状态码 === 200) drafts.value = res.数据
       } catch (e) { }
+    }
+
+    const extractDraftInfo = async (d) => {
+      if (!d.content || d.content.trim() === '') {
+        alert('章节内容为空，无法提取')
+        return
+      }
+      extracting[d.chapter_unique_id] = true
+      try {
+        const res = await api.post('/chapters/extract-info', { content: d.content, chapter_name: d.chapter_name })
+        if (res.状态码 === 200 && res.数据) {
+          d._info = res.数据
+        } else {
+          alert('提取失败: ' + (res.消息 || '未知错误'))
+        }
+      } catch (e) {
+        alert('提取失败: ' + (e.response?.data?.detail || e.message))
+      } finally {
+        extracting[d.chapter_unique_id] = false
+      }
     }
 
     const publishChapter = async (d) => {
@@ -530,7 +569,20 @@ export default {
       }
       if (!confirm(`确定发布章节「${d.chapter_name}」到作品圈？`)) return
       try {
-        const res = await api.post(`/chapters/publish/${d.chapter_unique_id}`, { content: d.content })
+        const body = { content: d.content }
+        // 附带 AI 提取的信息
+        if (d._info) {
+          body.characters_involved = d._info.人物 || ''
+          body.organizations = d._info.组织 || ''
+          body.skills = d._info.功法技能 || ''
+          body.locations = d._info.地点 || ''
+          body.events = d._info.关键事件 || ''
+          body.time_info = d._info.时间 || ''
+          body.key_items = d._info.关键物品 || ''
+          body.power_changes = d._info.实力变化 || ''
+          body.foreshadowing = d._info.伏笔 || ''
+        }
+        const res = await api.post(`/chapters/publish/${d.chapter_unique_id}`, body)
         if (res.状态码 === 200) {
           alert(res.消息)
           fetchDrafts()
@@ -618,6 +670,7 @@ export default {
       showChapterModal, chapterNovel, chapterMode, novelChapters, chapterForm, generating,
       openChapterModal, generateChapter,
       drafts, fetchDrafts, publishChapter, deleteDraft, continueChapter, continuing, deleteNovel, formatTime,
+      extracting, extractDraftInfo,
       genreOptions, selectedGenres, toggleGenre, handleCoverUpload, removeCover,
       showEditModal, editForm, editSelectedGenres, editError, editSuccess,
       openEditModal, toggleEditGenre, handleEditCoverUpload, handleUpdateNovel
@@ -785,4 +838,16 @@ export default {
 .btn-danger { background: transparent !important; color: #f87171 !important; border: 1px solid rgba(248,113,113,0.4) !important; }
 .btn-danger:hover { background: rgba(248,113,113,0.1) !important; }
 .empty { text-align: center; padding: 60px 0; color: #5a6080; font-size: 14px; }
+
+/* Draft Info Panel */
+.draft-info-panel { margin-top: 12px; }
+.btn-extract { padding: 8px 18px; border-radius: 8px; cursor: pointer; font-size: 12px; font-weight: 500; background: rgba(6,182,212,0.15); color: #06b6d4; border: 1px solid rgba(6,182,212,0.3); transition: all 0.3s; }
+.btn-extract:hover { background: rgba(6,182,212,0.25); box-shadow: 0 2px 12px rgba(6,182,212,0.2); }
+.btn-extract:disabled { opacity: 0.6; cursor: not-allowed; }
+.info-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; }
+.info-cell { display: flex; flex-direction: column; }
+.info-cell label { font-size: 11px; color: #667eea; margin-bottom: 4px; font-weight: 500; }
+.info-cell input { padding: 8px 10px; border: 1px solid rgba(102,126,234,0.2); border-radius: 6px; font-size: 12px; background: rgba(15,15,40,0.5); color: #e0e0e0; transition: border-color 0.3s; }
+.info-cell input:focus { outline: none; border-color: rgba(6,182,212,0.5); }
+@media (max-width: 768px) { .info-grid { grid-template-columns: repeat(2, 1fr); } }
 </style>
