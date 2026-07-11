@@ -232,15 +232,15 @@
             {{ extracting[d.chapter_unique_id] ? '正在提取...' : (d._info ? '重新提取信息' : '🔍 AI提取关键信息') }}
           </button>
           <div v-if="d._info" class="info-grid">
-            <div class="info-cell" v-if="d._info.人物"><label>人物</label><input v-model="d._info.人物" /></div>
-            <div class="info-cell" v-if="d._info.组织 || d._info_extracting"><label>组织</label><input v-model="d._info.组织" /></div>
-            <div class="info-cell" v-if="d._info.功法技能 || d._info_extracting"><label>功法技能</label><input v-model="d._info.功法技能" /></div>
-            <div class="info-cell" v-if="d._info.关键事件 || d._info_extracting"><label>关键事件</label><input v-model="d._info.关键事件" /></div>
-            <div class="info-cell" v-if="d._info.地点 || d._info_extracting"><label>地点</label><input v-model="d._info.地点" /></div>
-            <div class="info-cell" v-if="d._info.时间 || d._info_extracting"><label>时间</label><input v-model="d._info.时间" /></div>
-            <div class="info-cell" v-if="d._info.关键物品 || d._info_extracting"><label>关键物品</label><input v-model="d._info.关键物品" /></div>
-            <div class="info-cell" v-if="d._info.实力变化 || d._info_extracting"><label>实力变化</label><input v-model="d._info.实力变化" /></div>
-            <div class="info-cell" v-if="d._info.伏笔 || d._info_extracting"><label>伏笔</label><input v-model="d._info.伏笔" /></div>
+            <div class="info-cell" v-if="d._info.人物 || extracting[d.chapter_unique_id]"><label>人物</label><input v-model="d._info.人物" /></div>
+            <div class="info-cell" v-if="d._info.组织 || extracting[d.chapter_unique_id]"><label>组织</label><input v-model="d._info.组织" /></div>
+            <div class="info-cell" v-if="d._info.功法技能 || extracting[d.chapter_unique_id]"><label>功法技能</label><input v-model="d._info.功法技能" /></div>
+            <div class="info-cell" v-if="d._info.关键事件 || extracting[d.chapter_unique_id]"><label>关键事件</label><input v-model="d._info.关键事件" /></div>
+            <div class="info-cell" v-if="d._info.地点 || extracting[d.chapter_unique_id]"><label>地点</label><input v-model="d._info.地点" /></div>
+            <div class="info-cell" v-if="d._info.时间 || extracting[d.chapter_unique_id]"><label>时间</label><input v-model="d._info.时间" /></div>
+            <div class="info-cell" v-if="d._info.关键物品 || extracting[d.chapter_unique_id]"><label>关键物品</label><input v-model="d._info.关键物品" /></div>
+            <div class="info-cell" v-if="d._info.实力变化 || extracting[d.chapter_unique_id]"><label>实力变化</label><input v-model="d._info.实力变化" /></div>
+            <div class="info-cell" v-if="d._info.伏笔 || extracting[d.chapter_unique_id]"><label>伏笔</label><input v-model="d._info.伏笔" /></div>
           </div>
         </div>
         <div class="draft-actions">

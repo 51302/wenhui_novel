@@ -117,7 +117,10 @@ async def extract_chapter_info(
     前端草稿箱：从章节内容中 AI 提取关键信息
     返回: 人物、组织、功法/技能、关键事件、地点、时间线、关键物品、实力变化、伏笔/悬念
     """
-    return await ChapterService.extract_chapter_info(body.content, body.chapter_name)
+    result = await ChapterService.extract_chapter_info(body.content, body.chapter_name)
+    if result.get("success"):
+        return success(result["data"], "提取成功")
+    return fail(result.get("error", "提取失败"))
 
 
 @router.delete("/delete/{chapter_unique_id}")
