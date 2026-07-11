@@ -117,10 +117,20 @@ async def extract_chapter_info(
     前端草稿箱：从章节内容中 AI 提取关键信息
     返回: 人物、组织、功法/技能、关键事件、地点、时间线、关键物品、实力变化、伏笔/悬念
     """
-    result = await ChapterService.extract_chapter_info(body.content, body.chapter_name)
-    if result.get("success"):
-        return success(result["data"], "提取成功")
-    return fail(result.get("error", "提取失败"))
+    if not body.content or len(body.content.strip()) < 10:
+        return fail("章节内容太短，无法提取")
+    try:
+        result = await ChapterService.extract_chapter_info(body.content, body.chapter_name)
+        print(f"[提取信息] result keys: {result.keys() if isinstance(result, dict) else type(result)}")
+        print(f"[提取信息] success={result.get('success')}, data_keys={list(result.get('data', {}).keys()) if result.get('data') else 'N/A'}")
+        if result.get("success"):
+            return success(result["data"], "提取成功")
+        return fail(result.get("error", "提取失败"))
+    except Exception as e:
+        print(f"[提取信息] API异常: {e}")
+        import traceback
+        traceback.print_exc()
+        return fail(f"提取异常: {str(e)}")
 
 
 @router.delete("/delete/{chapter_unique_id}")

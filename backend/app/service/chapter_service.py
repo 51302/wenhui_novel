@@ -633,20 +633,28 @@ class ChapterService:
                 data = response.json()
                 if "choices" in data and data["choices"]:
                     ai_output = data["choices"][0]["message"]["content"]
-                    # 解析 ---标签--- 格式
+                    print(f"[提取信息] AI返回长度={len(ai_output)}, 前200字: {ai_output[:200]}")
+                    # 解析 ---标签--- / 【标签】 / **标签** 等多种格式
                     import re
                     current_key = ""
                     for line in ai_output.split("\n"):
                         line = line.strip()
                         if not line:
                             continue
-                        m = re.match(r'^---(.+?)---$', line)
+                        # 匹配多种标签格式：---人 物--- / 【人物】 / **人物** / 人物：
+                        m = re.match(r'^[-—]{1,3}\s*(.+?)\s*[-—]{0,3}$', line)
+                        if not m:
+                            m = re.match(r'^【(.+?)】$', line)
+                        if not m:
+                            m = re.match(r'^\*\*(.+?)\*\*$', line)
+                        if not m:
+                            m = re.match(r'^([^\|]+)：$', line)  # e.g. "人物："
                         if m:
                             current_key = m.group(1).strip()
                             if current_key not in result:
                                 result[current_key] = []
                         elif current_key:
-                            if line != "无":
+                            if line not in ("无", "无新增", "无新"):
                                 result[current_key].append(line)
                 else:
                     return {"success": False, "error": "AI提取失败: " + str(data.get("error", {}).get("message", "未知错误"))}

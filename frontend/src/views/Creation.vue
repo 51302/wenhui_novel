@@ -569,13 +569,20 @@ export default {
       extracting[d.chapter_unique_id] = true
       try {
         const res = await api.post('/chapters/extract-info', { content: d.content, chapter_name: d.chapter_name })
+        console.log('[提取信息] 响应:', JSON.stringify(res, null, 2))
         if (res.状态码 === 200 && res.数据) {
-          d._info = res.数据
+          // 用 $set 或重新赋值确保响应式
+          const idx = drafts.value.findIndex(item => item.chapter_unique_id === d.chapter_unique_id)
+          if (idx !== -1) {
+            drafts.value[idx] = { ...drafts.value[idx], _info: res.数据 }
+          }
         } else {
-          alert('提取失败: ' + (res.消息 || '未知错误'))
+          alert('提取失败: ' + (res.消息 || JSON.stringify(res)))
         }
       } catch (e) {
-        alert('提取失败: ' + (e.response?.data?.detail || e.message))
+        console.error('[提取信息] 异常:', e)
+        const detail = e.response?.data?.detail || e.response?.data?.消息 || e.message
+        alert('提取失败: ' + detail)
       } finally {
         extracting[d.chapter_unique_id] = false
       }
