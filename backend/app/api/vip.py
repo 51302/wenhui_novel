@@ -2,6 +2,7 @@
 VIP 会员 API  — 支持月度 / 季度 / 年度套餐
 """
 import logging
+from datetime import datetime
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Depends, Request, Response, Body
@@ -48,9 +49,9 @@ def create_order(
     username = current_user["username"]
 
     user = UserDAO.get_by_id(db, user_id)
-    if user and user.vip_level >= 1:
-        from datetime import datetime
-        if user.vip_expire_at and user.vip_expire_at > datetime.utcnow():
+    # 已开通的同级或更高级会员不允许再购买；但低等级允许升级（VIP→SVIP）
+    if user and user.vip_expire_at and user.vip_expire_at > datetime.utcnow():
+        if user.vip_level >= vip_level:
             level_name = "SVIP" if user.vip_level >= 2 else "VIP"
             return fail(f"您已是 {level_name} 会员，到期时间 {user.vip_expire_at.strftime('%Y-%m-%d')}", code=400)
 
