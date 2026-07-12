@@ -64,8 +64,12 @@ def register(req: RegisterRequest, response: Response, db: Session = Depends(get
 @router.post("/login")
 def login(req: LoginRequest, response: Response, db: Session = Depends(get_db)):
     result = AuthService.login(db, req.username, req.password, req.captcha_id, req.captcha_x)
+    from app.utils.logger import system_logger
     if result.get("状态码") == 200:
+        system_logger.info(f"用户登录成功: {req.username}")
         _set_token_cookie(response, result["数据"]["token"])
+    else:
+        system_logger.warning(f"用户登录失败: {req.username} → {result.get('消息', '')}")
     return result
 
 

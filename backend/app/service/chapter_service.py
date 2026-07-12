@@ -10,6 +10,7 @@ import app.utils.redis_cache as redis_mod
 from app.utils.chroma_client import chroma_memory
 from app.service.es_service import es_service
 from app.config import deepseek_api_key, deepseek_base_url, deepseek_model
+from app.utils.logger import system_logger
 
 NOVEL_DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "novel_structure_data")
 os.makedirs(NOVEL_DATA_PATH, exist_ok=True)
@@ -937,9 +938,13 @@ class ChapterService:
                 )
                 data = response.json()
                 if "choices" not in data or not data["choices"]:
-                    return fail("AI生成失败: " + str(data.get("error", {}).get("message", "未知错误")), code=500)
+                    err_msg = str(data.get("error", {}).get("message", "未知错误"))
+                    system_logger.error(f"AI章节生成失败: {chapter_name} → {err_msg}")
+                    return fail("AI生成失败: " + err_msg, code=500)
 
                 generated_text = data["choices"][0]["message"]["content"]
+                actual_words = len(generated_text)
+                system_logger.info(f"AI章节生成成功: {chapter_name} ({actual_words}字) novel={novel_unique_id}")
 
                 chapter_unique_id = uuid.uuid4().hex
                 chapter = ChapterDAO.create(
@@ -977,8 +982,10 @@ class ChapterService:
                 }, f"{chapter_name} 章节内容生成成功")
 
             except httpx.TimeoutException:
+                system_logger.error(f"AI章节生成超时: {chapter_name}")
                 return fail("AI接口调用超时，请重试", code=500)
             except Exception as e:
+                system_logger.error(f"AI章节生成异常: {chapter_name} → {str(e)}")
                 return fail(f"AI生成失败: {str(e)}", code=500)
 
     @staticmethod
@@ -1044,9 +1051,12 @@ class ChapterService:
                 )
                 data = response.json()
                 if "choices" not in data or not data["choices"]:
-                    return fail("AI续写失败: " + str(data.get("error", {}).get("message", "未知错误")), code=500)
+                    err_msg = str(data.get("error", {}).get("message", "未知错误"))
+                    system_logger.error(f"AI续写失败: {chapter.chapter_name} → {err_msg}")
+                    return fail("AI续写失败: " + err_msg, code=500)
 
                 generated_text = data["choices"][0]["message"]["content"]
+                system_logger.info(f"AI续写成功: {chapter.chapter_name} +{len(generated_text)}字")
 
                 # 追加续写内容到文件（兼容）和数据库
                 new_content = existing_content + "\n\n" + generated_text
@@ -1073,8 +1083,10 @@ class ChapterService:
                 }, f"续写成功，新增 {len(generated_text)} 字")
 
             except httpx.TimeoutException:
+                system_logger.error(f"AI续写超时: {chapter.chapter_name}")
                 return fail("AI接口调用超时，请重试", code=500)
             except Exception as e:
+                system_logger.error(f"AI续写异常: {chapter.chapter_name} → {str(e)}")
                 return fail(f"AI续写失败: {str(e)}", code=500)
 
     @staticmethod
