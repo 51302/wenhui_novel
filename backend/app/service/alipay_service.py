@@ -72,7 +72,9 @@ VIP_PLANS = cfg_get("alipay.plans", {
 })
 
 # ---- 判定是否是真实验签模式 ----
-IS_REAL_MODE = bool(ALIPAY_APP_ID and ALIPAY_PRIVATE_KEY and ALIPAY_PUBLIC_KEY)
+# 砂箱模式下始终走 Demo 模拟支付，不调支付宝真实接口
+# 正式模式下需要完整配置 app_id + app_private_key + alipay_public_key 才走真实验签
+IS_REAL_MODE = (not ALIPAY_SANDBOX) and bool(ALIPAY_APP_ID and ALIPAY_PRIVATE_KEY and ALIPAY_PUBLIC_KEY)
 
 # ---- 网关地址 ----
 GATEWAY_URL = (
