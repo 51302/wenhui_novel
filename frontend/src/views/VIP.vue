@@ -155,8 +155,10 @@ export default {
           planType.value = res.数据.plan_type || ''
         } else errorMsg.value = res.消息 || '获取状态失败'
       } catch (e) {
-        errorMsg.value = '请先登录'
-        if (e.response?.status === 401) window.location.href = '/login'
+        // 401/网络错误由 axios 拦截器统一处理跳转登录页
+        if (e.response?.status !== 401) {
+          errorMsg.value = '网络错误，请稍后重试'
+        }
       } finally { loading.value = false }
     }
 
@@ -190,7 +192,6 @@ export default {
     }
 
     onMounted(async () => {
-      if (!localStorage.getItem('novel_user')) { loading.value = false; errorMsg.value = '请先登录'; return }
       await checkStatus()
       await confirmFromUrl()
     })
