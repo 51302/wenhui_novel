@@ -3,6 +3,7 @@ from app.models.base import Base
 
 
 class Chapter(Base):
+    """章节表，存储章节正文内容与节点/人物/事件等AI提取的元数据"""
     __tablename__ = "chapters"
 
     id = Column(Integer, primary_key=True, autoincrement=True, comment="章节自增ID")

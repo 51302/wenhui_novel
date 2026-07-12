@@ -8,19 +8,43 @@ class UserDAO:
 
     @staticmethod
     def get_by_id(db: Session, user_id: int) -> Optional[User]:
+        """根据用户ID查询用户
+        :param db: 数据库会话
+        :param user_id: 用户主键ID
+        :return: 用户对象或None
+        """
         return db.query(User).filter(User.id == user_id).first()
 
     @staticmethod
     def get_by_username(db: Session, username: str) -> Optional[User]:
+        """根据用户名查询用户
+        :param db: 数据库会话
+        :param username: 用户名
+        :return: 用户对象或None
+        """
         return db.query(User).filter(User.username == username).first()
 
     @staticmethod
     def get_by_email(db: Session, email: str) -> Optional[User]:
+        """根据邮箱查询用户
+        :param db: 数据库会话
+        :param email: 邮箱地址
+        :return: 用户对象或None
+        """
         return db.query(User).filter(User.email == email).first()
 
     @staticmethod
     def create(db: Session, username: str, hashed_password: str,
                email: str = None, phone: str = None, is_super_admin: int = 0) -> User:
+        """创建新用户
+        :param db: 数据库会话
+        :param username: 用户名
+        :param hashed_password: bcrypt加密后的密码
+        :param email: 邮箱（可选）
+        :param phone: 手机号（可选）
+        :param is_super_admin: 是否VIP会员，0=否
+        :return: 新创建的用户对象
+        """
         user = User(
             username=username,
             password=hashed_password,
@@ -36,6 +60,11 @@ class UserDAO:
 
     @staticmethod
     def update_token(db: Session, user: User, token: str):
+        """更新用户的JWT Token
+        :param db: 数据库会话
+        :param user: 用户对象
+        :param token: 新的JWT Token
+        """
         user.jwt_token = token
         db.commit()
 

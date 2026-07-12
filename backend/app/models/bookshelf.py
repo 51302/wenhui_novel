@@ -3,6 +3,7 @@ from app.models.base import Base
 
 
 class Bookshelf(Base):
+    """书架表，记录用户加入书架的作品与阅读进度"""
     __tablename__ = "bookshelf"
 
     id = Column(Integer, primary_key=True, autoincrement=True, comment="自增ID")

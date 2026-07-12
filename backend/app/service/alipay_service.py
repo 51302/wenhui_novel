@@ -171,6 +171,10 @@ def _get_public_key_obj():
 
 
 def _sign(data: str) -> str:
+    """使用RSA2(SHA256)对字符串签名，返回Base64编码的签名
+    :param data: 待签名字符串
+    :return: Base64编码的签名字符串
+    """
     key = _get_private_key()
     if not key:
         raise ValueError("密钥不可用")
@@ -198,6 +202,12 @@ def _verify_sign(params: dict) -> bool:
 # ========================================================================
 
 def _build_signed_form(biz_content: dict, method: str, is_demo: bool = False) -> str:
+    """构建支付宝支付表单HTML，包含签名
+    :param biz_content: 业务参数（订单号/金额/商品名等）
+    :param method: 支付宝API方法名
+    :param is_demo: 是否为Demo模式
+    :return: 完整的HTML表单字符串
+    """
     app_id = ALIPAY_APP_ID if ALIPAY_APP_ID else "2021000000000001"
     params = {
         "app_id": app_id,
@@ -324,6 +334,10 @@ function notifyBack(){{
 
 
 def _escape_html(s: str) -> str:
+    """对HTML特殊字符进行转义，防止XSS攻击
+    :param s: 原始字符串
+    :return: 转义后的字符串
+    """
     return s.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
 
 

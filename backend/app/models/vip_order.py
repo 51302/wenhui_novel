@@ -6,6 +6,7 @@ from app.models.base import Base
 
 
 class VIPOrder(Base):
+    """VIP订单表，记录用户购买VIP套餐的支付订单信息与支付状态"""
     __tablename__ = "vip_orders"
 
     id = Column(Integer, primary_key=True, autoincrement=True)

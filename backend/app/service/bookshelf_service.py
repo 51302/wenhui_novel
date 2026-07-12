@@ -17,6 +17,7 @@ _BOOKSHELF_CACHE_PREFIX = "bookshelf:list:"
 
 
 def _redis():
+    """获取Redis客户端实例"""
     return redis_mod.redis_client
 
 
@@ -24,6 +25,12 @@ class BookshelfService:
 
     @staticmethod
     def add_to_bookshelf(db: Session, user_id: int, novel_unique_id: str) -> dict:
+        """将作品加入用户书架
+        :param db: 数据库会话
+        :param user_id: 用户ID
+        :param novel_unique_id: 作品唯一ID
+        :return: 操作结果
+        """
         BookshelfDAO.add(db, user_id, novel_unique_id)
         # 清除书架缓存和个人主页缓存
         r = _redis()
@@ -33,6 +40,12 @@ class BookshelfService:
 
     @staticmethod
     def remove_from_bookshelf(db: Session, user_id: int, novel_unique_id: str) -> dict:
+        """将作品从用户书架中移除
+        :param db: 数据库会话
+        :param user_id: 用户ID
+        :param novel_unique_id: 作品唯一ID
+        :return: 操作结果
+        """
         BookshelfDAO.remove(db, user_id, novel_unique_id)
         r = _redis()
         if r:
@@ -41,11 +54,22 @@ class BookshelfService:
 
     @staticmethod
     def is_in_bookshelf(db: Session, user_id: int, novel_unique_id: str) -> dict:
+        """检查作品是否已在用户书架中
+        :param db: 数据库会话
+        :param user_id: 用户ID
+        :param novel_unique_id: 作品唯一ID
+        :return: 结果（含in_bookshelf字段）
+        """
         in_shelf = BookshelfDAO.is_in_bookshelf(db, user_id, novel_unique_id)
         return success({"in_bookshelf": in_shelf})
 
     @staticmethod
     def list_bookshelf(db: Session, user_id: int) -> dict:
+        """获取用户书架中的所有作品，带Redis缓存
+        :param db: 数据库会话
+        :param user_id: 用户ID
+        :return: 书架作品列表
+        """
         # 优先从 Redis 读取
         r = _redis()
         cache_key = f"{_BOOKSHELF_CACHE_PREFIX}{user_id}"
@@ -80,6 +104,14 @@ class BookshelfService:
     @staticmethod
     def save_progress(db: Session, user_id: int, novel_unique_id: str,
                       chapter_unique_id: str, chapter_name: str) -> dict:
+        """保存用户对某作品的阅读进度
+        :param db: 数据库会话
+        :param user_id: 用户ID
+        :param novel_unique_id: 作品唯一ID
+        :param chapter_unique_id: 章节唯一ID
+        :param chapter_name: 章节名称
+        :return: 操作结果
+        """
         ok = BookshelfDAO.save_progress(db, user_id, novel_unique_id, chapter_unique_id, chapter_name)
         # 更新进度也刷新书架缓存
         r = _redis()
@@ -94,6 +126,11 @@ class ProfileService:
 
     @staticmethod
     def get_profile(db: Session, user_id: int) -> dict:
+        """获取用户个人主页数据（收藏/关注/点赞/粉丝等），带Redis缓存
+        :param db: 数据库会话
+        :param user_id: 用户ID
+        :return: 个人主页聚合数据
+        """
         # 优先从 Redis 读取
         r = _redis()
         cache_key = f"{_PROFILE_CACHE_PREFIX}{user_id}"

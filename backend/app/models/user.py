@@ -3,6 +3,7 @@ from app.models.base import Base
 
 
 class User(Base):
+    """用户表，存储账户信息、VIP状态与免费生成配额"""
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, autoincrement=True, comment="用户ID")

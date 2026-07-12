@@ -17,6 +17,7 @@ _cache_locks_lock = threading.Lock()
 
 
 def _get_cache_lock(key: str) -> threading.Lock:
+    """获取指定缓存键对应的互斥锁，用于缓存击穿保护"""
     with _cache_locks_lock:
         if key not in _cache_locks:
             _cache_locks[key] = threading.Lock()
@@ -24,6 +25,7 @@ def _get_cache_lock(key: str) -> threading.Lock:
 
 
 def _redis():
+    """获取Redis客户端实例"""
     return redis_mod.redis_client
 
 
@@ -35,6 +37,22 @@ class NovelService:
                      story_background: str = "", world_setting: str = "",
                      realm_setting: str = None, characters: str = None,
                      genre: str = None, cover_image: str = None, created_by: str = None) -> dict:
+        """创建新作品，保存设定文件并同步到ES索引
+        :param db: 数据库会话
+        :param author_user_id: 作者用户ID
+        :param author_name: 作者名称
+        :param title: 作品名称
+        :param target_reader: 目标读者类型（男频/女频）
+        :param description: 作品简介（不超过600字）
+        :param story_background: 故事背景
+        :param world_setting: 世界观设定
+        :param realm_setting: 境界设定
+        :param characters: 角色设定
+        :param genre: 题材标签
+        :param cover_image: 封面图URL
+        :param created_by: 创建者名称
+        :return: 创建结果（含novel_unique_id）
+        """
         if description and len(description) > 600:
             return fail("作品简介不能超过600字", code=400)
         novel_unique_id = uuid.uuid4().hex
@@ -86,6 +104,14 @@ class NovelService:
     @staticmethod
     def list_novels(db: Session, target_reader: str = None, genre: str = None,
                     page: int = 1, page_size: int = 12) -> dict:
+        """分页查询作品列表，支持按受众和题材筛选，带Redis缓存
+        :param db: 数据库会话
+        :param target_reader: 受众筛选（男频/女频）
+        :param genre: 题材筛选
+        :param page: 页码
+        :param page_size: 每页数量
+        :return: 分页作品列表
+        """
         cache_key = f"novels:list:tr={target_reader}:g={genre}:p={page}:ps={page_size}"
         r = _redis()
         if r:
@@ -124,6 +150,13 @@ class NovelService:
 
     @staticmethod
     def search_novels(db: Session, keyword: str, page: int = 1, page_size: int = 12) -> dict:
+        """按关键词搜索作品，优先走ES搜索引擎，兜底数据库模糊查询
+        :param db: 数据库会话
+        :param keyword: 搜索关键词
+        :param page: 页码
+        :param page_size: 每页数量
+        :return: 搜索结果列表
+        """
         cache_key = f"novels:search:kw={keyword}:p={page}:ps={page_size}"
         r = _redis()
         if r:
@@ -175,6 +208,11 @@ class NovelService:
 
     @staticmethod
     def get_novel_detail(db: Session, novel_unique_id: str) -> dict:
+        """查询单个作品的详细信息，带Redis缓存
+        :param db: 数据库会话
+        :param novel_unique_id: 作品唯一ID
+        :return: 作品详情（含设定、角色等完整字段）
+        """
         cache_key = f"novels:detail:{novel_unique_id}"
         r = _redis()
         if r:
@@ -205,6 +243,11 @@ class NovelService:
 
     @staticmethod
     def get_user_novels(db: Session, user_id: int) -> dict:
+        """获取当前用户创建的所有作品列表
+        :param db: 数据库会话
+        :param user_id: 用户ID
+        :return: 作品列表
+        """
         novels = NovelDAO.get_by_user_id(db, user_id)
         return success([{
             "novel_unique_id": n.novel_unique_id,
@@ -218,6 +261,11 @@ class NovelService:
 
     @staticmethod
     def delete_novel(db: Session, novel_unique_id: str) -> dict:
+        """删除作品及其所有关联数据（章节、互动、ES索引、向量数据库）
+        :param db: 数据库会话
+        :param novel_unique_id: 作品唯一ID
+        :return: 操作结果
+        """
         import shutil
         from app.dao.chapter_dao import ChapterDAO
         from app.dao.interaction_dao import InteractionDAO
@@ -254,6 +302,18 @@ class NovelService:
                      target_reader: str = None, description: str = None,
                      story_background: str = None, world_setting: str = None,
                      genre: str = None, cover_image: str = None) -> dict:
+        """局部更新作品信息，只更新提供的字段并刷新ES索引
+        :param db: 数据库会话
+        :param novel_unique_id: 作品唯一ID
+        :param title: 新标题
+        :param target_reader: 新受众类型
+        :param description: 新简介（不超过600字）
+        :param story_background: 新故事背景
+        :param world_setting: 新世界观设定
+        :param genre: 新题材标签
+        :param cover_image: 新封面图URL
+        :return: 更新结果
+        """
         novel = NovelDAO.get_by_unique_id(db, novel_unique_id)
         if not novel:
             return fail("作品不存在", code=404)

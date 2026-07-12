@@ -20,6 +20,7 @@ class RegisterRequest(BaseModel):
     @field_validator("password")
     @classmethod
     def password_length(cls, v):
+        """校验密码长度不少于8位"""
         if len(v) < 8:
             raise ValueError("密码必须超过8位数")
         return v

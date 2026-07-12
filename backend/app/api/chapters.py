@@ -20,6 +20,7 @@ def create_chapter(
     current_user: dict = Depends(get_current_user),
     _perm=Depends(check_generate_permission),
 ):
+    """创建空白章节草稿"""
     return ChapterService.create_chapter(
         db, novel_unique_id, current_user["user_id"],
         chapter_name, characters_involved, organizations,
@@ -38,6 +39,7 @@ async def generate_chapter(
     current_user: dict = Depends(get_current_user),
     _perm=Depends(check_generate_permission),
 ):
+    """调用AI生成章节正文内容"""
     return await ChapterService.generate_with_ai(
         db, novel_unique_id, current_user["user_id"],
         chapter_name, characters_involved, organizations,
@@ -63,6 +65,7 @@ def get_drafts(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
+    """获取当前用户的所有草稿章节"""
     return ChapterService.get_drafts(db, current_user["user_id"])
 
 
@@ -75,6 +78,7 @@ def update_chapter(
     current_user: dict = Depends(get_current_user),
     _vip=Depends(check_creation_access),
 ):
+    """更新章节内容、名称或概要"""
     return ChapterService.update_chapter(
         db, chapter_unique_id, content, chapter_name, chapter_summary
     )
@@ -156,6 +160,7 @@ def delete_chapter(
     current_user: dict = Depends(get_current_user),
     _vip=Depends(check_creation_access),
 ):
+    """删除指定章节"""
     return ChapterService.delete_chapter(db, chapter_unique_id)
 
 
@@ -164,4 +169,5 @@ def get_novel_chapters(
     novel_unique_id: str,
     db: Session = Depends(get_db)
 ):
+    """获取指定作品的所有章节列表"""
     return ChapterService.get_novel_chapters(db, novel_unique_id)

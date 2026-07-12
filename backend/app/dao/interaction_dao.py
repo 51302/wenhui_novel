@@ -12,6 +12,18 @@ class InteractionDAO:
                          interactor_id: int, interactor_name: str = None,
                          comment_text: str = None, is_like: int = 0,
                          is_follow: int = 0, is_bookmark: int = 0) -> WorkInteraction:
+        """创建或更新互动：评论每次新建，点赞/关注/收藏同人对同作品幂等更新
+        :param db: 数据库会话
+        :param user_id: 被互动者用户ID
+        :param novel_unique_id: 作品唯一ID
+        :param interactor_id: 互动者ID
+        :param interactor_name: 互动者用户名
+        :param comment_text: 评论内容（非空时按评论处理）
+        :param is_like: 是否点赞
+        :param is_follow: 是否关注
+        :param is_bookmark: 是否收藏
+        :return: 创建的互动记录
+        """
         # 评论每次都创建新记录（同一人可以多次评论同一作品）
         if comment_text is not None:
             interaction = WorkInteraction(
@@ -62,6 +74,13 @@ class InteractionDAO:
 
     @staticmethod
     def get_by_novel_id(db: Session, novel_unique_id: str, page: int = 1, page_size: int = 20) -> tuple:
+        """分页查询某作品的评论列表
+        :param db: 数据库会话
+        :param novel_unique_id: 作品唯一ID
+        :param page: 页码
+        :param page_size: 每页数量
+        :return: (评论列表, 总数)
+        """
         query = db.query(WorkInteraction).filter(
             WorkInteraction.novel_unique_id == novel_unique_id,
             WorkInteraction.comment_text.isnot(None),
@@ -74,6 +93,11 @@ class InteractionDAO:
 
     @staticmethod
     def get_likes_count(db: Session, novel_unique_id: str) -> int:
+        """统计某作品的点赞总数
+        :param db: 数据库会话
+        :param novel_unique_id: 作品唯一ID
+        :return: 点赞数
+        """
         return db.query(WorkInteraction).filter(
             WorkInteraction.novel_unique_id == novel_unique_id,
             WorkInteraction.is_like == 1
@@ -81,6 +105,11 @@ class InteractionDAO:
 
     @staticmethod
     def get_bookmarks_count(db: Session, novel_unique_id: str) -> int:
+        """统计某作品的收藏总数
+        :param db: 数据库会话
+        :param novel_unique_id: 作品唯一ID
+        :return: 收藏数
+        """
         return db.query(WorkInteraction).filter(
             WorkInteraction.novel_unique_id == novel_unique_id,
             WorkInteraction.is_bookmark == 1
@@ -88,6 +117,12 @@ class InteractionDAO:
 
     @staticmethod
     def get_user_interaction(db: Session, novel_unique_id: str, interactor_id: int) -> Optional[WorkInteraction]:
+        """查询用户对某作品的最新互动记录
+        :param db: 数据库会话
+        :param novel_unique_id: 作品唯一ID
+        :param interactor_id: 互动者用户ID
+        :return: 互动记录或None
+        """
         return db.query(WorkInteraction).filter(
             WorkInteraction.novel_unique_id == novel_unique_id,
             WorkInteraction.interactor_id == interactor_id
@@ -95,6 +130,12 @@ class InteractionDAO:
 
     @staticmethod
     def get_feed(db: Session, page: int = 1, page_size: int = 20) -> tuple:
+        """分页查询作品圈动态流（联动Novel表获取作品信息）
+        :param db: 数据库会话
+        :param page: 页码
+        :param page_size: 每页数量
+        :return: (动态列表, 总数)
+        """
         query = db.query(WorkInteraction, Novel).join(
             Novel, WorkInteraction.novel_unique_id == Novel.novel_unique_id
         )
@@ -105,6 +146,10 @@ class InteractionDAO:
 
     @staticmethod
     def delete_interaction(db: Session, interaction_id: int):
+        """根据主键ID删除互动记录
+        :param db: 数据库会话
+        :param interaction_id: 互动记录自增ID
+        """
         interaction = db.query(WorkInteraction).filter(WorkInteraction.id == interaction_id).first()
         if interaction:
             db.delete(interaction)

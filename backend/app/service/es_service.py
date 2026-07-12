@@ -9,6 +9,7 @@ INDEX_NOVELS = "novels"
 class ESService:
 
     def __init__(self):
+        """初始化ES连接，创建HTTP客户端并确保索引存在"""
         try:
             self.client = Elasticsearch(
                 ES_HOST,
@@ -23,6 +24,7 @@ class ESService:
             self.client = None
 
     def _ensure_index(self):
+        """确保ES索引存在，不存在则创建（含ik分词器映射）"""
         if self.client and not self.client.indices.exists(index=INDEX_NOVELS):
             self.client.indices.create(
                 index=INDEX_NOVELS,
@@ -44,6 +46,10 @@ class ESService:
             )
 
     def index_novel(self, doc: dict) -> bool:
+        """索引一篇小说作品到ES
+        :param doc: 作品文档（含novel_unique_id/title等字段）
+        :return: 索引是否成功
+        """
         if not self.client:
             return False
         try:
@@ -53,6 +59,12 @@ class ESService:
             return False
 
     def search_novels(self, keyword: str, page: int = 1, page_size: int = 12) -> Optional[dict]:
+        """在ES中按关键词全文搜索作品
+        :param keyword: 搜索关键词
+        :param page: 页码
+        :param page_size: 每页数量
+        :return: ES原始搜索结果，失败返回None
+        """
         if not self.client:
             return None
         try:
@@ -74,6 +86,9 @@ class ESService:
             return None
 
     def delete_novel(self, novel_unique_id: str):
+        """从ES索引中删除指定作品
+        :param novel_unique_id: 作品唯一ID
+        """
         if self.client:
             try:
                 self.client.delete(index=INDEX_NOVELS, id=novel_unique_id, ignore=404)

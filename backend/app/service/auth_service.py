@@ -44,18 +44,27 @@ _VERIFY_TTL = 300  # 验证码有效 5 分钟
 
 
 def _is_valid_email(email: str) -> bool:
+    """校验邮箱格式是否合法"""
     return bool(_EMAIL_RE.match(email))
 
 
 def _is_valid_phone(phone: str) -> bool:
+    """校验中国大陆手机号格式是否合法"""
     return bool(_PHONE_RE.match(phone))
 
 
 def _generate_code() -> str:
+    """生成6位数字验证码"""
     return str(random.randint(100000, 999999))
 
 
 def _store_code(key_prefix: str, target: str, code: str) -> bool:
+    """将验证码存入 Redis，设置5分钟过期
+    :param key_prefix: 缓存键前缀（如 email_code）
+    :param target: 目标标识（邮箱或手机号）
+    :param code: 验证码
+    :return: 存储是否成功
+    """
     r = _get_redis()
     if r:
         r.setex(f"{key_prefix}:{target}", _VERIFY_TTL, code)
@@ -64,6 +73,12 @@ def _store_code(key_prefix: str, target: str, code: str) -> bool:
 
 
 def _verify_code(key_prefix: str, target: str, code: str) -> bool:
+    """校验验证码是否正确，验证成功后删除缓存
+    :param key_prefix: 缓存键前缀
+    :param target: 目标标识（邮箱或手机号）
+    :param code: 用户输入的验证码
+    :return: 验证是否通过
+    """
     r = _get_redis()
     if r:
         stored = r.get(f"{key_prefix}:{target}")
@@ -142,6 +157,16 @@ class AuthService:
                  email: str = None, phone: str = None,
                  email_code: str = None,
                  is_super_admin: int = 0) -> dict:
+        """用户注册：校验邮箱验证码、创建账号并返回JWT令牌
+        :param db: 数据库会话
+        :param username: 用户名
+        :param password: 密码（至少8位）
+        :param email: 邮箱（必填）
+        :param phone: 手机号（选填）
+        :param email_code: 邮箱验证码
+        :param is_super_admin: 是否超级管理员
+        :return: 注册结果（含token）
+        """
         # 邮箱必填
         if not email:
             return fail("邮箱为必填项", code=400)
@@ -185,6 +210,14 @@ class AuthService:
 
     @staticmethod
     def login(db: Session, username: str, password: str, captcha_id: str = None, captcha_x: int = None) -> dict:
+        """用户登录：校验用户名密码及滑动验证码，返回JWT令牌
+        :param db: 数据库会话
+        :param username: 用户名
+        :param password: 密码
+        :param captcha_id: 滑动验证码ID
+        :param captcha_x: 用户滑动的x坐标
+        :return: 登录结果（含token）
+        """
         # 验证滑动验证码
         if captcha_id and captcha_x is not None:
             r = _get_redis()
@@ -238,6 +271,10 @@ class AuthService:
 
     @staticmethod
     def get_current_user(token: str) -> dict:
+        """解析JWT令牌获取当前用户信息
+        :param token: JWT令牌
+        :return: 用户信息字典（user_id/username/is_super_admin），失败返回None
+        """
         try:
             payload = verify_token(token)
             return {

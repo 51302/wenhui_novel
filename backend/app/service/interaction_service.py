@@ -8,6 +8,7 @@ import app.utils.redis_cache as redis_mod
 
 
 def _redis():
+    """获取Redis客户端实例"""
     return redis_mod.redis_client
 
 # 动态流缓存 TTL：60秒（降低一点，允许实时性但大幅提升性能）
@@ -20,6 +21,15 @@ class InteractionService:
     @staticmethod
     def comment(db: Session, novel_unique_id: str, user_id: int,
                 interactor_id: int, interactor_name: str, comment_text: str) -> dict:
+        """发表评论到指定作品的作品圈
+        :param db: 数据库会话
+        :param novel_unique_id: 作品唯一ID
+        :param user_id: 作品作者ID
+        :param interactor_id: 评论者ID
+        :param interactor_name: 评论者名称
+        :param comment_text: 评论内容
+        :return: 操作结果
+        """
         if not comment_text or not comment_text.strip():
             return fail("评论内容不能为空", code=400)
         interaction = InteractionDAO.create_or_update(
@@ -36,6 +46,14 @@ class InteractionService:
     @staticmethod
     def like(db: Session, novel_unique_id: str, user_id: int,
              interactor_id: int, interactor_name: str) -> dict:
+        """点赞指定作品的作品圈
+        :param db: 数据库会话
+        :param novel_unique_id: 作品唯一ID
+        :param user_id: 作品作者ID
+        :param interactor_id: 点赞者ID
+        :param interactor_name: 点赞者名称
+        :return: 操作结果
+        """
         InteractionDAO.create_or_update(
             db, user_id=user_id, novel_unique_id=novel_unique_id,
             interactor_id=interactor_id, interactor_name=interactor_name, is_like=1
@@ -49,6 +67,14 @@ class InteractionService:
     @staticmethod
     def follow(db: Session, novel_unique_id: str, user_id: int,
                interactor_id: int, interactor_name: str) -> dict:
+        """关注指定作品的作品圈
+        :param db: 数据库会话
+        :param novel_unique_id: 作品唯一ID
+        :param user_id: 作品作者ID
+        :param interactor_id: 关注者ID
+        :param interactor_name: 关注者名称
+        :return: 操作结果
+        """
         InteractionDAO.create_or_update(
             db, user_id=user_id, novel_unique_id=novel_unique_id,
             interactor_id=interactor_id, interactor_name=interactor_name, is_follow=1
@@ -58,6 +84,14 @@ class InteractionService:
     @staticmethod
     def bookmark(db: Session, novel_unique_id: str, user_id: int,
                  interactor_id: int, interactor_name: str) -> dict:
+        """收藏指定作品的作品圈
+        :param db: 数据库会话
+        :param novel_unique_id: 作品唯一ID
+        :param user_id: 作品作者ID
+        :param interactor_id: 收藏者ID
+        :param interactor_name: 收藏者名称
+        :return: 操作结果
+        """
         InteractionDAO.create_or_update(
             db, user_id=user_id, novel_unique_id=novel_unique_id,
             interactor_id=interactor_id, interactor_name=interactor_name, is_bookmark=1
@@ -70,6 +104,13 @@ class InteractionService:
 
     @staticmethod
     def get_comments(db: Session, novel_unique_id: str, page: int = 1, page_size: int = 20) -> dict:
+        """分页查询指定作品的所有互动评论，带Redis缓存
+        :param db: 数据库会话
+        :param novel_unique_id: 作品唯一ID
+        :param page: 页码
+        :param page_size: 每页数量
+        :return: 分页评论列表（含点赞数和收藏数）
+        """
         cache_key = f"interactions:comments:{novel_unique_id}:p={page}:ps={page_size}"
         r = _redis()
         if r:

@@ -16,6 +16,11 @@ Base = declarative_base()
 
 
 def get_db():
+    """
+    FastAPI 依赖注入：获取数据库会话
+    yield SessionLocal()，请求结束后自动关闭连接
+    用法：db: Session = Depends(get_db)
+    """
     db = SessionLocal()
     try:
         yield db

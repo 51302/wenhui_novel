@@ -29,6 +29,13 @@ def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     novel_token: Optional[str] = Cookie(None)
 ):
+    """从请求中获取当前登录用户身份，优先读取Redis缓存
+    :param request: FastAPI请求对象
+    :param credentials: HTTP Bearer令牌凭据
+    :param novel_token: Cookie中的令牌
+    :return: 用户身份字典
+    :raises HTTPException: 认证失败时抛出401
+    """
     token = None
     if credentials:
         token = credentials.credentials
@@ -88,6 +95,11 @@ def invalidate_user_cache(user_id: int):
 
 
 def require_vip(current_user: dict = Depends(get_current_user)):
+    """要求当前用户必须是VIP，否则返回403禁止访问
+    :param current_user: 当前登录用户信息
+    :return: 当前用户信息
+    :raises HTTPException: 非VIP用户抛出403
+    """
     if not current_user.get("is_vip"):
         raise HTTPException(status_code=403, detail="仅 VIP 用户可操作")
     return current_user

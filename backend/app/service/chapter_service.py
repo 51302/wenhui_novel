@@ -17,6 +17,7 @@ os.makedirs(NOVEL_DATA_PATH, exist_ok=True)
 
 
 def _redis():
+    """获取Redis客户端实例"""
     return redis_mod.redis_client
 
 
@@ -24,6 +25,10 @@ class ChapterService:
 
     @staticmethod
     def _get_novel_settings(novel_unique_id: str) -> dict:
+        """读取作品设定文件内容
+        :param novel_unique_id: 作品唯一ID
+        :return: 设定内容字典（含content和path）
+        """
         novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
         settings_file = os.path.join(novel_dir, "作品设定.txt")
         if os.path.exists(settings_file):
@@ -772,6 +777,20 @@ class ChapterService:
                        organizations: str = None, locations: str = None,
                        skills: str = None, word_count: int = 0,
                        chapter_summary: str = None, created_by: str = None) -> dict:
+        """创建空白章节草稿，保存到数据库和本地文件
+        :param db: 数据库会话
+        :param novel_unique_id: 作品唯一ID
+        :param user_id: 用户ID
+        :param chapter_name: 章节名称
+        :param characters_involved: 涉及人物
+        :param organizations: 涉及组织
+        :param locations: 涉及地点
+        :param skills: 涉及技能
+        :param word_count: 目标字数
+        :param chapter_summary: 章节概要
+        :param created_by: 创建者名称
+        :return: 创建结果（含chapter_unique_id）
+        """
         chapter_unique_id = uuid.uuid4().hex
         chapter = ChapterDAO.create(
             db,
@@ -818,6 +837,20 @@ class ChapterService:
                                skills: str = None, word_count: int = 2000,
                                chapter_summary: str = None,
                                created_by: str = None) -> dict:
+        """调用DeepSeek AI生成章节正文内容
+        :param db: 数据库会话
+        :param novel_unique_id: 作品唯一ID
+        :param user_id: 用户ID
+        :param chapter_name: 章节名称
+        :param characters_involved: 涉及人物
+        :param organizations: 涉及组织
+        :param locations: 涉及地点
+        :param skills: 涉及技能
+        :param word_count: 目标字数
+        :param chapter_summary: 章节概要
+        :param created_by: 创建者名称
+        :return: 生成结果（含生成内容和章节ID）
+        """
         # 自动编号：统计已有章节数 + 1，转中文数字
         existing_count = ChapterDAO.count_by_novel_id(db, novel_unique_id)
         chapter_num = existing_count + 1
@@ -1114,6 +1147,11 @@ class ChapterService:
 
     @staticmethod
     def get_drafts(db: Session, user_id: int) -> dict:
+        """获取用户的所有草稿章节列表，带Redis缓存
+        :param db: 数据库会话
+        :param user_id: 用户ID
+        :return: 草稿章节列表
+        """
         cache_key = f"chapters:drafts:user:{user_id}"
         r = _redis()
         if r:
@@ -1205,6 +1243,14 @@ class ChapterService:
     @staticmethod
     def update_chapter(db: Session, chapter_unique_id: str, content: str = None,
                        chapter_name: str = None, chapter_summary: str = None) -> dict:
+        """更新已存在的章节内容、名称或概要
+        :param db: 数据库会话
+        :param chapter_unique_id: 章节唯一ID
+        :param content: 新章节正文
+        :param chapter_name: 新章节名称
+        :param chapter_summary: 新章节概要
+        :return: 操作结果
+        """
         chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
         if not chapter:
             return fail("章节不存在", code=404)
@@ -1242,6 +1288,11 @@ class ChapterService:
 
     @staticmethod
     def delete_chapter(db: Session, chapter_unique_id: str) -> dict:
+        """删除章节及其本地文件和数据库记录，后台重建记忆体
+        :param db: 数据库会话
+        :param chapter_unique_id: 章节唯一ID
+        :return: 操作结果
+        """
         chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
         if not chapter:
             return fail("章节不存在", code=404)
@@ -1287,6 +1338,11 @@ class ChapterService:
 
     @staticmethod
     def get_novel_chapters(db: Session, novel_unique_id: str) -> dict:
+        """获取指定作品的所有章节列表，带Redis缓存
+        :param db: 数据库会话
+        :param novel_unique_id: 作品唯一ID
+        :return: 章节列表（含正文内容）
+        """
         cache_key = f"chapters:novel:{novel_unique_id}:all"
         r5 = _redis()
         if r5:

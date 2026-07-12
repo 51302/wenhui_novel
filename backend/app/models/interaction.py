@@ -3,6 +3,7 @@ from app.models.base import Base
 
 
 class WorkInteraction(Base):
+    """作品互动表，记录用户对作品的点赞、关注、收藏与评论"""
     __tablename__ = "work_interactions"
 
     id = Column(Integer, primary_key=True, autoincrement=True, comment="自增ID")

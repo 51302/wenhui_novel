@@ -28,6 +28,7 @@ from app.config import get as cfg_get
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    """应用生命周期管理：启动时初始化 Redis/ChromaDB 连接并建表，关闭时记录日志"""
     global global_redis, global_chroma
 
     global_redis = RedisCache(
@@ -94,6 +95,7 @@ app.include_router(bookshelf_router)
 # ====== 请求日志中间件 ======
 @app.middleware("http")
 async def log_requests(request, call_next):
+    """HTTP 请求日志中间件：记录每个请求的方法、路径、状态码和耗时，5xx 记 error，4xx 记 warning"""
     import time as _time
     start = _time.time()
     response = await call_next(request)
@@ -124,6 +126,9 @@ _HEALTH_CACHE_TTL = 5  # 5 秒内用缓存，不重复检查
 
 @app.get("/api/health")
 def health_check():
+    """健康检查接口：检查 MySQL 和 Redis 连接状态，5 秒内使用缓存避免重复建连
+    :return: 包含 mysql/redis 连接状态的响应字典
+    """
     import time
     now = time.time()
     if now - _health_cache["updated_at"] < _HEALTH_CACHE_TTL:

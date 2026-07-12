@@ -18,11 +18,7 @@ def create_novel(
     current_user: dict = Depends(get_current_user),
     _perm=Depends(check_creation_access),
 ):
-    """
-    创建小说作品
-    必需参数：书名、读者受众（男频/女频）
-    可选：简介、故事背景、世界观设定、修炼境界、角色设定、题材、封面
-    """
+    """创建小说作品"""
     from app.utils.logger import system_logger
     result = NovelService.create_novel(
         db, current_user["user_id"], current_user["username"],
@@ -45,6 +41,7 @@ def list_novels(
     page_size: int = Query(12, ge=1, le=50),
     db: Session = Depends(get_db)
 ):
+    """分页查询小说作品列表，支持按受众和题材筛选"""
     return NovelService.list_novels(db, target_reader, genre, page, page_size)
 
 
@@ -55,11 +52,13 @@ def search_novels(
     page_size: int = Query(12, ge=1, le=50),
     db: Session = Depends(get_db)
 ):
+    """按关键词搜索小说作品"""
     return NovelService.search_novels(db, keyword, page, page_size)
 
 
 @router.get("/detail/{novel_unique_id}")
 def get_novel_detail(novel_unique_id: str, db: Session = Depends(get_db)):
+    """查询小说作品详情"""
     return NovelService.get_novel_detail(db, novel_unique_id)
 
 
@@ -68,6 +67,7 @@ def my_novels(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
+    """获取当前登录用户创建的所有作品"""
     return NovelService.get_user_novels(db, current_user["user_id"])
 
 

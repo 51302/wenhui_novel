@@ -15,6 +15,7 @@ def comment(
     current_user: dict = Depends(get_current_user),
     _vip=Depends(require_vip),
 ):
+    """发表评论"""
     return InteractionService.comment(
         db, novel_unique_id, user_id,
         current_user["user_id"], current_user["username"], comment_text
@@ -28,6 +29,7 @@ def like(
     current_user: dict = Depends(get_current_user),
     _vip=Depends(require_vip),
 ):
+    """点赞"""
     return InteractionService.like(
         db, novel_unique_id, user_id,
         current_user["user_id"], current_user["username"]
@@ -41,6 +43,7 @@ def follow(
     current_user: dict = Depends(get_current_user),
     _vip=Depends(require_vip),
 ):
+    """关注"""
     return InteractionService.follow(
         db, novel_unique_id, user_id,
         current_user["user_id"], current_user["username"]
@@ -54,6 +57,7 @@ def bookmark(
     current_user: dict = Depends(get_current_user),
     _vip=Depends(require_vip),
 ):
+    """收藏"""
     return InteractionService.bookmark(
         db, novel_unique_id, user_id,
         current_user["user_id"], current_user["username"]
@@ -67,6 +71,7 @@ def get_comments(
     page_size: int = Query(20, ge=1, le=50),
     db: Session = Depends(get_db)
 ):
+    """获取指定作品的评论列表"""
     return InteractionService.get_comments(db, novel_unique_id, page, page_size)
 
 
@@ -77,4 +82,5 @@ def get_feed(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
+    """获取互动动态流（关注作品的最新发布）"""
     return InteractionService.get_feed(db, page, page_size, current_user)
