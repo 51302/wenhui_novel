@@ -23,12 +23,12 @@
         <div class="vip-cards">
           <div class="price-card" @click="handlePay('vip_monthly')">
             <h3>VIP 月度</h3>
-            <div class="price"><span class="symbol">¥</span><span class="amount">29</span><span class="period">/月</span></div>
+            <div class="price"><span class="symbol">¥</span><span class="amount">59</span><span class="period">/月</span></div>
             <ul class="features">
               <li>✨ 10章/天 AI生成</li><li>📚 创建并发布作品</li><li>🌐 作品圈互动</li><li>🎨 高级排版</li><li>⚡ 优先队列</li>
             </ul>
             <button class="btn-pay" :disabled="paying">
-              {{ paying && currentPlan === 'vip_monthly' ? '获取中...' : '¥29 开通' }}
+              {{ paying && currentPlan === 'vip_monthly' ? '获取中...' : '¥59 开通' }}
             </button>
           </div>
           <div class="price-card highlight">
@@ -63,12 +63,12 @@
         <div class="vip-cards">
           <div class="price-card svip-card" @click="handlePay('svip_monthly')">
             <h3>SVIP 月度</h3>
-            <div class="price"><span class="symbol">¥</span><span class="amount">59</span><span class="period">/月</span></div>
+            <div class="price"><span class="symbol">¥</span><span class="amount">79</span><span class="period">/月</span></div>
             <ul class="features">
               <li>👑 50章/天 AI生成</li><li>📚 无限创作发布</li><li>🌐 首页推荐曝光</li><li>🎨 专属徽章</li><li>⚡ 极速优先队列</li>
             </ul>
             <button class="btn-pay btn-svip" :disabled="paying">
-              {{ paying && currentPlan === 'svip_monthly' ? '获取中...' : '¥59 开通' }}
+              {{ paying && currentPlan === 'svip_monthly' ? '获取中...' : '¥79 开通' }}
             </button>
           </div>
           <div class="price-card svip-card highlight-svip" @click="handlePay('svip_quarterly')">
@@ -104,9 +104,9 @@
       <div class="vip-cards">
         <div class="price-card svip-card" @click="handlePay('svip_monthly')">
           <h3>SVIP 月度</h3>
-          <div class="price"><span class="symbol">¥</span><span class="amount">59</span><span class="period">/月</span></div>
+          <div class="price"><span class="symbol">¥</span><span class="amount">79</span><span class="period">/月</span></div>
           <ul class="features"><li>👑 50章/天</li><li>📚 无限创作</li><li>🌐 首页推荐</li><li>🎨 专属徽章</li><li>⚡ 极速队列</li></ul>
-          <button class="btn-pay btn-svip" :disabled="paying">{{ paying && currentPlan === 'svip_monthly' ? '获取中...' : '¥59 升级' }}</button>
+          <button class="btn-pay btn-svip" :disabled="paying">{{ paying && currentPlan === 'svip_monthly' ? '获取中...' : '¥79 升级' }}</button>
         </div>
         <div class="price-card svip-card highlight-svip" @click="handlePay('svip_quarterly')">
           <div class="card-ribbon ribbon-svip">👑 超值</div>

@@ -62,11 +62,11 @@ ALIPAY_ORDER_PREFIX = os.environ.get(
 # vip_level: 1=VIP(10章/天), 2=SVIP(50章/天)
 VIP_PLANS = cfg_get("alipay.plans", {
     # VIP 套餐
-    "vip_monthly":   {"name": "VIP月度会员",   "price": "29.00",  "days": 30,  "desc": "1个月VIP · 10章/天",  "vip_level": 1},
+    "vip_monthly":   {"name": "VIP月度会员",   "price": "59.00",  "days": 30,  "desc": "1个月VIP · 10章/天",  "vip_level": 1},
     "vip_quarterly": {"name": "VIP季度会员",   "price": "79.00",  "days": 90,  "desc": "3个月VIP · 10章/天",  "vip_level": 1},
     "vip_yearly":    {"name": "VIP年度会员",   "price": "259.00", "days": 365, "desc": "12个月VIP · 10章/天", "vip_level": 1},
     # SVIP 套餐
-    "svip_monthly":   {"name": "SVIP月度会员",   "price": "59.00",  "days": 30,  "desc": "1个月SVIP · 50章/天",  "vip_level": 2},
+    "svip_monthly":   {"name": "SVIP月度会员",   "price": "79.00",  "days": 30,  "desc": "1个月SVIP · 50章/天",  "vip_level": 2},
     "svip_quarterly": {"name": "SVIP季度会员",   "price": "149.00", "days": 90,  "desc": "3个月SVIP · 50章/天",  "vip_level": 2},
     "svip_yearly":    {"name": "SVIP年度会员",   "price": "499.00", "days": 365, "desc": "12个月SVIP · 50章/天", "vip_level": 2},
 })
