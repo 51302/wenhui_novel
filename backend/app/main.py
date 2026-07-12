@@ -13,6 +13,7 @@ from app.models.chapter import Chapter
 from app.models.interaction import WorkInteraction
 from app.models.vip_order import VIPOrder
 from app.models.bookshelf import Bookshelf
+from app.models.log import SystemLog
 from app.api.auth import router as auth_router
 from app.api.novels import router as novels_router
 from app.api.chapters import router as chapters_router
@@ -20,6 +21,7 @@ from app.api.interactions import router as interactions_router
 from app.api.upload import router as upload_router
 from app.api.vip import router as vip_router
 from app.api.bookshelf import router as bookshelf_router
+from app.api.logs import router as logs_router
 from app.utils.redis_cache import RedisCache, redis_client as global_redis
 from app.utils.chroma_client import ChromaMemoryStore, chroma_memory as global_chroma
 from app.config import get as cfg_get
@@ -49,9 +51,36 @@ async def lifespan(application: FastAPI):
     Base.metadata.create_all(bind=engine)
     print("文辉小说后端启动成功!")
 
+    # 启动时清理 7 天前日志
+    _start_log_cleanup_scheduler()
+
     yield
 
     print("文辉小说后端关闭")
+
+
+def _start_log_cleanup_scheduler():
+    """后台线程：每小时检查并清理 7 天前的日志"""
+    import threading
+    import time
+    from sqlalchemy.orm import Session
+    from app.models.base import SessionLocal
+    from app.service.log_service import LogService
+
+    def cleanup_loop():
+        while True:
+            time.sleep(3600)  # 每小时执行一次
+            db = SessionLocal()
+            try:
+                LogService.cleanup_old_logs(db, days=7)
+            except Exception as e:
+                print(f"[日志定时清理异常] {e}")
+            finally:
+                db.close()
+
+    t = threading.Thread(target=cleanup_loop, daemon=True)
+    t.start()
+    print("[日志] 后台定时清理已启动（每1小时清理7天前日志）")
 
 
 app = FastAPI(title="文辉小说", version="1.0.0", docs_url="/api/docs", lifespan=lifespan)
@@ -79,6 +108,44 @@ app.include_router(interactions_router)
 app.include_router(upload_router)
 app.include_router(vip_router)
 app.include_router(bookshelf_router)
+app.include_router(logs_router)
+
+
+# ====== 请求日志中间件 ======
+@app.middleware("http")
+async def log_requests(request, call_next):
+    import time as _time
+    start = _time.time()
+    response = await call_next(request)
+    duration = _time.time() - start
+
+    # 不需要记录静态资源和健康检查
+    path = request.url.path
+    if path.startswith("/uploads") or path.startswith("/covers") or path == "/api/health":
+        return response
+
+    status = response.status_code
+    level = "ERROR" if status >= 500 else ("WARNING" if status >= 400 else "INFO")
+    method = request.method
+    from app.models.base import SessionLocal
+    from app.service.log_service import LogService
+    db = SessionLocal()
+    try:
+        LogService.write_log(
+            db,
+            level=level,
+            message=f"{method} {path} → {status} ({duration:.2f}s)",
+            source="api",
+            path=path,
+            method=method,
+            status_code=status,
+        )
+    except Exception as e:
+        print(f"[请求日志写入异常] {e}")
+    finally:
+        db.close()
+
+    return response
 
 
 # ====== 健康检查缓存（避免每次请求都建 DB 连接） ======

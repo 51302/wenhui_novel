@@ -9,6 +9,7 @@ import VIP from '../views/VIP.vue'
 import Bookshelf from '../views/Bookshelf.vue'
 import MyProfile from '../views/MyProfile.vue'
 import Settings from '../views/Settings.vue'
+import Logs from '../views/Logs.vue'
 
 const routes = [
   { path: '/', name: 'Home', component: Home, meta: { title: '首页' } },
@@ -21,6 +22,7 @@ const routes = [
   { path: '/bookshelf', name: 'Bookshelf', component: Bookshelf, meta: { title: '书架', requiresAuth: true } },
   { path: '/my', name: 'MyProfile', component: MyProfile, meta: { title: '我的', requiresAuth: true } },
   { path: '/settings', name: 'Settings', component: Settings, meta: { title: '设置' } },
+  { path: '/logs', name: 'Logs', component: Logs, meta: { title: '系统日志' } },
   { path: '/:pathMatch(.*)*', redirect: '/' }
 ]
 
