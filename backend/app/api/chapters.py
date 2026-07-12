@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, Query, Body
 from sqlalchemy.orm import Session
+from datetime import datetime
 from app.models.base import get_db
+from app.models.chapter import Chapter
 from app.service.chapter_service import ChapterService
 from app.api.deps import get_current_user, check_generate_permission, check_creation_access
 from app.utils.response import fail, success
@@ -171,3 +173,20 @@ def get_novel_chapters(
 ):
     """获取指定作品的所有章节列表"""
     return ChapterService.get_novel_chapters(db, novel_unique_id)
+
+
+@router.get("/today-published-count")
+def today_published_count(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """统计当前用户今日已发布的章节数量
+    用于前端显示「今日已发布 X/Y 章」
+    """
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    count = db.query(Chapter).filter(
+        Chapter.user_id == current_user["user_id"],
+        Chapter.is_published == True,
+        Chapter.publish_time >= today_start,
+    ).count()
+    return success({"published_today": count}, "查询成功")

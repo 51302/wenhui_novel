@@ -16,6 +16,6 @@ class User(Base):
     is_super_admin = Column(SmallInteger, default=0, comment="弃用-保留兼容, 用 vip_level 替代")
     vip_level = Column(Integer, default=0, comment="会员等级: 0=免费用户, 1=VIP(10章/天), 2=SVIP(50章/天)")
     vip_expire_at = Column(DateTime, nullable=True, comment="会员到期时间，过期自动降级为免费用户")
-    free_generate_quota = Column(Integer, default=3, comment="当日剩余AI生成次数，免费=3, VIP=10, SVIP=50")
+    free_generate_quota = Column(Integer, default=6, comment="当日剩余AI生成次数，免费=6, VIP=10, SVIP=50")
     quota_date = Column(DateTime, nullable=True, comment="配额日期，跨天自动重置为对应等级的每日额度")
     created_at = Column(DateTime, default=func.now(), comment="创建时间")

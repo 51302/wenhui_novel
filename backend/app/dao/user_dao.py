@@ -6,7 +6,7 @@ from typing import Optional
 
 # 各会员等级每日 AI 生成配额上限
 DAILY_QUOTA_MAP = {
-    0: 3,   # 免费用户: 3章/天
+    0: 6,   # 免费用户: 6章/天（免费体验）
     1: 10,  # VIP: 10章/天
     2: 50,  # SVIP: 50章/天
 }
@@ -72,7 +72,7 @@ class UserDAO:
             phone=phone,
             is_super_admin=is_super_admin,
             vip_level=0,
-            free_generate_quota=3,
+            free_generate_quota=6,
             quota_date=datetime.utcnow(),
         )
         db.add(user)

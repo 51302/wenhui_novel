@@ -2,6 +2,22 @@
   <div class="creation-page">
     <h2 class="page-title">创作中心</h2>
 
+    <!-- 会员等级 & 今日发布统计 -->
+    <div :class="['quota-banner', 'level-' + vipLevel]">
+      <div class="quota-level">
+        <span class="level-badge">{{ levelLabel }}</span>
+        <span class="level-desc">{{ levelDesc }}</span>
+      </div>
+      <div class="quota-progress">
+        <div class="quota-bar-bg">
+          <div class="quota-bar-fill" :style="{ width: quotaPercent + '%' }"></div>
+        </div>
+        <span class="quota-text">📝 今日已发布 <b>{{ publishedToday }}</b>/<b>{{ maxDailyQuota }}</b> 章{{ quotaRemaining > 0 ? ' · 还可创作 ' + quotaRemaining + ' 章' : ' · 已用完' }}</span>
+      </div>
+      <router-link v-if="vipLevel === 0" to="/vip" class="quota-action">✨ 升级VIP · 10章/天</router-link>
+      <router-link v-if="vipLevel === 1" to="/vip" class="quota-action gold">👑 升级SVIP · 50章/天</router-link>
+    </div>
+
     <!-- Tab 切换 -->
     <div class="tabs">
       <span :class="{ active: tab === 'create' }" @click="tab = 'create'">新建作品</span>
@@ -11,14 +27,7 @@
 
     <!-- ==================== 新建作品 ==================== -->
     <div v-if="tab === 'create'" class="tab-content">
-      <div v-if="!isVip && freeQuota <= 0" class="no-permission">
-        <p>创作功能仅VIP用户可用，请先 <router-link to="/vip" class="link-vip">开通VIP</router-link></p>
-      </div>
-      <div v-else-if="!isVip && freeQuota > 0" class="vip-banner free-banner">
-        🎁 新用户免费体验 · 剩余 <b>{{ freeQuota }}</b> 次 AI 生成
-        <router-link to="/vip" class="btn-upgrade">开通VIP无限使用</router-link>
-      </div>
-      <form v-if="isVip || freeQuota > 0" class="create-form" @submit.prevent="handleCreateNovel">
+      <form class="create-form" @submit.prevent="handleCreateNovel">
         <div class="form-row">
           <label>作品名称</label><input v-model="novelForm.title" required />
         </div>
@@ -103,14 +112,6 @@
     <!-- ==================== 我的作品 ==================== -->
     <div v-if="tab === 'my'" class="tab-content">
       <div v-if="myNovels.length === 0" class="empty">暂无作品</div>
-      <!-- 非VIP展示剩余次数 -->
-      <div v-else-if="!isVip && freeQuota > 0" class="free-banner" style="margin-bottom:16px">
-        🎁 新用户免费体验 · 剩余 <b>{{ freeQuota }}</b> 次 AI 生成
-        <router-link to="/vip" class="btn-upgrade">开通VIP无限使用</router-link>
-      </div>
-      <div v-else-if="!isVip && freeQuota <= 0 && myNovels.length > 0" class="no-permission" style="padding:24px;margin-bottom:16px">
-        <p>免费次数已用完，请 <router-link to="/vip" class="link-vip">开通VIP</router-link> 继续生成</p>
-      </div>
       <div v-for="novel in myNovels" :key="novel.novel_unique_id" class="my-novel-card">
         <div class="my-novel-cover">
           <img v-if="novel.cover_image" :src="novel.cover_image" alt="封面" @error="novel.cover_image = ''" />
@@ -268,7 +269,39 @@ export default {
 
     const user = reactive(JSON.parse(localStorage.getItem('novel_user') || '{}'))
     const isVip = computed(() => !!user.is_vip)
+    const isSvip = computed(() => !!user.is_svip)
+    const vipLevel = computed(() => user.vip_level ?? 0)
     const freeQuota = computed(() => user.free_generate_quota ?? 0)
+
+    // 今日发布统计
+    const publishedToday = ref(0)
+    const maxDailyQuota = computed(() => {
+      if (vipLevel.value >= 2) return 50
+      if (vipLevel.value >= 1) return 10
+      return 6
+    })
+    const quotaRemaining = computed(() => Math.max(0, maxDailyQuota.value - publishedToday.value))
+    const quotaPercent = computed(() => Math.min(100, (publishedToday.value / maxDailyQuota.value) * 100))
+
+    const levelLabel = computed(() => {
+      if (vipLevel.value >= 2) return '👑 SVIP会员'
+      if (vipLevel.value >= 1) return '🌟 VIP会员'
+      return '💎 普通用户'
+    })
+    const levelDesc = computed(() => {
+      if (vipLevel.value >= 2) return '每日最多50章'
+      if (vipLevel.value >= 1) return '每日最多10章'
+      return '免费体验6章/天'
+    })
+
+    const fetchTodayPublished = async () => {
+      try {
+        const res = await api.get('/chapters/today-published-count')
+        if (res.状态码 === 200) {
+          publishedToday.value = res.数据.published_today
+        }
+      } catch {}
+    }
 
     // 新建作品
     const novelForm = reactive({
@@ -594,6 +627,7 @@ export default {
         if (res.状态码 === 200) {
           alert(res.消息)
           fetchDrafts()
+          fetchTodayPublished()
         } else alert(res.消息)
       } catch (e) {
         alert('发布失败: ' + (e.response?.data?.detail || e.message))
@@ -620,6 +654,7 @@ export default {
           // 重新加载章节列表
           const r2 = await api.get(`/chapters/novel/${chapterNovel.value.novel_unique_id}`)
           if (r2.状态码 === 200) novelChapters.value = r2.数据
+          fetchTodayPublished()
         } else alert(res.消息)
       } catch (e) { alert('删除失败') }
     }
@@ -673,11 +708,12 @@ export default {
       if (stored) {
         try { Object.assign(user, JSON.parse(stored)) } catch {}
       }
+      fetchTodayPublished()
     }
 
     onMounted(() => {
       // 页面挂载时拉取最新用户状态（VIP开通后回来是最新）
-      syncUserFromServer()
+      syncUserFromServer().then(() => fetchTodayPublished())
       window.addEventListener('user-info-changed', onUserChanged)
       fetchMyNovels()
     })
@@ -686,7 +722,7 @@ export default {
       window.removeEventListener('user-info-changed', onUserChanged)
     })
 
-    return { tab, isVip, freeQuota, novelForm, createError, createSuccess, handleCreateNovel,
+    return { tab, isVip, isSvip, vipLevel, freeQuota, publishedToday, maxDailyQuota, quotaRemaining, quotaPercent, levelLabel, levelDesc, fetchTodayPublished, novelForm, createError, createSuccess, handleCreateNovel,
       myNovels, fetchMyNovels,
       showChapterModal, chapterNovel, chapterMode, novelChapters, chapterForm, generating,
       openChapterModal, generateChapter,
@@ -702,6 +738,46 @@ export default {
 
 <style scoped>
 .page-title { font-size: 24px; margin-bottom: 20px; color: #e0e0e0; font-weight: 700; }
+
+/* 配额横幅 */
+.quota-banner {
+  background: rgba(15,15,40,0.8); border: 1px solid rgba(102,126,234,0.15);
+  border-radius: 14px; padding: 18px 24px; margin-bottom: 20px;
+  display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+  backdrop-filter: blur(10px);
+}
+.quota-banner.level-0 { border-color: rgba(16,185,129,0.25); background: linear-gradient(135deg, rgba(16,185,129,0.08), rgba(15,15,40,0.8)); }
+.quota-banner.level-1 { border-color: rgba(6,182,212,0.3); background: linear-gradient(135deg, rgba(6,182,212,0.08), rgba(15,15,40,0.8)); }
+.quota-banner.level-2 { border-color: rgba(245,158,11,0.3); background: linear-gradient(135deg, rgba(245,158,11,0.08), rgba(15,15,40,0.8)); }
+
+.quota-level { display: flex; align-items: center; gap: 10px; }
+.level-badge {
+  padding: 4px 14px; border-radius: 20px; font-size: 13px; font-weight: 700;
+  white-space: nowrap;
+}
+.level-0 .level-badge { background: rgba(16,185,129,0.15); color: #34d399; border: 1px solid rgba(16,185,129,0.3); }
+.level-1 .level-badge { background: rgba(6,182,212,0.15); color: #06b6d4; border: 1px solid rgba(6,182,212,0.3); }
+.level-2 .level-badge { background: linear-gradient(135deg, rgba(245,158,11,0.2), rgba(239,68,68,0.15)); color: #f59e0b; border: 1px solid rgba(245,158,11,0.3); }
+.level-desc { font-size: 13px; color: #8892b0; }
+
+.quota-progress { flex: 1; min-width: 200px; }
+.quota-bar-bg { height: 6px; background: rgba(15,15,40,0.6); border-radius: 3px; margin-bottom: 6px; overflow: hidden; }
+.quota-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+.level-0 .quota-bar-fill { background: linear-gradient(90deg, #10b981, #34d399); }
+.level-1 .quota-bar-fill { background: linear-gradient(90deg, #06b6d4, #38bdf8); }
+.level-2 .quota-bar-fill { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+.quota-text { font-size: 13px; color: #8892b0; }
+.quota-text b { color: #e0e0e0; }
+
+.quota-action {
+  padding: 8px 20px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  text-decoration: none; white-space: nowrap; transition: all 0.3s;
+  background: linear-gradient(135deg, #06b6d4, #8b5cf6); color: #fff;
+  box-shadow: 0 2px 12px rgba(6,182,212,0.3);
+}
+.quota-action:hover { box-shadow: 0 4px 20px rgba(139,92,246,0.4); transform: translateY(-1px); }
+.quota-action.gold { background: linear-gradient(135deg, #f59e0b, #ef4444); box-shadow: 0 2px 12px rgba(245,158,11,0.3); }
+.quota-action.gold:hover { box-shadow: 0 4px 20px rgba(245,158,11,0.5); }
 
 /* Tabs */
 .tabs { display: flex; gap: 4px; margin-bottom: 28px; }
