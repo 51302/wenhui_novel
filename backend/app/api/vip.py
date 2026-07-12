@@ -179,17 +179,27 @@ def vip_status(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """查询当前用户 VIP 状态（含过期时间）"""
+    """查询当前用户 VIP 状态（含过期时间和套餐类型）"""
     from app.dao.user_dao import UserDAO
+    from app.models.vip_order import VIPOrder
     user = UserDAO.get_by_id(db, current_user["user_id"])
     vip_expire_at = None
+    plan_type = ""
     if user and user.vip_expire_at:
         vip_expire_at = user.vip_expire_at.strftime("%Y-%m-%d %H:%M:%S")
+        # 查最新已支付订单获取套餐类型
+        order = db.query(VIPOrder).filter(
+            VIPOrder.user_id == current_user["user_id"],
+            VIPOrder.status == 1,
+        ).order_by(VIPOrder.pay_time.desc()).first()
+        if order:
+            plan_type = order.plan_type
     return success({
         "is_vip": current_user.get("vip_level", 0) >= 1,
         "is_svip": current_user.get("vip_level", 0) >= 2,
         "vip_level": current_user.get("vip_level", 0),
         "vip_expire_at": vip_expire_at,
+        "plan_type": plan_type,
         "username": current_user["username"],
     }, "查询成功")
 

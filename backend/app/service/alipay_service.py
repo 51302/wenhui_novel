@@ -231,9 +231,9 @@ def _build_signed_form(biz_content: dict, method: str, is_demo: bool = False) ->
     if ALIPAY_RETURN_URL:
         params["return_url"] = ALIPAY_RETURN_URL
 
-    # 支付宝签名规则：参数值不进行URL编码
+    # 支付宝签名规则：参数值需要进行URL编码
     sorted_params = sorted(params.items())
-    sign_str = "&".join(f"{k}={v}" for k, v in sorted_params)
+    sign_str = "&".join(f"{k}={quote_plus(str(v), encoding='utf-8')}" for k, v in sorted_params)
     params["sign"] = _sign(sign_str)
 
     if is_demo:

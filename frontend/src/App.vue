@@ -15,7 +15,7 @@
           <router-link to="/"><span class="nav-icon">🏠</span> 首页</router-link>
           <router-link to="/circle"><span class="nav-icon">🌐</span> 作品圈</router-link>
           <router-link v-if="user" to="/bookshelf"><span class="nav-icon">📚</span> 书架</router-link>
-          <router-link v-if="user" to="/vip"><span class="nav-icon">💎</span> VIP</router-link>
+          <router-link v-if="user" to="/vip"><span class="nav-icon">💎</span> 开通会员</router-link>
           <router-link to="/creation"><span class="nav-icon">✏️</span> 创作中心</router-link>
         </nav>
       </div>
@@ -24,9 +24,10 @@
           <span class="user-info">
             <span class="user-avatar">{{ user.username[0] }}</span>
             {{ user.username }}
-            <span v-if="user.is_super_admin === 1" class="vip-tag" :title="'到期: ' + (user.vip_expire_at || '未知')">· VIP</span>
+            <span v-if="user.vip_level >= 2" class="vip-tag svip-tag" :title="'到期: ' + (user.vip_expire_at || '未知')">· SVIP</span>
+            <span v-else-if="user.vip_level >= 1" class="vip-tag" :title="'到期: ' + (user.vip_expire_at || '未知')">· VIP</span>
           </span>
-          <router-link v-if="user.is_super_admin !== 1" to="/vip" class="btn-vip pulse-glow">💎 开通VIP</router-link>
+          <router-link v-if="!user.vip_level || user.vip_level < 2" to="/vip" class="btn-vip pulse-glow">💎 {{ user.vip_level >= 1 ? '升级SVIP' : '开通会员' }}</router-link>
           <router-link to="/my" class="btn-my">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
           </router-link>
