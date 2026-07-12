@@ -3,19 +3,22 @@ from datetime import datetime, timedelta
 from app.config import jwt_secret, jwt_algorithm, jwt_expire_minutes
 
 
-def create_token(user_id: int, username: str, is_super_admin: int = 0) -> str:
-    """生成 JWT 访问令牌
-    :param user_id: 用户 ID
+def create_token(user_id: int, username: str, is_super_admin: int = 0, vip_level: int = 0) -> str:
+    """
+    生成JWT访问令牌，包含用户ID、用户名、VIP等级等
+    :param user_id: 用户ID
     :param username: 用户名
-    :param is_super_admin: 是否超级管理员，0=否 1=是
-    :return: 编码后的 JWT 令牌字符串
+    :param is_super_admin: 保留兼容字段（弃用）
+    :param vip_level: 会员等级: 0=免费, 1=VIP(10章/天), 2=SVIP(50章/天)
+    :return: JWT Token 字符串
     """
     payload = {
+        "exp": datetime.utcnow() + timedelta(minutes=jwt_expire_minutes()),
+        "iat": datetime.utcnow(),
         "user_id": user_id,
         "username": username,
         "is_super_admin": is_super_admin,
-        "exp": datetime.utcnow() + timedelta(minutes=jwt_expire_minutes()),
-        "iat": datetime.utcnow()
+        "vip_level": vip_level,
     }
     return jwt.encode(payload, jwt_secret(), algorithm=jwt_algorithm())
 

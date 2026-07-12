@@ -84,10 +84,9 @@ def deepseek_model() -> str:
 
 
 def vip_default_plan() -> str:
-    """获取 VIP 默认订阅方案
-    :return: 方案标识，默认 monthly
-    """
-    return get("alipay.default_plan", "monthly")
+    """获取默认 VIP 套餐类型
+    :return: 套餐类型，默认 vip_monthly"""
+    return get("vip.default_plan", "vip_monthly")
 
 
 def reload():

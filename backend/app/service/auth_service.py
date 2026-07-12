@@ -198,13 +198,15 @@ class AuthService:
 
         hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=8)).decode("utf-8")
         user = UserDAO.create(db, username, hashed, email, phone, is_super_admin)
-        token = create_token(user.id, user.username, user.is_super_admin)
+        token = create_token(user.id, user.username, user.is_super_admin, user.vip_level)
         UserDAO.update_token(db, user, token)
         return success({
             "user_id": user.id,
             "username": user.username,
             "is_super_admin": user.is_super_admin,
-            "is_vip": user.is_super_admin == 1,
+            "is_vip": user.vip_level >= 1,
+            "is_svip": user.vip_level >= 2,
+            "vip_level": user.vip_level,
             "token": token
         }, "注册成功")
 
@@ -244,14 +246,16 @@ class AuthService:
         if not bcrypt.checkpw(password.encode("utf-8"), user.password.encode("utf-8")):
             system_logger.warning(f"登录: 密码错误 - {username}")
             return fail("用户名或密码错误", code=401)
-        token = create_token(user.id, user.username, user.is_super_admin)
+        token = create_token(user.id, user.username, user.is_super_admin, user.vip_level)
         UserDAO.update_token(db, user, token)
-        system_logger.info(f"登录: 认证成功 - {username} (ID={user.id})")
+        system_logger.info(f"登录: 认证成功 - {username} (ID={user.id}, vip_level={user.vip_level})")
         return success({
             "user_id": user.id,
             "username": user.username,
             "is_super_admin": user.is_super_admin,
-            "is_vip": user.is_super_admin == 1,
+            "is_vip": user.vip_level >= 1,
+            "is_svip": user.vip_level >= 2,
+            "vip_level": user.vip_level,
             "token": token
         }, "登录成功")
 
@@ -273,14 +277,15 @@ class AuthService:
     def get_current_user(token: str) -> dict:
         """解析JWT令牌获取当前用户信息
         :param token: JWT令牌
-        :return: 用户信息字典（user_id/username/is_super_admin），失败返回None
+        :return: 用户信息字典（含 vip_level），失败返回None
         """
         try:
             payload = verify_token(token)
             return {
                 "user_id": payload["user_id"],
                 "username": payload["username"],
-                "is_super_admin": payload.get("is_super_admin", 0)
+                "is_super_admin": payload.get("is_super_admin", 0),
+                "vip_level": payload.get("vip_level", 0),
             }
         except ValueError:
             return None

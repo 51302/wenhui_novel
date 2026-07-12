@@ -43,14 +43,16 @@ def create_order(
         return fail(f"无效的套餐类型: {plan_type}", code=400)
 
     plan = VIP_PLANS[plan_type]
+    vip_level = plan.get("vip_level", 1)  # 从套餐中取 vip_level
     user_id = current_user["user_id"]
     username = current_user["username"]
 
     user = UserDAO.get_by_id(db, user_id)
-    if user and user.is_super_admin == 1:
+    if user and user.vip_level >= 1:
         from datetime import datetime
         if user.vip_expire_at and user.vip_expire_at > datetime.utcnow():
-            return fail(f"您已是 VIP 会员，到期时间 {user.vip_expire_at.strftime('%Y-%m-%d')}", code=400)
+            level_name = "SVIP" if user.vip_level >= 2 else "VIP"
+            return fail(f"您已是 {level_name} 会员，到期时间 {user.vip_expire_at.strftime('%Y-%m-%d')}", code=400)
 
     out_trade_no = generate_out_trade_no(user_id)
     VIPOrderDAO.create(
@@ -58,6 +60,7 @@ def create_order(
         total_amount=plan["price"],
         plan_type=plan_type,
         duration_days=plan["days"],
+        vip_level=vip_level,
     )
 
     return success({
@@ -112,10 +115,11 @@ def confirm_payment(
     result = query_order(out_trade_no)
     if result.get("success") and result.get("trade_status") in ("TRADE_SUCCESS", "TRADE_FINISHED"):
         VIPOrderDAO.mark_paid(db, order, order.out_trade_no, order.total_amount)
-        UserDAO.upgrade_to_vip(db, order.user_id, duration_days=order.duration_days)
+        UserDAO.upgrade_to_vip(db, order.user_id, duration_days=order.duration_days, vip_level=order.vip_level)
         invalidate_user_cache(order.user_id)
-        logger.info(f"用户 {order.user_id} ({order.username}) 支付确认成功, 开通 {order.plan_type} VIP")
-        return success(None, "支付成功，VIP 已开通！")
+        level_name = "SVIP" if order.vip_level >= 2 else "VIP"
+        logger.info(f"用户 {order.user_id} ({order.username}) 支付确认成功, 开通 {order.plan_type} {level_name}")
+        return success(None, f"支付成功，{level_name} 已开通！")
     else:
         logger.info(f"订单 {out_trade_no} 尚未支付: {result.get('trade_status', '')}")
         return fail("尚未收到支付，请确认已完成支付后再试", code=402)
@@ -136,9 +140,10 @@ async def alipay_notify(request: Request, db: Session = Depends(get_db)):
         order = VIPOrderDAO.get_by_out_trade_no(db, out_trade_no)
         if order:
             VIPOrderDAO.mark_paid(db, order, trade_no, total_amount)
-            UserDAO.upgrade_to_vip(db, order.user_id, duration_days=order.duration_days)
+            UserDAO.upgrade_to_vip(db, order.user_id, duration_days=order.duration_days, vip_level=order.vip_level)
             invalidate_user_cache(order.user_id)
-            logger.info(f"用户 {order.user_id} ({order.username}) 开通 {order.plan_type} VIP, 订单: {out_trade_no}")
+            level_name = "SVIP" if order.vip_level >= 2 else "VIP"
+            logger.info(f"用户 {order.user_id} ({order.username}) 开通 {order.plan_type} {level_name}, 订单: {out_trade_no}")
         else:
             logger.error(f"未找到订单: {out_trade_no}")
 
@@ -158,9 +163,10 @@ async def demo_notify(request: Request, db: Session = Depends(get_db)):
         order = VIPOrderDAO.get_by_out_trade_no(db, out_trade_no)
         if order:
             VIPOrderDAO.mark_paid(db, order, params.get("trade_no", ""), params.get("total_amount", ""))
-            UserDAO.upgrade_to_vip(db, order.user_id, duration_days=order.duration_days)
+            UserDAO.upgrade_to_vip(db, order.user_id, duration_days=order.duration_days, vip_level=order.vip_level)
             invalidate_user_cache(order.user_id)
-            logger.info(f"Demo 模式: 用户 {order.user_id} 开通 {order.plan_type} VIP")
+            level_name = "SVIP" if order.vip_level >= 2 else "VIP"
+            logger.info(f"Demo 模式: 用户 {order.user_id} 开通 {order.plan_type} {level_name}")
         else:
             logger.error(f"Demo 通知未找到订单: {out_trade_no}")
 
@@ -179,7 +185,9 @@ def vip_status(
     if user and user.vip_expire_at:
         vip_expire_at = user.vip_expire_at.strftime("%Y-%m-%d %H:%M:%S")
     return success({
-        "is_vip": current_user.get("is_vip", False),
+        "is_vip": current_user.get("vip_level", 0) >= 1,
+        "is_svip": current_user.get("vip_level", 0) >= 2,
+        "vip_level": current_user.get("vip_level", 0),
         "vip_expire_at": vip_expire_at,
         "username": current_user["username"],
     }, "查询成功")

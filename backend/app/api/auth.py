@@ -111,6 +111,9 @@ def get_me(current_user: dict = Depends(get_current_user), db: Session = Depends
         vip_expire_at = user.vip_expire_at.strftime("%Y-%m-%d %H:%M:%S")
     return success({
         **current_user,
+        "vip_level": user.vip_level if user else 0,
+        "is_vip": (user.vip_level >= 1) if user else False,
+        "is_svip": (user.vip_level >= 2) if user else False,
         "vip_expire_at": vip_expire_at,
         "free_generate_quota": user.free_generate_quota if user else 0,
     }, "已登录")

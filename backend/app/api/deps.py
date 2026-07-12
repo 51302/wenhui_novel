@@ -5,7 +5,7 @@ from fastapi import Depends, HTTPException, Request, Cookie
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.application.jwt_handler import verify_token
 from app.models.base import get_db
-from app.dao.user_dao import UserDAO
+from app.dao.user_dao import UserDAO, DAILY_QUOTA_MAP
 import app.utils.redis_cache as redis_mod
 from app.utils.redis_cache import RedisCache
 from typing import Optional
@@ -95,13 +95,13 @@ def invalidate_user_cache(user_id: int):
 
 
 def require_vip(current_user: dict = Depends(get_current_user)):
-    """要求当前用户必须是VIP，否则返回403禁止访问
+    """要求当前用户必须是VIP或SVIP，否则返回403
     :param current_user: 当前登录用户信息
     :return: 当前用户信息
-    :raises HTTPException: 非VIP用户抛出403
+    :raises HTTPException: 免费用户抛出403
     """
-    if not current_user.get("is_vip"):
-        raise HTTPException(status_code=403, detail="仅 VIP 用户可操作")
+    if current_user.get("vip_level", 0) < 1:
+        raise HTTPException(status_code=403, detail="仅 VIP/SVIP 用户可操作")
     return current_user
 
 
@@ -109,32 +109,54 @@ def check_creation_access(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """创作权限检查：VIP直接通过，非VIP检查是否有剩余免费次数(不扣减)"""
-    if current_user.get("is_vip"):
-        return current_user
+    """创作权限检查：检查各等级每日配额是否用完（不扣减，仅检查）
+    VIP=10章/天, SVIP=50章/天, 免费=3章/天
+    """
     user = UserDAO.get_by_id(db, current_user["user_id"])
     if not user:
         raise HTTPException(status_code=401, detail="用户不存在")
-    if user.free_generate_quota > 0:
-        current_user["free_generate_quota"] = user.free_generate_quota
-        return current_user
-    raise HTTPException(status_code=403, detail="免费次数已用完，请开通VIP继续使用")
+    # 检查会员过期
+    UserDAO.check_and_downgrade_expired(db, current_user["user_id"])
+    # 跨天重置配额
+    UserDAO._reset_daily_quota(user)
+    db.commit()
+    # 获取当前等级并更新 current_user
+    vip_level = user.vip_level
+    current_user["vip_level"] = vip_level
+    current_user["is_vip"] = vip_level >= 1
+    current_user["is_svip"] = vip_level >= 2
+    quota = user.free_generate_quota
+    if quota <= 0:
+        max_quota = DAILY_QUOTA_MAP.get(vip_level, 3)
+        level_name = "SVIP" if vip_level >= 2 else ("VIP" if vip_level >= 1 else "免费")
+        raise HTTPException(status_code=403, detail=f"今日{level_name}生成次数已用完({max_quota}次)，请明天再试")
+    current_user["free_generate_quota"] = quota
+    return current_user
 
 
 def check_generate_permission(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """AI生成权限检查：VIP直接通过，非VIP检查免费次数并扣减"""
-    if current_user.get("is_vip"):
-        return current_user
+    """AI生成权限检查：检查各等级每日配额并扣减1次
+    VIP=10章/天, SVIP=50章/天, 免费=3章/天
+    """
     user = UserDAO.get_by_id(db, current_user["user_id"])
     if not user:
         raise HTTPException(status_code=401, detail="用户不存在")
-    if user.free_generate_quota > 0:
-        remaining = UserDAO.decrement_generate_quota(db, current_user["user_id"])
-        # 更新 current_user 中的 quota 信息
-        current_user["free_generate_quota"] = remaining
-        current_user["generated_as_guest"] = True
-        return current_user
-    raise HTTPException(status_code=403, detail="免费次数已用完，请开通VIP继续使用")
+    # 检查会员过期
+    UserDAO.check_and_downgrade_expired(db, current_user["user_id"])
+    # 扣减配额（内部会自动跨天重置）
+    remaining = UserDAO.decrement_generate_quota(db, current_user["user_id"])
+    if remaining < 0:
+        vip_level = user.vip_level
+        max_quota = DAILY_QUOTA_MAP.get(vip_level, 3)
+        level_name = "SVIP" if vip_level >= 2 else ("VIP" if vip_level >= 1 else "免费")
+        raise HTTPException(status_code=403, detail=f"今日{level_name}生成次数已用完({max_quota}次)，请明天再试")
+    # 更新 current_user 中的信息
+    current_user["free_generate_quota"] = remaining
+    current_user["vip_level"] = user.vip_level
+    current_user["is_vip"] = user.vip_level >= 1
+    current_user["is_svip"] = user.vip_level >= 2
+    current_user["generated_as_guest"] = True
+    return current_user
