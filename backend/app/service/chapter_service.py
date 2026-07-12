@@ -92,10 +92,12 @@ class ChapterService:
             )
             import app.utils.chroma_client as mod_chroma
             mod_chroma.chroma_memory = chroma_memory
-            print("[记忆体] ChromaDB 懒加载成功")
+            system_logger.info("[记忆体] ChromaDB 懒加载成功")
+
             return True
         except Exception as e:
-            print(f"[记忆体] ChromaDB 初始化失败: {e}")
+            system_logger.error(f"[记忆体] ChromaDB 初始化失败: {e}")
+
             return False
 
     # ----------------------------------------------------------------
@@ -251,10 +253,12 @@ class ChapterService:
             )
             data = response.json()
             if "choices" not in data or not data["choices"]:
-                print(f"[记忆体] AI提取失败: {data.get('error', {})}")
+                system_logger.error(f"[记忆体] AI提取失败: {data.get('error', {})}")
+
                 return ""
             result = data["choices"][0]["message"]["content"]
-            print(f"[记忆体] AI提取完成，{len(result)} 字符")
+            system_logger.info(f"[记忆体] AI提取完成，{len(result)} 字符")
+
             return result
 
     # ----------------------------------------------------------------
@@ -276,7 +280,8 @@ class ChapterService:
                 metadatas=[{"doc_type": "novel_memory", "category": category, "novel_unique_id": novel_unique_id}]
             )
         except Exception as e:
-            print(f"[记忆体] 追加维度 {category} 失败: {e}")
+            system_logger.error(f"[记忆体] 追加维度 {category} 失败: {e}")
+
 
     @staticmethod
     def save_extracted_to_memory(novel_unique_id: str, info_data: dict, chapter_name: str):
@@ -297,8 +302,10 @@ class ChapterService:
             # 给每条加上章节标注
             text = f"{val}（{chapter_name}）"
             ChapterService._append_to_dimension(novel_unique_id, chroma_cat, text)
-            print(f"[记忆体] extract后追加 {chroma_cat}: +{len(text)}字符")
-        print(f"[记忆体] {chapter_name} 提取信息已追加到记忆体")
+            system_logger.info(f"[记忆体] extract后追加 {chroma_cat}: +{len(text)}字符")
+
+        system_logger.info(f"[记忆体] {chapter_name} 提取信息已追加到记忆体")
+
 
     @staticmethod
     async def _incremental_memory_update(novel_unique_id: str, db: Session,
@@ -318,7 +325,8 @@ class ChapterService:
         existing = ChapterService._load_memory(novel_unique_id)
         if not existing:
             # 记忆体不存在 → 全量构建
-            print("[记忆体] 首次构建，走全量模式")
+            system_logger.info("[记忆体] 首次构建，走全量模式")
+
             await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
             return
 
@@ -362,13 +370,17 @@ class ChapterService:
                 )
                 data = response.json()
                 if "choices" not in data or not data["choices"]:
-                    print(f"[记忆体] 增量提取失败: {data.get('error', {})}")
+                    system_logger.error(f"[记忆体] 增量提取失败: {data.get('error', {})}")
+
                     return
                 result = data["choices"][0]["message"]["content"]
-                print(f"[记忆体] 增量提取完成，{len(result)} 字符")
-                print(f"[记忆体] 提取内容预览：\n{result[:300]}...")
+                system_logger.info(f"[记忆体] 增量提取完成，{len(result)} 字符")
+
+                system_logger.info(f"[记忆体] 提取内容预览：\n{result[:300]}...")
+
             except Exception as e:
-                print(f"[记忆体] 增量提取异常: {e}")
+                system_logger.error(f"[记忆体] 增量提取异常: {e}")
+
                 return
 
         # 解析并按维度追加
@@ -387,10 +399,12 @@ class ChapterService:
             for std_cat in ChapterService._MEMORY_CATEGORIES:
                 if std_cat in ai_cat or ai_cat in std_cat or any(kw in ai_cat for kw in std_cat.split()):
                     ChapterService._append_to_dimension(novel_unique_id, std_cat, new_content)
-                    print(f"[记忆体] 增量追加 {std_cat}: +{len(new_content)} 字符")
+                    system_logger.info(f"[记忆体] 增量追加 {std_cat}: +{len(new_content)} 字符")
+
                     break
 
-        print(f"[记忆体] 章节 {chapter_name} 增量更新完成")
+        system_logger.info(f"[记忆体] 章节 {chapter_name} 增量更新完成")
+
 
     # ----------------------------------------------------------------
     #  全量记忆体：逐章提取9维信息 → 聚合 → 存ChromaDB
@@ -464,7 +478,8 @@ class ChapterService:
                     return (idx, None)
 
                 chapter_name = fname.rsplit("_", 1)[0] if "_" in fname else fname.replace(".txt", "")
-                print(f"[记忆体] 提取第{idx+1}/{total}章: {chapter_name}")
+                system_logger.info(f"[记忆体] 提取第{idx+1}/{total}章: {chapter_name}")
+
 
                 info = await ChapterService.extract_chapter_info(full_text, chapter_name)
 
@@ -476,17 +491,20 @@ class ChapterService:
                         if val and val != "无":
                             lines.append(f"  {field}: {val}")
                     result_text = "\n".join(lines)
-                    print(f"[记忆体] 第{idx+1}章 {chapter_name} 提取完成:\n{result_text}")
+                    system_logger.info(f"[记忆体] 第{idx+1}章 {chapter_name} 提取完成:\n{result_text}")
+
                     return (idx, result_text)
                 else:
                     snippet = full_text[:300].replace("\n", " ")
-                    print(f"[记忆体] 第{idx+1}章 {chapter_name} 提取失败，兜底: {snippet[:80]}...")
+                    system_logger.error(f"[记忆体] 第{idx+1}章 {chapter_name} 提取失败，兜底: {snippet[:80]}...")
+
                     return (idx, f"=== 第{idx+1}章 {chapter_name} ===\n  (提取失败，概要): {snippet}")
 
         import asyncio
         total = len(txt_files)
         sem = asyncio.Semaphore(concurrency)
-        print(f"[记忆体] 开始并发提取，共{total}章，并发数={concurrency}")
+        system_logger.info(f"[记忆体] 开始并发提取，共{total}章，并发数={concurrency}")
+
 
         tasks = [extract_one(i, fname, sem) for i, fname in enumerate(txt_files)]
         results_list = await asyncio.gather(*tasks)
@@ -497,7 +515,8 @@ class ChapterService:
         chapter_num = len(chapter_summaries)
 
         chapters_text = "\n\n".join(chapter_summaries)
-        print(f"[记忆体] 逐章提取完成，共{chapter_num}章，摘要总长度={len(chapters_text)}")
+        system_logger.info(f"[记忆体] 逐章提取完成，共{chapter_num}章，摘要总长度={len(chapters_text)}")
+
 
         # 用聚合摘要发给AI合成最终记忆体
         prompt = ChapterService._AGGREGATE_MEMORY_PROMPT.replace(
@@ -527,9 +546,11 @@ class ChapterService:
                 if "choices" in data and data["choices"]:
                     extracted = data["choices"][0]["message"]["content"]
                 else:
-                    print(f"[记忆体] 聚合失败: {data.get('error', {})}")
+                    system_logger.error(f"[记忆体] 聚合失败: {data.get('error', {})}")
+
             except Exception as e:
-                print(f"[记忆体] 聚合异常: {e}")
+                system_logger.error(f"[记忆体] 聚合异常: {e}")
+
 
         memory = f"""【作品设定】
 {settings_text}
@@ -656,7 +677,8 @@ class ChapterService:
                 data = response.json()
                 if "choices" in data and data["choices"]:
                     ai_output = data["choices"][0]["message"]["content"]
-                    print(f"[提取信息] AI返回长度={len(ai_output)}, 前200字: {ai_output[:200]}")
+                    system_logger.info(f"[提取信息] AI返回长度={len(ai_output)}, 前200字: {ai_output[:200]}")
+
                     # 解析 ---标签--- / 【标签】 / **标签** 等多种格式
                     import re
                     current_key = ""
@@ -693,7 +715,8 @@ class ChapterService:
 
             return {"success": True, "data": result}
         except Exception as e:
-            print(f"[提取信息] 异常: {e}")
+            system_logger.error(f"[提取信息] 异常: {e}")
+
             return {"success": False, "error": str(e)}
 
     @staticmethod
@@ -1233,7 +1256,8 @@ class ChapterService:
                 if chapter_unique_id in fname:
                     fpath = os.path.join(novel_dir, fname)
                     os.remove(fpath)
-                    print(f"[删除章节] 已删除本地文件: {fpath}")
+                    system_logger.info(f"[删除章节] 已删除本地文件: {fpath}")
+
                     break
 
         # 2. 删除数据库记录（先提交，确保成功）
@@ -1251,12 +1275,14 @@ class ChapterService:
             try:
                 asyncio.run(ChapterService._rebuild_memory_from_files(novel_unique_id, db=None))
             except BaseException as e:
-                print(f"[删除章节] 记忆体重建失败: {e}")
+                system_logger.error(f"[删除章节] 记忆体重建失败: {e}")
+
 
         t = threading.Thread(target=_async_rebuild, daemon=True)
         t.start()
 
-        print(f"[删除章节] {chapter_name} 已删除，记忆体后台重建中")
+        system_logger.info(f"[删除章节] {chapter_name} 已删除，记忆体后台重建中")
+
         return success(None, "章节删除成功，记忆体后台更新中")
 
     @staticmethod

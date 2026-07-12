@@ -50,6 +50,11 @@ def _set_token_cookie(response: Response, token: str):
 
 @router.post("/register")
 def register(req: RegisterRequest, response: Response, db: Session = Depends(get_db)):
+    """
+    用户注册：邮箱 + 验证码 + 用户名 + 密码
+    注册成功后自动登录，设置 HttpOnly cookie
+    """
+    from app.utils.logger import system_logger
     result = AuthService.register(
         db, req.username, req.password,
         req.email, req.phone,
@@ -57,7 +62,10 @@ def register(req: RegisterRequest, response: Response, db: Session = Depends(get
         req.is_super_admin
     )
     if result.get("状态码") == 200:
+        system_logger.info(f"用户注册成功: {req.username} (邮箱={req.email})")
         _set_token_cookie(response, result["数据"]["token"])
+    else:
+        system_logger.warning(f"用户注册失败: {req.username} → {result.get('消息', '')}")
     return result
 
 

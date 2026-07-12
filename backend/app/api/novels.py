@@ -18,11 +18,23 @@ def create_novel(
     current_user: dict = Depends(get_current_user),
     _perm=Depends(check_creation_access),
 ):
-    return NovelService.create_novel(
+    """
+    创建小说作品
+    必需参数：书名、读者受众（男频/女频）
+    可选：简介、故事背景、世界观设定、修炼境界、角色设定、题材、封面
+    """
+    from app.utils.logger import system_logger
+    result = NovelService.create_novel(
         db, current_user["user_id"], current_user["username"],
         title, target_reader, description, story_background,
         world_setting, realm_setting, characters, genre, cover_image, current_user["username"]
     )
+    if result.get("状态码") == 200:
+        novel_id = result.get("数据", {}).get("novel_unique_id", "")
+        system_logger.info(f"小说创建成功: {title} (ID={novel_id}, 用户={current_user['username']})")
+    else:
+        system_logger.warning(f"小说创建失败: {title} → {result.get('消息', '')}")
+    return result
 
 
 @router.get("/list")
@@ -66,24 +78,30 @@ def delete_novel(
     current_user: dict = Depends(get_current_user),
     _vip=Depends(check_creation_access),
 ):
-    return NovelService.delete_novel(db, novel_unique_id)
-
+    """删除小说作品（含所有关联章节）"""
+    from app.utils.logger import system_logger
+    result = NovelService.delete_novel(db, novel_unique_id)
+    if result.get("状态码") == 200:
+        system_logger.info(f"小说删除成功: ID={novel_unique_id}, 用户={current_user['username']}")
+    return result
 
 @router.put("/update/{novel_unique_id}")
 def update_novel(
     novel_unique_id: str,
-    title: str = None,
-    target_reader: str = None,
-    description: str = None,
-    story_background: str = None,
-    world_setting: str = None,
-    genre: str = None,
+    title: str = None, target_reader: str = None,
+    description: str = None, story_background: str = None,
+    world_setting: str = None, genre: str = None,
     cover_image: str = None,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
     _vip=Depends(check_creation_access),
 ):
-    return NovelService.update_novel(
+    """更新小说作品信息（标题、简介、世界观设定等）"""
+    from app.utils.logger import system_logger
+    result = NovelService.update_novel(
         db, novel_unique_id, title, target_reader, description,
         story_background, world_setting, genre, cover_image
     )
+    if result.get("状态码") == 200:
+        system_logger.info(f"小说更新成功: ID={novel_unique_id}, 用户={current_user['username']}")
+    return result

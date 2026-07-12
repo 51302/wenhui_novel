@@ -48,9 +48,21 @@ async def lifespan(application: FastAPI):
     mod_chroma.chroma_memory = global_chroma
 
     Base.metadata.create_all(bind=engine)
-    print("文辉小说后端启动成功!")
-    yield
-    print("文辉小说后端关闭")
+
+    # ====== 服务启动日志 ======
+    try:
+        redis_ok = global_redis.ping() if global_redis else False
+        db_ok = False
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+            db_ok = True
+        system_logger.info(f"服务启动成功 → MySQL={'✓' if db_ok else '✗'} Redis={'✓' if redis_ok else '✗'}")
+    except Exception as e:
+        system_logger.warning(f"服务启动完成(部分服务不可用): {e}")
+
+    yield  # 服务运行中...
+
+    system_logger.info("服务正常关闭")
 
 
 app = FastAPI(title="文辉小说", version="1.0.0", docs_url="/api/docs", lifespan=lifespan)
@@ -128,6 +140,12 @@ def health_check():
         mysql_alive = True
     except Exception:
         mysql_alive = False
+
+    # 如果 MySQL 或 Redis 不可用，记录日志
+    if not mysql_alive:
+        system_logger.error("健康检查: MySQL 连接失败!")
+    if not redis_alive:
+        system_logger.warning("健康检查: Redis 连接失败!")
 
     _health_cache["mysql"] = mysql_alive
     _health_cache["redis"] = redis_alive

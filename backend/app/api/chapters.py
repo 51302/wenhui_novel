@@ -4,6 +4,7 @@ from app.models.base import get_db
 from app.service.chapter_service import ChapterService
 from app.api.deps import get_current_user, check_generate_permission, check_creation_access
 from app.utils.response import fail, success
+from app.utils.logger import system_logger
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/chapters", tags=["章节"])
@@ -87,8 +88,12 @@ def publish_chapter(
     current_user: dict = Depends(get_current_user),
     _vip=Depends(check_creation_access),
 ):
-    """发布章节到作品圈，附带AI提取的关键信息"""
-    return ChapterService.publish_chapter(
+    """
+    发布章节到作品圈
+    附带 AI 提取的关键信息（人物/组织/地点/技能/事件等）
+    发布后同步到作品圈，不自动更新记忆体（由 extract-info 负责）
+    """
+    result = ChapterService.publish_chapter(
         db, chapter_unique_id,
         content=body.get("content"),
         characters_involved=body.get("characters_involved"),
@@ -101,6 +106,12 @@ def publish_chapter(
         power_changes=body.get("power_changes"),
         foreshadowing=body.get("foreshadowing"),
     )
+    if result.get("状态码") == 200:
+        ch_name = result.get("数据", {}).get("chapter_name", "")
+        system_logger.info(f"章节发布成功: {ch_name} (ID={chapter_unique_id}, 用户={current_user['username']})")
+    else:
+        system_logger.warning(f"章节发布失败: ID={chapter_unique_id} → {result.get('消息', '')}")
+    return result
 
 
 class ExtractInfoBody(BaseModel):
@@ -122,20 +133,17 @@ async def extract_chapter_info(
         return fail("章节内容太短，无法提取")
     try:
         result = await ChapterService.extract_chapter_info(body.content, body.chapter_name)
-        print(f"[提取信息] result keys: {result.keys() if isinstance(result, dict) else type(result)}")
-        print(f"[提取信息] success={result.get('success')}, data_keys={list(result.get('data', {}).keys()) if result.get('data') else 'N/A'}")
         if result.get("success"):
             # 提取成功 → 更新记忆体
             if body.novel_unique_id and body.chapter_name:
                 ChapterService.save_extracted_to_memory(
-                    body.novel_unique_id,
-                    result["data"],
-                    body.chapter_name
+                    body.novel_unique_id, result["data"], body.chapter_name
                 )
+            system_logger.info(f"AI关键信息提取成功: {body.chapter_name} (novel={body.novel_unique_id})")
             return success(result["data"], "提取成功")
         return fail(result.get("error", "提取失败"))
     except Exception as e:
-        print(f"[提取信息] API异常: {e}")
+        system_logger.error(f"AI关键信息提取异常: {body.chapter_name} → {str(e)}")
         import traceback
         traceback.print_exc()
         return fail(f"提取异常: {str(e)}")
