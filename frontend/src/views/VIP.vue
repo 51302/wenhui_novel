@@ -6,17 +6,60 @@
       <p class="hero-sub">解锁全部功能，畅享 AI 创作体验</p>
     </div>
 
-    <!-- 已开通会员 -->
-    <div v-if="!loading && isVip" class="vip-card already-vip">
-      <div class="vip-badge" :class="isSvip ? 'svip-badge' : ''">{{ isSvip ? '👑 已开通' : '✨ 已开通' }}</div>
-      <h2>您已是 {{ isSvip ? 'SVIP' : 'VIP' }} 会员</h2>
+    <!-- ============================================ -->
+    <!-- SVIP 用户：仅显示已开通卡片，不显示任何套餐    -->
+    <!-- ============================================ -->
+    <div v-if="!loading && isSvip" class="vip-card already-vip svip-full-card">
+      <div class="vip-badge svip-badge">👑 SVIP 会员</div>
+      <h2 style="color:#f59e0b">您已是 SVIP 会员</h2>
       <p v-if="vipExpireAt">到期时间：{{ vipExpireAt }}</p>
-      <p>{{ isSvip ? '每日可生成 50 章，畅享极致创作体验' : '每日可生成 10 章，享受 AI 创作特权' }}</p>
-      <p v-if="!isSvip" class="upgrade-hint" @click="scrollToSvip">💡 升级 SVIP · 每日 50 章 →</p>
+      <p>每日可生成 <b>50</b> 章，畅享极致创作体验</p>
     </div>
 
-    <!-- 套餐卡片 -->
-    <div v-if="!loading && !isVip">
+    <!-- ============================================ -->
+    <!-- VIP 用户：状态卡片 + 仅显示 SVIP 升级套餐      -->
+    <!-- ============================================ -->
+    <template v-if="!loading && vipLevel === 1 && !isSvip">
+      <div class="vip-card already-vip">
+        <div class="vip-badge">✨ VIP 会员</div>
+        <h2>您已是 VIP 会员</h2>
+        <p v-if="vipExpireAt">到期时间：{{ vipExpireAt }}</p>
+        <p>每日可生成 <b>10</b> 章，享受 AI 创作特权</p>
+      </div>
+
+      <!-- SVIP 升级套餐 -->
+      <div class="plan-section">
+        <h2 class="section-title svip-title">👑 升级 SVIP · 每日 50 章</h2>
+        <div class="vip-cards">
+          <div class="price-card svip-card" @click="handlePay('svip_monthly')">
+            <h3>SVIP 月度</h3>
+            <div class="price"><span class="symbol">¥</span><span class="amount">79</span><span class="period">/月</span></div>
+            <ul class="features"><li>👑 50章/天</li><li>📚 无限创作</li><li>🌐 首页推荐</li><li>🎨 专属徽章</li><li>⚡ 极速队列</li></ul>
+            <button class="btn-pay btn-svip" :disabled="paying">{{ paying && currentPlan === 'svip_monthly' ? '获取中...' : '¥79 升级' }}</button>
+          </div>
+          <div class="price-card svip-card highlight-svip" @click="handlePay('svip_quarterly')">
+            <div class="card-ribbon ribbon-svip">👑 超值</div>
+            <h3>SVIP 季度</h3>
+            <div class="price"><span class="symbol">¥</span><span class="amount">199</span><span class="period">/季</span></div>
+            <div class="save-tag">省 ¥38 · 约 ¥66.33/月</div>
+            <ul class="features"><li>👑 50章/天</li><li>📚 无限创作</li><li>🌐 优先推荐</li><li>🎨 专属徽章</li><li>⚡ 闪电队列</li></ul>
+            <button class="btn-pay btn-svip-highlight" :disabled="paying">{{ paying && currentPlan === 'svip_quarterly' ? '获取中...' : '¥199 升级' }}</button>
+          </div>
+          <div class="price-card svip-card" @click="handlePay('svip_yearly')">
+            <h3>SVIP 年度</h3>
+            <div class="price"><span class="symbol">¥</span><span class="amount">699</span><span class="period">/年</span></div>
+            <div class="save-tag">省 ¥249 · 约 ¥58.25/月</div>
+            <ul class="features"><li>👑 50章/天</li><li>📚 无限创作</li><li>🌐 首页推荐</li><li>🎨 专属徽章</li><li>⚡ 至尊队列</li></ul>
+            <button class="btn-pay btn-svip" :disabled="paying">{{ paying && currentPlan === 'svip_yearly' ? '获取中...' : '¥699 升级' }}</button>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ============================================ -->
+    <!-- 普通用户：显示 VIP + SVIP 全部套餐             -->
+    <!-- ============================================ -->
+    <template v-if="!loading && vipLevel === 0">
       <!-- VIP 专区 -->
       <div class="plan-section">
         <h2 class="section-title">🌟 VIP 会员 · 每日 10 章</h2>
@@ -27,9 +70,7 @@
             <ul class="features">
               <li>✨ 10章/天 AI生成</li><li>📚 创建并发布作品</li><li>🌐 作品圈互动</li><li>🎨 高级排版</li><li>⚡ 优先队列</li>
             </ul>
-            <button class="btn-pay" :disabled="paying">
-              {{ paying && currentPlan === 'vip_monthly' ? '获取中...' : '¥59 开通' }}
-            </button>
+            <button class="btn-pay" :disabled="paying">{{ paying && currentPlan === 'vip_monthly' ? '获取中...' : '¥59 开通' }}</button>
           </div>
           <div class="price-card highlight">
             <div class="card-ribbon">🔥 推荐</div>
@@ -39,9 +80,7 @@
             <ul class="features">
               <li>✨ 月度全部特权</li><li>📚 无限制发布</li><li>🌐 优先曝光</li><li>🎨 高级排版</li><li>⚡ 极速队列</li>
             </ul>
-            <button class="btn-pay btn-highlight" @click="handlePay('vip_quarterly')" :disabled="paying">
-              {{ paying && currentPlan === 'vip_quarterly' ? '获取中...' : '¥149 开通' }}
-            </button>
+            <button class="btn-pay btn-highlight" @click="handlePay('vip_quarterly')" :disabled="paying">{{ paying && currentPlan === 'vip_quarterly' ? '获取中...' : '¥149 开通' }}</button>
           </div>
           <div class="price-card" @click="handlePay('vip_yearly')">
             <h3>VIP 年度</h3>
@@ -50,15 +89,13 @@
             <ul class="features">
               <li>✨ 全年全部特权</li><li>📚 无限创作</li><li>🌐 首页推荐</li><li>🎨 年度徽章</li><li>⚡ 超优先级</li>
             </ul>
-            <button class="btn-pay" :disabled="paying">
-              {{ paying && currentPlan === 'vip_yearly' ? '获取中...' : '¥499 开通' }}
-            </button>
+            <button class="btn-pay" :disabled="paying">{{ paying && currentPlan === 'vip_yearly' ? '获取中...' : '¥499 开通' }}</button>
           </div>
         </div>
       </div>
 
       <!-- SVIP 专区 -->
-      <div class="plan-section" id="svip-section">
+      <div class="plan-section">
         <h2 class="section-title svip-title">👑 SVIP 会员 · 每日 50 章</h2>
         <div class="vip-cards">
           <div class="price-card svip-card" @click="handlePay('svip_monthly')">
@@ -67,9 +104,7 @@
             <ul class="features">
               <li>👑 50章/天 AI生成</li><li>📚 无限创作发布</li><li>🌐 首页推荐曝光</li><li>🎨 专属徽章</li><li>⚡ 极速优先队列</li>
             </ul>
-            <button class="btn-pay btn-svip" :disabled="paying">
-              {{ paying && currentPlan === 'svip_monthly' ? '获取中...' : '¥79 开通' }}
-            </button>
+            <button class="btn-pay btn-svip" :disabled="paying">{{ paying && currentPlan === 'svip_monthly' ? '获取中...' : '¥79 开通' }}</button>
           </div>
           <div class="price-card svip-card highlight-svip" @click="handlePay('svip_quarterly')">
             <div class="card-ribbon ribbon-svip">👑 超值</div>
@@ -79,9 +114,7 @@
             <ul class="features">
               <li>👑 月度全特权</li><li>📚 无限制创作</li><li>🌐 优先推荐</li><li>🎨 专属徽章</li><li>⚡ 闪电队列</li>
             </ul>
-            <button class="btn-pay btn-svip-highlight" @click="handlePay('svip_quarterly')" :disabled="paying">
-              {{ paying && currentPlan === 'svip_quarterly' ? '获取中...' : '¥199 开通' }}
-            </button>
+            <button class="btn-pay btn-svip-highlight" @click="handlePay('svip_quarterly')" :disabled="paying">{{ paying && currentPlan === 'svip_quarterly' ? '获取中...' : '¥199 开通' }}</button>
           </div>
           <div class="price-card svip-card" @click="handlePay('svip_yearly')">
             <h3>SVIP 年度</h3>
@@ -90,42 +123,14 @@
             <ul class="features">
               <li>👑 全年全特权</li><li>📚 无限创作</li><li>🌐 首页推荐</li><li>🎨 年度专属徽章</li><li>⚡ 至尊队列</li>
             </ul>
-            <button class="btn-pay btn-svip" :disabled="paying">
-              {{ paying && currentPlan === 'svip_yearly' ? '获取中...' : '¥699 开通' }}
-            </button>
+            <button class="btn-pay btn-svip" :disabled="paying">{{ paying && currentPlan === 'svip_yearly' ? '获取中...' : '¥699 开通' }}</button>
           </div>
         </div>
       </div>
-    </div>
+    </template>
 
-    <!-- 已有VIP但可升级SVIP -->
-    <div v-if="!loading && isVip && !isSvip" class="plan-section" id="svip-section">
-      <h2 class="section-title svip-title">👑 升级 SVIP · 每日 50 章</h2>
-      <div class="vip-cards">
-        <div class="price-card svip-card" @click="handlePay('svip_monthly')">
-          <h3>SVIP 月度</h3>
-          <div class="price"><span class="symbol">¥</span><span class="amount">79</span><span class="period">/月</span></div>
-          <ul class="features"><li>👑 50章/天</li><li>📚 无限创作</li><li>🌐 首页推荐</li><li>🎨 专属徽章</li><li>⚡ 极速队列</li></ul>
-          <button class="btn-pay btn-svip" :disabled="paying">{{ paying && currentPlan === 'svip_monthly' ? '获取中...' : '¥79 升级' }}</button>
-        </div>
-        <div class="price-card svip-card highlight-svip" @click="handlePay('svip_quarterly')">
-          <div class="card-ribbon ribbon-svip">👑 超值</div>
-          <h3>SVIP 季度</h3>
-          <div class="price"><span class="symbol">¥</span><span class="amount">199</span><span class="period">/季</span></div>
-          <ul class="features"><li>👑 50章/天</li><li>📚 无限创作</li><li>🌐 优先推荐</li><li>🎨 专属徽章</li><li>⚡ 闪电队列</li></ul>
-          <button class="btn-pay btn-svip-highlight" :disabled="paying">{{ paying && currentPlan === 'svip_quarterly' ? '获取中...' : '¥199 升级' }}</button>
-        </div>
-        <div class="price-card svip-card" @click="handlePay('svip_yearly')">
-          <h3>SVIP 年度</h3>
-          <div class="price"><span class="symbol">¥</span><span class="amount">699</span><span class="period">/年</span></div>
-          <ul class="features"><li>👑 50章/天</li><li>📚 无限创作</li><li>🌐 首页推荐</li><li>🎨 专属徽章</li><li>⚡ 至尊队列</li></ul>
-          <button class="btn-pay btn-svip" :disabled="paying">{{ paying && currentPlan === 'svip_yearly' ? '获取中...' : '¥699 升级' }}</button>
-        </div>
-      </div>
-    </div>
-
+    <!-- 加载 / 错误 -->
     <div v-if="loading" class="loading"><span class="spinner"></span> 加载中...</div>
-
     <div v-if="!loading && errorMsg" class="vip-card" style="text-align:center;padding:40px">
       <p style="color:#f87171;margin-bottom:12px">{{ errorMsg }}</p>
       <a href="/login" style="color:#06b6d4;font-size:14px">请先登录</a>
@@ -143,6 +148,7 @@ export default {
   setup() {
     const router = useRouter()
     const route = useRoute()
+    const vipLevel = ref(0)
     const isVip = ref(false)
     const isSvip = ref(false)
     const vipExpireAt = ref(null)
@@ -156,6 +162,7 @@ export default {
       try {
         const res = await api.get('/vip/status')
         if (res.状态码 === 200) {
+          vipLevel.value = res.数据.vip_level ?? 0
           isVip.value = res.数据.is_vip
           isSvip.value = res.数据.is_svip
           vipExpireAt.value = res.数据.vip_expire_at
@@ -175,11 +182,6 @@ export default {
         } else alert(res.消息 || '创建订单失败')
       } catch (e) { alert('网络错误，请重试') }
       finally { paying.value = false }
-    }
-
-    const scrollToSvip = () => {
-      const el = document.getElementById('svip-section')
-      if (el) el.scrollIntoView({ behavior: 'smooth' })
     }
 
     const confirmFromUrl = async () => {
@@ -202,11 +204,12 @@ export default {
 
     onMounted(async () => {
       if (!localStorage.getItem('novel_user')) { loading.value = false; errorMsg.value = '请先登录'; return }
+      await checkStatus()
+      // 支付完成后回来，确认支付状态
       await confirmFromUrl()
-      if (!isVip.value) await checkStatus()
     })
 
-    return { isVip, isSvip, vipExpireAt, loading, paying, currentPlan, errorMsg, handlePay, checkStatus, scrollToSvip }
+    return { vipLevel, isVip, isSvip, vipExpireAt, loading, paying, currentPlan, errorMsg, handlePay }
   }
 }
 </script>
@@ -217,36 +220,30 @@ export default {
 .hero-glow { position: absolute; top: -40px; left: 50%; transform: translateX(-50%); width: 300px; height: 300px; background: radial-gradient(circle, var(--accent-glow), transparent); pointer-events: none }
 .vip-hero h1 { font-size: 28px; color: var(--text-primary); position: relative; z-index: 1; margin-bottom: 8px }
 .hero-sub { color: var(--text-secondary); font-size: 14px }
-
 .plan-section { margin-bottom: 48px }
 .section-title { text-align: center; font-size: 20px; color: var(--text-primary); margin-bottom: 20px; font-weight: 700 }
 .svip-title { color: #f59e0b }
-
 .loading { display: flex; gap: 10px; align-items: center; justify-content: center; padding: 80px 0; color: var(--text-secondary) }
 .spinner { width: 20px; height: 20px; border: 2px solid rgba(6,182,212,0.2); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block }
 @keyframes spin { to { transform: rotate(360deg) } }
-
 .vip-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 18px; padding: 40px 48px; backdrop-filter: blur(20px); box-shadow: var(--card-shadow) }
-.already-vip { text-align: center; padding: 60px 48px }
+.already-vip { text-align: center; padding: 60px 48px; margin-bottom: 36px }
 .already-vip h2 { color: var(--accent); font-size: 22px; margin-bottom: 8px }
 .already-vip p { color: var(--text-secondary); font-size: 14px; margin-bottom: 4px }
+.already-vip p b { color: #e0e0e0 }
 .vip-badge { display: inline-block; padding: 6px 20px; border-radius: 20px; background: linear-gradient(135deg, rgba(6,182,212,0.2), rgba(139,92,246,0.2)); color: var(--accent); font-size: 13px; font-weight: 600; margin-bottom: 16px; border: 1px solid var(--accent-glow) }
 .svip-badge { background: linear-gradient(135deg, rgba(245,158,11,0.2), rgba(239,68,68,0.2)); color: #f59e0b; border: 1px solid rgba(245,158,11,0.3) }
-.upgrade-hint { color: #f59e0b; cursor: pointer; font-size: 14px; margin-top: 12px; text-decoration: underline; transition: color 0.2s }
-.upgrade-hint:hover { color: #fbbf24 }
+.svip-full-card { border-color: rgba(245,158,11,0.3); background: linear-gradient(180deg, rgba(245,158,11,0.05), var(--bg-card)) }
 
 .vip-cards { display: flex; gap: 20px; justify-content: center; align-items: stretch }
 .price-card { flex: 1; max-width: 340px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 18px; padding: 28px 22px; backdrop-filter: blur(20px); text-align: center; position: relative; overflow: hidden; cursor: pointer; box-shadow: var(--card-shadow); transition: all 0.3s; display: flex; flex-direction: column }
 .price-card:hover { border-color: var(--border-hover); transform: translateY(-4px); box-shadow: var(--card-shadow-hover) }
 .price-card.highlight { border-color: var(--border-focus); box-shadow: var(--card-shadow), 0 0 50px var(--accent-glow); transform: scale(1.03) }
 .price-card.highlight:hover { transform: scale(1.03) translateY(-4px) }
-
-/* SVIP card styles */
 .svip-card { border-color: rgba(245,158,11,0.25); background: linear-gradient(180deg, rgba(245,158,11,0.04), var(--bg-card)) }
 .svip-card:hover { border-color: rgba(245,158,11,0.5); box-shadow: 0 0 40px rgba(245,158,11,0.15) }
 .highlight-svip { border-color: rgba(245,158,11,0.5); box-shadow: var(--card-shadow), 0 0 60px rgba(245,158,11,0.2); transform: scale(1.03); background: linear-gradient(180deg, rgba(245,158,11,0.08), var(--bg-card)) }
 .highlight-svip:hover { transform: scale(1.03) translateY(-4px); box-shadow: 0 0 70px rgba(245,158,11,0.3) }
-
 .card-ribbon { position: absolute; top: 12px; right: -28px; transform: rotate(45deg); background: var(--gold-gradient); color: #fff; padding: 3px 36px; font-size: 10px; font-weight: 700 }
 .ribbon-svip { background: linear-gradient(135deg, #f59e0b, #ef4444) }
 .price-card h3 { font-size: 15px; color: var(--text-primary); margin: 0 0 10px; font-weight: 600 }
@@ -257,13 +254,10 @@ export default {
 .save-tag { font-size: 11px; color: var(--gold); background: rgba(245,158,11,0.1); padding: 2px 10px; border-radius: 10px; display: inline-block; margin-bottom: 14px }
 .features { list-style: none; padding: 0; margin: 0 0 20px; text-align: left; flex: 1 }
 .features li { padding: 5px 0; color: var(--text-secondary); font-size: 12px }
-
 .btn-pay { width: 100%; padding: 10px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 700; color: var(--btn-text); background: var(--btn-bg); border: 1px solid var(--btn-border); transition: all 0.3s; display: flex; align-items: center; justify-content: center; gap: 8px }
 .btn-pay:hover:not(:disabled) { background: rgba(6,182,212,0.15) }
 .btn-highlight { background: var(--brand-gradient); color: #fff; border: none; box-shadow: 0 4px 24px var(--accent-glow) }
 .btn-pay:disabled { opacity: 0.6; cursor: not-allowed }
-
-/* SVIP buttons */
 .btn-svip { background: linear-gradient(135deg, rgba(245,158,11,0.15), rgba(239,68,68,0.1)); border: 1px solid rgba(245,158,11,0.35); color: #f59e0b }
 .btn-svip:hover:not(:disabled) { background: linear-gradient(135deg, rgba(245,158,11,0.25), rgba(239,68,68,0.2)) }
 .btn-svip-highlight { background: linear-gradient(135deg, #f59e0b, #ef4444); color: #fff; border: none; box-shadow: 0 4px 24px rgba(245,158,11,0.4) }
