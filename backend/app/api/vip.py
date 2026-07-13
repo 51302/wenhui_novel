@@ -194,7 +194,7 @@ def vip_status(
             order = db.query(VIPOrder).filter(
                 VIPOrder.user_id == current_user["user_id"],
                 VIPOrder.status == 1,
-            ).order_by(VIPOrder.paid_at.desc()).first()
+            ).order_by(VIPOrder.created_at.desc()).first()
             if order:
                 plan_type = order.plan_type
     return success({

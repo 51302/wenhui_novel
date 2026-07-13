@@ -126,6 +126,7 @@
           <button @click="openChapterModal(novel)">编辑章节</button>
           <button @click="openEditModal(novel)">编辑作品</button>
           <button class="btn-danger" @click="deleteNovel(novel)">删除作品</button>
+          <button v-if="novel.cover_image" class="btn-download" @click="downloadCover(novel)">⬇ 下载封面</button>
         </div>
       </div>
 
@@ -715,6 +716,15 @@ export default {
       } catch (e) { alert('删除失败') }
     }
 
+    const downloadCover = (novel) => {
+      if (!novel.cover_image) return
+      const a = document.createElement('a')
+      a.href = novel.cover_image
+      a.download = `${novel.title || '封面'}_封面.jpg`
+      a.target = '_blank'
+      a.click()
+    }
+
     const formatTime = (t) => t ? new Date(t).toLocaleString('zh-CN') : ''
 
     const syncUserFromServer = async () => {
@@ -750,7 +760,7 @@ export default {
       myNovels, fetchMyNovels,
       showChapterModal, chapterNovel, chapterMode, novelChapters, chapterForm, generating,
       openChapterModal, generateChapter,
-      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, continueChapter, continuing, deleteNovel, formatTime,
+      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, continueChapter, continuing, deleteNovel, downloadCover, formatTime,
       extracting, extractDraftInfo,
       genreOptions, selectedGenres, toggleGenre, handleCoverUpload, removeCover,
       showEditModal, editForm, editSelectedGenres, editError, editSuccess,
@@ -967,6 +977,8 @@ export default {
 .draft-actions button:first-child { background: linear-gradient(135deg, #06b6d4, #8b5cf6); color: #fff; border: none; }
 .draft-actions button:first-child:hover { box-shadow: 0 4px 20px rgba(6,182,212,0.4); }
 .btn-danger { background: transparent !important; color: #f87171 !important; border: 1px solid rgba(248,113,113,0.4) !important; }
+.btn-download { background: transparent !important; color: #10b981 !important; border: 1px solid rgba(16, 185, 129, 0.4) !important; }
+.btn-download:hover { opacity: 0.85; }
 .btn-danger:hover { background: rgba(248,113,113,0.1) !important; }
 .empty { text-align: center; padding: 60px 0; color: #5a6080; font-size: 14px; }
 
