@@ -144,7 +144,14 @@
             <input v-model="chapterForm.skills" placeholder="涉及技能" />
             <input v-model.number="chapterForm.word_count" type="number" placeholder="章节字数" />
             <input v-model="chapterForm.chapter_summary" placeholder="本章概要(如：偷袭天道教宗)" />
-            <div class="chapter-btns">
+            <template v-if="chapterMode === 'edit'">
+              <textarea v-model="chapterForm.content" rows="12" placeholder="章节正文内容" style="width:100%;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:8px;color:#e0e0e0;padding:12px;font-size:13px;resize:vertical;font-family:inherit;margin-top:8px" />
+              <div class="chapter-btns">
+                <button class="btn-save" @click="saveChapterEdit" :disabled="saving">💾 {{ saving ? '保存中...' : '保存修改' }}</button>
+                <button class="btn-cancel" @click="cancelChapterEdit">取消</button>
+              </div>
+            </template>
+            <div class="chapter-btns" v-else>
               <button class="btn-ai" @click="generateChapter" :disabled="generating">
                 <span v-if="generating" class="spinner"></span>
                 {{ generating ? '正在生成中...' : '一键AI生成' }}
@@ -157,6 +164,7 @@
             <div v-for="(ch, idx) in novelChapters" :key="ch.chapter_unique_id" class="chapter-item">
               <span>第{{ idx + 1 }}章 - {{ ch.chapter_name }} ({{ ch.word_count }}字)</span>
               <span class="chapter-status">{{ ch.is_published ? '✓ 已发布' : '草稿' }}</span>
+              <button class="btn-edit-chapter" @click="editChapter(ch)" title="编辑章节">✎ 编辑</button>
               <button class="btn-delete-chapter" @click="deleteChapter(ch)" title="删除章节">✕ 删除</button>
             </div>
           </div>
@@ -513,8 +521,9 @@ export default {
     const generating = ref(false)
     const chapterForm = reactive({
       chapter_name: '', characters_involved: '', organizations: '',
-      locations: '', skills: '', word_count: 2000, chapter_summary: ''
+      locations: '', skills: '', word_count: 2000, chapter_summary: '', content: ''
     })
+    const editingChapterId = ref(null)
 
     const openChapterModal = async (novel) => {
       // 检查今日发布配额，达到上限拦截打开弹窗
@@ -531,7 +540,8 @@ export default {
       chapterNovel.value = novel
       showChapterModal.value = true
       chapterMode.value = 'new'
-      Object.assign(chapterForm, { chapter_name: '', characters_involved: '', organizations: '', locations: '', skills: '', word_count: 2000, chapter_summary: '' })
+      editingChapterId.value = null
+      Object.assign(chapterForm, { chapter_name: '', characters_involved: '', organizations: '', locations: '', skills: '', word_count: 2000, chapter_summary: '', content: '' })
       try {
         const res = await api.get(`/chapters/novel/${novel.novel_unique_id}`)
         if (res.状态码 === 200) novelChapters.value = res.数据
@@ -676,12 +686,54 @@ export default {
         const res = await api.delete(`/chapters/delete/${ch.chapter_unique_id}`)
         if (res.状态码 === 200) {
           alert('删除成功')
-          // 重新加载章节列表
           const r2 = await api.get(`/chapters/novel/${chapterNovel.value.novel_unique_id}`)
           if (r2.状态码 === 200) novelChapters.value = r2.数据
           fetchTodayPublished()
         } else alert(res.消息)
       } catch (e) { alert('删除失败') }
+    }
+
+    const editChapter = (ch) => {
+      chapterMode.value = 'edit'
+      editingChapterId.value = ch.chapter_unique_id
+      Object.assign(chapterForm, {
+        chapter_name: ch.chapter_name || '',
+        characters_involved: ch.characters_involved || '',
+        organizations: ch.organizations || '',
+        locations: ch.locations || '',
+        skills: ch.skills || '',
+        word_count: ch.word_count || 0,
+        chapter_summary: ch.chapter_summary || '',
+        content: ch.content || ''
+      })
+    }
+
+    const saveChapterEdit = async () => {
+      if (!chapterForm.chapter_name) return alert('请输入章节名称')
+      saving.value = true
+      try {
+        const res = await api.put(`/chapters/update/${editingChapterId.value}`, null, {
+          params: {
+            content: chapterForm.content,
+            chapter_name: chapterForm.chapter_name,
+            chapter_summary: chapterForm.chapter_summary
+          }
+        })
+        if (res.状态码 === 200) {
+          alert('章节修改成功')
+          // 刷新列表
+          const r2 = await api.get(`/chapters/novel/${chapterNovel.value.novel_unique_id}`)
+          if (r2.状态码 === 200) novelChapters.value = r2.数据
+          cancelChapterEdit()
+        } else alert(res.消息)
+      } catch (e) { alert('修改失败: ' + (e.response?.data?.detail || e.message)) }
+      finally { saving.value = false }
+    }
+
+    const cancelChapterEdit = () => {
+      chapterMode.value = 'new'
+      editingChapterId.value = null
+      Object.assign(chapterForm, { chapter_name: '', characters_involved: '', organizations: '', locations: '', skills: '', word_count: 2000, chapter_summary: '', content: '' })
     }
 
     const continueChapter = async (d) => {
@@ -758,7 +810,7 @@ export default {
       myNovels, fetchMyNovels,
       showChapterModal, chapterNovel, chapterMode, novelChapters, chapterForm, generating,
       openChapterModal, generateChapter,
-      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, continueChapter, continuing, deleteNovel, downloadNovel, formatTime,
+      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, editChapter, saveChapterEdit, cancelChapterEdit, continueChapter, continuing, deleteNovel, downloadNovel, formatTime, saving,
       extracting, extractDraftInfo,
       genreOptions, selectedGenres, toggleGenre, handleCoverUpload, removeCover,
       showEditModal, editForm, editSelectedGenres, editError, editSuccess,
@@ -962,6 +1014,29 @@ export default {
   background: rgba(239, 68, 68, 0.22); border-color: #ef4444;
   color: #fca5a5; box-shadow: 0 2px 12px rgba(239, 68, 68, 0.2);
 }
+.btn-edit-chapter {
+  background: rgba(6, 182, 212, 0.12); border: 1px solid rgba(6, 182, 212, 0.25);
+  color: #06b6d4; cursor: pointer; font-size: 11px; font-weight: 600;
+  padding: 4px 12px; border-radius: 6px; transition: all 0.2s;
+  white-space: nowrap;
+}
+.btn-edit-chapter:hover {
+  background: rgba(6, 182, 212, 0.22); border-color: #06b6d4;
+  color: #22d3ee; box-shadow: 0 2px 12px rgba(6, 182, 212, 0.2);
+}
+.btn-save {
+  background: var(--brand-gradient); color: #fff; border: none;
+  cursor: pointer; font-size: 13px; font-weight: 700;
+  padding: 8px 20px; border-radius: 8px; transition: all 0.2s;
+}
+.btn-save:hover { opacity: 0.9 }
+.btn-save:disabled { opacity: 0.5; cursor: not-allowed }
+.btn-cancel {
+  background: transparent; color: var(--text-secondary); border: 1px solid var(--border);
+  cursor: pointer; font-size: 13px; font-weight: 600;
+  padding: 8px 20px; border-radius: 8px; transition: all 0.2s;
+}
+.btn-cancel:hover { color: #f87171; border-color: rgba(248, 113, 113, 0.4) }
 
 /* Draft */
 .draft-card { background: rgba(15,15,40,0.7); border: 1px solid rgba(102,126,234,0.12); border-radius: 14px; padding: 20px; margin-bottom: 16px; backdrop-filter: blur(10px); }
