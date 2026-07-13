@@ -4,7 +4,7 @@ from datetime import datetime
 from app.models.base import get_db
 from app.models.chapter import Chapter
 from app.service.chapter_service import ChapterService
-from app.api.deps import get_current_user, check_generate_permission, check_creation_access
+from app.api.deps import get_current_user, check_generate_permission
 from app.utils.response import fail, success
 from app.utils.logger import system_logger
 from pydantic import BaseModel
@@ -20,7 +20,6 @@ def create_chapter(
     word_count: int = 0, chapter_summary: str = None,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    _perm=Depends(check_generate_permission),
 ):
     """创建空白章节草稿"""
     return ChapterService.create_chapter(
@@ -39,7 +38,6 @@ async def generate_chapter(
     word_count: int = 2000, chapter_summary: str = None,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    _perm=Depends(check_generate_permission),
 ):
     """调用AI生成章节正文内容"""
     return await ChapterService.generate_with_ai(
@@ -56,7 +54,6 @@ async def continue_chapter(
     word_count: int = 800,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    _perm=Depends(check_generate_permission),
 ):
     """AI续写指定章节：根据作品设定、前序章节、当前内容续写"""
     return await ChapterService.continue_with_ai(db, chapter_unique_id, word_count)
@@ -78,7 +75,6 @@ def update_chapter(
     chapter_summary: str = None,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    _vip=Depends(check_creation_access),
 ):
     """更新章节内容、名称或概要"""
     return ChapterService.update_chapter(
@@ -92,7 +88,7 @@ def publish_chapter(
     body: dict = Body(...),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    _vip=Depends(check_creation_access),
+    _perm=Depends(check_generate_permission),
 ):
     """
     发布章节到作品圈
@@ -160,7 +156,6 @@ def delete_chapter(
     chapter_unique_id: str,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    _vip=Depends(check_creation_access),
 ):
     """删除指定章节"""
     return ChapterService.delete_chapter(db, chapter_unique_id)

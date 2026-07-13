@@ -12,7 +12,7 @@
         <div class="quota-bar-bg">
           <div class="quota-bar-fill" :style="{ width: quotaPercent + '%' }"></div>
         </div>
-        <span class="quota-text">📝 今日已发布 <b>{{ publishedToday }}</b>/<b>{{ maxDailyQuota }}</b> 章{{ quotaRemaining > 0 ? ' · 还可创作 ' + quotaRemaining + ' 章' : ' · 已用完' }}</span>
+        <span class="quota-text">📝 今日已发布 <b>{{ publishedToday }}</b>/<b>{{ maxDailyQuota }}</b> 章{{ quotaRemaining > 0 ? ' · 还可发布 ' + quotaRemaining + ' 章' : ' · 已用完' }}</span>
       </div>
       <router-link v-if="vipLevel === 0" to="/vip" class="quota-action">✨ 升级VIP · 10章/天</router-link>
       <router-link v-if="vipLevel === 1" to="/vip" class="quota-action gold">👑 升级SVIP · 50章/天</router-link>
