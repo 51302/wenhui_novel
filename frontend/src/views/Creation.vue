@@ -519,6 +519,7 @@ export default {
     const chapterMode = ref('new')
     const novelChapters = ref([])
     const generating = ref(false)
+    const saving = ref(false)
     const chapterForm = reactive({
       chapter_name: '', characters_involved: '', organizations: '',
       locations: '', skills: '', word_count: 2000, chapter_summary: '', content: ''
