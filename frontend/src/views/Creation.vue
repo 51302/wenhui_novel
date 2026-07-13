@@ -769,11 +769,18 @@ export default {
       } catch (e) { alert('删除失败') }
     }
 
-    const downloadNovel = (novel) => {
-      const a = document.createElement('a')
-      a.href = api.defaults.baseURL + '/chapters/download/' + novel.novel_unique_id
-      a.download = `${novel.title || '作品'}.zip`
-      a.click()
+    const downloadNovel = async (novel) => {
+      try {
+        const blob = await api.get(`/chapters/download/${novel.novel_unique_id}`, { responseType: 'blob' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${novel.title || '作品'}.zip`
+        a.click()
+        URL.revokeObjectURL(url)
+      } catch (e) {
+        alert('下载失败: ' + (e.response?.data?.detail || e.message))
+      }
     }
 
     const formatTime = (t) => t ? new Date(t).toLocaleString('zh-CN') : ''
