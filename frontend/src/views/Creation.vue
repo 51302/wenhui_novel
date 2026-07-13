@@ -125,8 +125,8 @@
         <div class="my-novel-actions">
           <button @click="openChapterModal(novel)">编辑章节</button>
           <button @click="openEditModal(novel)">编辑作品</button>
+          <button class="btn-download" @click="downloadNovel(novel)">⬇ 下载作品</button>
           <button class="btn-danger" @click="deleteNovel(novel)">删除作品</button>
-          <button v-if="novel.cover_image" class="btn-download" @click="downloadCover(novel)">⬇ 下载封面</button>
         </div>
       </div>
 
@@ -716,12 +716,10 @@ export default {
       } catch (e) { alert('删除失败') }
     }
 
-    const downloadCover = (novel) => {
-      if (!novel.cover_image) return
+    const downloadNovel = (novel) => {
       const a = document.createElement('a')
-      a.href = novel.cover_image
-      a.download = `${novel.title || '封面'}_封面.jpg`
-      a.target = '_blank'
+      a.href = api.defaults.baseURL + '/chapters/download/' + novel.novel_unique_id
+      a.download = `${novel.title || '作品'}.txt`
       a.click()
     }
 
@@ -760,7 +758,7 @@ export default {
       myNovels, fetchMyNovels,
       showChapterModal, chapterNovel, chapterMode, novelChapters, chapterForm, generating,
       openChapterModal, generateChapter,
-      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, continueChapter, continuing, deleteNovel, downloadCover, formatTime,
+      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, continueChapter, continuing, deleteNovel, downloadNovel, formatTime,
       extracting, extractDraftInfo,
       genreOptions, selectedGenres, toggleGenre, handleCoverUpload, removeCover,
       showEditModal, editForm, editSelectedGenres, editError, editSuccess,

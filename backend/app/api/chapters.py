@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Query, Body
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from datetime import datetime
 from app.models.base import get_db
@@ -8,6 +9,7 @@ from app.api.deps import get_current_user, check_generate_permission
 from app.utils.response import fail, success
 from app.utils.logger import system_logger
 from pydantic import BaseModel
+import io
 
 router = APIRouter(prefix="/api/chapters", tags=["章节"])
 
@@ -185,3 +187,47 @@ def today_published_count(
         Chapter.updated_at >= today_start,
     ).count()
     return success({"published_today": count}, "查询成功")
+
+
+@router.get("/download/{novel_unique_id}")
+def download_novel(
+    novel_unique_id: str,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """下载作品全部章节为TXT文件，按创建时间升序"""
+    chapters = db.query(Chapter).filter(
+        Chapter.novel_unique_id == novel_unique_id,
+        Chapter.user_id == current_user["user_id"],
+    ).order_by(Chapter.id.asc()).all()
+
+    if not chapters:
+        return fail("该作品暂无章节", code=404)
+
+    buf = io.StringIO()
+    buf.write(f"{'=' * 60}\n")
+    buf.write(f"  文辉小说 - 作品下载\n")
+    buf.write(f"{'=' * 60}\n\n")
+
+    for i, ch in enumerate(chapters, 1):
+        buf.write(f"第{i}章  {ch.chapter_name}\n")
+        buf.write(f"{'-' * 50}\n")
+        if ch.content:
+            buf.write(ch.content.strip() + "\n")
+        else:
+            buf.write("（本章暂无内容）\n")
+        buf.write(f"\n{'·' * 40}\n\n")
+
+    buf.write(f"\n{'=' * 60}\n")
+    buf.write(f"  共 {len(chapters)} 章 · 文辉小说平台生成\n")
+    buf.write(f"  下载时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    buf.write(f"{'=' * 60}\n")
+
+    buf.seek(0)
+    filename = f"novel_{novel_unique_id[:8]}.txt"
+
+    return StreamingResponse(
+        io.BytesIO(buf.getvalue().encode('utf-8-sig')),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
+    )
