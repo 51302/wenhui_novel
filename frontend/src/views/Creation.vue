@@ -609,6 +609,19 @@ export default {
         return
       }
       if (!confirm(`确定发布章节「${d.chapter_name}」到作品圈？`)) return
+
+      // 检查今日发布配额，达到上限提示并拦截
+      if (quotaRemaining.value <= 0) {
+        if (vipLevel.value === 0) {
+          alert(`今日免费发布已用完(6次/天)，开通VIP会员可获得10次/天`)
+        } else if (vipLevel.value === 1) {
+          alert(`今日VIP发布已用完(10次/天)，升级SVIP会员可获得50次/天`)
+        } else if (vipLevel.value >= 2) {
+          alert(`今日SVIP发布已用完(50次/天)，请明天再来`)
+        }
+        return
+      }
+
       try {
         const body = { content: d.content }
         // 附带 AI 提取的信息
@@ -616,7 +629,7 @@ export default {
           body.characters_involved = d._info.人物 || ''
           body.organizations = d._info.组织 || ''
           body.skills = d._info.功法技能 || ''
-          body.locations = d._info.地点 || ''
+          body.locations = d._info.locations || ''
           body.events = d._info.关键事件 || ''
           body.time_info = d._info.时间 || ''
           body.key_items = d._info.关键物品 || ''
