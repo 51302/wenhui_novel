@@ -516,6 +516,17 @@ export default {
     })
 
     const openChapterModal = async (novel) => {
+      // 检查今日发布配额，达到上限拦截打开弹窗
+      if (quotaRemaining.value <= 0) {
+        if (vipLevel.value === 0) {
+          alert('今日免费发布已用完(6次/天)，开通VIP会员可获得10次/天')
+        } else if (vipLevel.value === 1) {
+          alert('今日VIP发布已用完(10次/天)，升级SVIP会员可获得50次/天')
+        } else if (vipLevel.value >= 2) {
+          alert('今日SVIP发布已用完(50次/天)，请明天再来')
+        }
+        return
+      }
       chapterNovel.value = novel
       showChapterModal.value = true
       chapterMode.value = 'new'
