@@ -772,7 +772,7 @@ export default {
     const downloadNovel = (novel) => {
       const a = document.createElement('a')
       a.href = api.defaults.baseURL + '/chapters/download/' + novel.novel_unique_id
-      a.download = `${novel.title || '作品'}.txt`
+      a.download = `${novel.title || '作品'}.zip`
       a.click()
     }
 
