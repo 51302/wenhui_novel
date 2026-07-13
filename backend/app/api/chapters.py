@@ -10,6 +10,7 @@ from app.api.deps import get_current_user, check_generate_permission
 from app.utils.response import fail, success
 from app.utils.logger import system_logger
 from pydantic import BaseModel
+from urllib.parse import quote
 import io
 import zipfile
 
@@ -200,7 +201,7 @@ def download_novel(
     """下载作品全部章节为ZIP包，每章一个TXT文件，文件名：书名_时间.zip"""
     novel = db.query(Novel).filter(
         Novel.novel_unique_id == novel_unique_id,
-        Novel.user_id == current_user["user_id"],
+        Novel.author_user_id == current_user["user_id"],
     ).first()
     if not novel:
         return fail("作品不存在", code=404)
@@ -227,5 +228,5 @@ def download_novel(
     return StreamingResponse(
         zip_buf,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{zip_filename}"}
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(zip_filename)}"}
     )

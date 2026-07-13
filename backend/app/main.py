@@ -41,12 +41,17 @@ async def lifespan(application: FastAPI):
     import app.utils.redis_cache as mod_redis
     mod_redis.redis_client = global_redis
 
-    global_chroma = ChromaMemoryStore(
-        persist_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), "vector_db_data"),
-        collection_name=cfg_get("chromadb.collection_name", "novel_memory")
-    )
-    import app.utils.chroma_client as mod_chroma
-    mod_chroma.chroma_memory = global_chroma
+    try:
+        global_chroma = ChromaMemoryStore(
+            persist_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), "vector_db_data"),
+            collection_name=cfg_get("chromadb.collection_name", "novel_memory")
+        )
+        import app.utils.chroma_client as mod_chroma
+        mod_chroma.chroma_memory = global_chroma
+    except Exception as e:
+        system_logger.warning(f"ChromaDB 初始化失败(向量记忆功能不可用): {e}")
+        import app.utils.chroma_client as mod_chroma
+        mod_chroma.chroma_memory = None
 
     Base.metadata.create_all(bind=engine)
 
