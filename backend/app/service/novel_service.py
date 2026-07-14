@@ -262,11 +262,9 @@ class NovelService:
     @staticmethod
     def delete_novel(db: Session, novel_unique_id: str) -> dict:
         """删除作品及其所有关联数据（章节、互动、ES索引、向量数据库）
-        :param db: 数据库会话
-        :param novel_unique_id: 作品唯一ID
-        :return: 操作结果
+        核心删除（DB）同步完成，耗时操作（文件/ES/向量库）后台执行
         """
-        import shutil
+        import shutil, threading, asyncio
         from app.dao.chapter_dao import ChapterDAO
         from app.dao.interaction_dao import InteractionDAO
         novel = NovelDAO.get_by_unique_id(db, novel_unique_id)
@@ -276,26 +274,36 @@ class NovelService:
         ChapterDAO.delete_by_novel_id(db, novel_unique_id)
         # 删除作品圈互动（评论/点赞/收藏/关注）
         InteractionDAO.delete_by_novel_id(db, novel_unique_id)
-        # 删除 novel_structure_data 下对应文件夹（含作品设定.txt 和所有章节.txt）
-        novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
-        if os.path.exists(novel_dir):
-            shutil.rmtree(novel_dir)
-        # 删除 ES 索引
-        es_service.delete_novel(novel_unique_id)
         # 删除数据库作品记录
         NovelDAO.delete_by_unique_id(db, novel_unique_id)
+        db.commit()
         # 清除 Redis 缓存
         r = _redis()
         if r:
             r.delete_pattern("novels:*")
             r.delete_pattern("chapters:*")
 
-        # 清除向量数据库中该作品的所有记录
-        from app.utils.chroma_client import chroma_memory
-        if chroma_memory:
-            chroma_memory.delete_by_prefix(f"{novel_unique_id}_")
+        # 耗时操作放到后台线程
+        _nid = novel_unique_id
+        _novel_dir = os.path.join(NOVEL_DATA_PATH, _nid)
+        def _cleanup():
+            try:
+                # 删除本地文件
+                if os.path.exists(_novel_dir):
+                    shutil.rmtree(_novel_dir)
+                # 删除 ES 索引
+                es_service.delete_novel(_nid)
+                # 清除向量数据库
+                from app.utils.chroma_client import chroma_memory
+                if chroma_memory:
+                    chroma_memory.delete_by_prefix(f"{_nid}_")
+            except BaseException as e:
+                from app.utils.logger import system_logger
+                system_logger.error(f"小说删除后台清理失败: {_nid} -> {e}")
+        t = threading.Thread(target=_cleanup, daemon=True)
+        t.start()
 
-        return success(None, "作品及所有章节已删除")
+        return success(None, "作品已删除")
 
     @staticmethod
     def update_novel(db: Session, novel_unique_id: str, title: str = None,
