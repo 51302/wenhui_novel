@@ -210,7 +210,7 @@ def today_published_count(
     count = db.query(Chapter).filter(
         Chapter.user_id == current_user["user_id"],
         Chapter.is_published == True,
-        Chapter.updated_at >= today_start,
+        Chapter.created_at >= today_start,
     ).count()
     return success({"published_today": count}, "查询成功")
 

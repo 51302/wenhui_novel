@@ -131,7 +131,7 @@
       </div>
 
       <!-- 章节管理弹窗 -->
-      <div v-if="showChapterModal" class="modal-overlay" @click.self="showChapterModal = false">
+      <div v-if="showChapterModal" class="modal-overlay">
         <div class="modal-content chapter-modal">
           <button class="modal-close" @click="showChapterModal = false">&times;</button>
           <h2>{{ chapterNovel.title }} - 章节管理</h2>
@@ -143,7 +143,7 @@
             <input v-model="chapterForm.locations" placeholder="涉及地点" />
             <input v-model="chapterForm.skills" placeholder="涉及技能" />
             <input v-model.number="chapterForm.word_count" type="number" placeholder="章节字数" />
-            <textarea v-model="chapterForm.chapter_summary" placeholder="剧情发展路线(如：主角偷袭天道教宗→夺取镇教之宝→被追杀→坠崖获机缘)" rows="4"></textarea>
+            <textarea v-model="chapterForm.chapter_summary" class="wide-textarea" style="width: 580px; height: 71px;" placeholder="剧情发展路线(如：主角偷袭天道教宗→夺取镇教之宝→被追杀→坠崖获机缘)" rows="4"></textarea>
             <div class="chapter-btns">
               <button class="btn-ai" @click="generateChapter" :disabled="generating">
                 <span v-if="generating" class="spinner"></span>
@@ -165,13 +165,13 @@
       </div>
 
       <!-- 章节编辑独立弹窗 -->
-      <div v-if="showChapterEditModal" class="modal-overlay" @click.self="showChapterEditModal = false">
+      <div v-if="showChapterEditModal" class="modal-overlay">
         <div class="modal-content chapter-edit-modal">
           <button class="modal-close" @click="showChapterEditModal = false">&times;</button>
           <h2>编辑章节：{{ editChapterForm.chapter_name }}</h2>
           <div class="edit-row"><label>章节名称</label><input v-model="editChapterForm.chapter_name" /></div>
           <div class="edit-row"><label>剧情发展路线</label>
-            <textarea v-model="editChapterForm.chapter_summary" rows="4" placeholder="剧情发展路线(如：主角偷袭天道教宗→夺取镇教之宝→被追杀→坠崖获机缘)"></textarea></div>
+            <textarea v-model="editChapterForm.chapter_summary" class="wide-textarea" rows="4" style="width: 580px; height: 71px;" placeholder="剧情发展路线(如：主角偷袭天道教宗→夺取镇教之宝→被追杀→坠崖获机缘)"></textarea></div>
           <div class="edit-row"><label>章节正文</label>
             <textarea v-model="editChapterForm.content" rows="16" placeholder="章节正文内容"></textarea></div>
           <div class="edit-actions">
@@ -184,7 +184,7 @@
     </div>
 
     <!-- ==================== 编辑作品弹窗 ==================== -->
-    <div v-if="showEditModal" class="modal-overlay" @click.self="showEditModal = false">
+    <div v-if="showEditModal" class="modal-overlay">
       <div class="modal-content edit-modal">
         <button class="modal-close" @click="showEditModal = false">&times;</button>
         <h2>编辑作品</h2>
@@ -1074,6 +1074,10 @@ export default {
   width: 100%; padding: 10px 14px; background: rgba(15,15,40,0.5);
   border: 1px solid rgba(102,126,234,0.2); border-radius: 8px;
   color: #e0e0e0; font-size: 14px; font-family: inherit; resize: vertical;
+}
+.edit-row textarea.wide-textarea {
+  width: 580px;
+  height: 71px;
 }
 .edit-row input:focus, .edit-row textarea:focus { outline: none; border-color: rgba(6,182,212,0.5); }
 .edit-actions { display: flex; gap: 10px; margin-top: 20px; }
