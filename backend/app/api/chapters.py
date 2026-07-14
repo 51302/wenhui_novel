@@ -86,17 +86,22 @@ def get_drafts(
     return ChapterService.get_drafts(db, current_user["user_id"])
 
 
+class UpdateChapterBody(BaseModel):
+    content: str = None
+    chapter_name: str = None
+    chapter_summary: str = None
+
+
 @router.put("/update/{chapter_unique_id}")
 def update_chapter(
     chapter_unique_id: str,
-    content: str = None, chapter_name: str = None,
-    chapter_summary: str = None,
+    body: UpdateChapterBody,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
     """更新章节内容、名称或概要"""
     return ChapterService.update_chapter(
-        db, chapter_unique_id, content, chapter_name, chapter_summary
+        db, chapter_unique_id, body.content, body.chapter_name, body.chapter_summary
     )
 
 

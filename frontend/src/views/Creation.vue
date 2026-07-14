@@ -710,12 +710,10 @@ export default {
       if (!editChapterForm.chapter_name) return alert('请输入章节名称')
       saving.value = true
       try {
-        const res = await api.put(`/chapters/update/${editingChapterId.value}`, null, {
-          params: {
-            content: editChapterForm.content,
-            chapter_name: editChapterForm.chapter_name,
-            chapter_summary: editChapterForm.chapter_summary
-          }
+        const res = await api.put(`/chapters/update/${editingChapterId.value}`, {
+          content: editChapterForm.content,
+          chapter_name: editChapterForm.chapter_name,
+          chapter_summary: editChapterForm.chapter_summary
         })
         if (res.状态码 === 200) {
           alert('章节修改成功')
