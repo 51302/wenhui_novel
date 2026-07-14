@@ -1473,14 +1473,23 @@ class ChapterService:
         r3 = _redis()
         if r3:
             r3.delete_pattern(f"chapters:*")
-        # 章节内容更新后增量更新记忆体
+        # 章节内容更新后异步增量更新记忆体（不阻塞响应）
         if content is not None:
-            ChapterService.incremental_memory_sync(
-                chapter.novel_unique_id, db,
-                content,
-                chapter_name or chapter.chapter_name,
-                chapter_summary or chapter.chapter_summary or ""
-            )
+            import asyncio, threading
+            _nid = chapter.novel_unique_id
+            _ct = content
+            _cn = chapter_name or chapter.chapter_name
+            _cs = chapter_summary or chapter.chapter_summary or ""
+            def _async_memory():
+                try:
+                    asyncio.run(ChapterService._incremental_memory_update(
+                        _nid, None, _ct, _cn, _cs
+                    ))
+                except BaseException as e:
+                    system_logger.error(f"[更新章节] 记忆体增量更新失败: {e}")
+            t = threading.Thread(target=_async_memory, daemon=True)
+            t.start()
+            system_logger.info(f"[更新章节] {chapter_name or chapter.chapter_name} 已保存，记忆体后台更新中")
         return success(None, "章节更新成功")
 
     @staticmethod
