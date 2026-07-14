@@ -148,6 +148,7 @@
               <textarea v-model="chapterForm.content" rows="12" placeholder="章节正文内容" style="width:100%;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:8px;color:#e0e0e0;padding:12px;font-size:13px;resize:vertical;font-family:inherit;margin-top:8px" />
               <div class="chapter-btns">
                 <button class="btn-save" @click="saveChapterEdit" :disabled="saving">💾 {{ saving ? '保存中...' : '保存修改' }}</button>
+                <button class="btn-regenerate" @click="regenerateChapter" :disabled="regenerating">🔄 {{ regenerating ? '重新生成中...' : 'AI重新生成' }}</button>
                 <button class="btn-cancel" @click="cancelChapterEdit">取消</button>
               </div>
             </template>
@@ -520,6 +521,7 @@ export default {
     const novelChapters = ref([])
     const generating = ref(false)
     const saving = ref(false)
+    const regenerating = ref(false)
     const chapterForm = reactive({
       chapter_name: '', characters_involved: '', organizations: '',
       locations: '', skills: '', word_count: 2000, chapter_summary: '', content: ''
@@ -527,17 +529,6 @@ export default {
     const editingChapterId = ref(null)
 
     const openChapterModal = async (novel) => {
-      // 检查今日发布配额，达到上限拦截打开弹窗
-      if (quotaRemaining.value <= 0) {
-        if (vipLevel.value === 0) {
-          alert('今日免费发布已用完(6次/天)，开通VIP会员可获得10次/天')
-        } else if (vipLevel.value === 1) {
-          alert('今日VIP发布已用完(10次/天)，升级SVIP会员可获得50次/天')
-        } else if (vipLevel.value >= 2) {
-          alert('今日SVIP发布已用完(50次/天)，请明天再来')
-        }
-        return
-      }
       chapterNovel.value = novel
       showChapterModal.value = true
       chapterMode.value = 'new'
@@ -737,6 +728,43 @@ export default {
       Object.assign(chapterForm, { chapter_name: '', characters_involved: '', organizations: '', locations: '', skills: '', word_count: 2000, chapter_summary: '', content: '' })
     }
 
+    const regenerateChapter = async () => {
+      if (!chapterForm.chapter_name) return alert('请输入章节名称')
+      if (!confirm('AI重新生成将覆盖当前章节内容，确定继续？')) return
+      regenerating.value = true
+      try {
+        const res = await api.post('/chapters/generate', null, {
+          params: {
+            novel_unique_id: chapterNovel.value.novel_unique_id,
+            chapter_name: chapterForm.chapter_name,
+            characters_involved: chapterForm.characters_involved,
+            organizations: chapterForm.organizations,
+            locations: chapterForm.locations,
+            skills: chapterForm.skills,
+            word_count: chapterForm.word_count,
+            chapter_summary: chapterForm.chapter_summary
+          }
+        })
+        if (res.状态码 === 200) {
+          const newContent = res.数据?.content
+          if (newContent) {
+            chapterForm.content = newContent
+            chapterForm.word_count = res.数据?.word_count || chapterForm.word_count
+            alert('重新生成成功，内容已更新到编辑区')
+          } else {
+            alert('重新生成成功，请切换到草稿列表查看')
+          }
+        } else {
+          alert('重新生成失败: ' + res.消息)
+        }
+      } catch (e) {
+        const msg = e.response?.data?.detail || e.message || '网络错误'
+        alert('AI重新生成失败: ' + msg)
+      } finally {
+        regenerating.value = false
+      }
+    }
+
     const continueChapter = async (d) => {
       // 非VIP且次数用完的前端拦截
       if (!isVip.value && freeQuota.value <= 0) {
@@ -818,7 +846,7 @@ export default {
       myNovels, fetchMyNovels,
       showChapterModal, chapterNovel, chapterMode, novelChapters, chapterForm, generating,
       openChapterModal, generateChapter,
-      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, editChapter, saveChapterEdit, cancelChapterEdit, continueChapter, continuing, deleteNovel, downloadNovel, formatTime, saving,
+      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, editChapter, saveChapterEdit, cancelChapterEdit, regenerateChapter, continueChapter, continuing, deleteNovel, downloadNovel, formatTime, saving, regenerating,
       extracting, extractDraftInfo,
       genreOptions, selectedGenres, toggleGenre, handleCoverUpload, removeCover,
       showEditModal, editForm, editSelectedGenres, editError, editSuccess,
@@ -1039,6 +1067,13 @@ export default {
 }
 .btn-save:hover { opacity: 0.9 }
 .btn-save:disabled { opacity: 0.5; cursor: not-allowed }
+.btn-regenerate {
+  background: rgba(249, 115, 22, 0.15); border: 1px solid rgba(249, 115, 22, 0.35);
+  color: #fb923c; cursor: pointer; font-size: 13px; font-weight: 700;
+  padding: 8px 20px; border-radius: 8px; transition: all 0.2s;
+}
+.btn-regenerate:hover { background: rgba(249, 115, 22, 0.25); border-color: #f97316; color: #fdba74; }
+.btn-regenerate:disabled { opacity: 0.5; cursor: not-allowed }
 .btn-cancel {
   background: transparent; color: var(--text-secondary); border: 1px solid var(--border);
   cursor: pointer; font-size: 13px; font-weight: 600;

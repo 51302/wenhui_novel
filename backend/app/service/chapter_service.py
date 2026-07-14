@@ -1026,6 +1026,11 @@ class ChapterService:
                 with open(chapter_file, "w", encoding="utf-8") as f:
                     f.write(generated_text)
 
+                # 清除草稿缓存，确保下拉列表获取最新数据
+                r = _redis()
+                if r:
+                    r.delete_pattern(f"chapters:drafts:user:{user_id}")
+
                 # 增量更新记忆体（仅追加本章新增信息）
                 await ChapterService._refresh_memory_after_generate(
                     novel_unique_id, db, generated_text, chapter_name, chapter_summary or ""
@@ -1034,7 +1039,8 @@ class ChapterService:
                 return success({
                     "chapter_unique_id": chapter_unique_id,
                     "chapter_name": chapter_name,
-                    "word_count": len(generated_text)
+                    "word_count": len(generated_text),
+                    "content": generated_text
                 }, f"{chapter_name} 章节内容生成成功")
 
             except httpx.TimeoutException:
