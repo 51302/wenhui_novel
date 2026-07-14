@@ -53,16 +53,21 @@ async def generate_chapter(
     )
 
 
+class RegenerateBody(BaseModel):
+    chapter_summary: str = None
+
+
 @router.post("/regenerate/{chapter_unique_id}")
 async def regenerate_chapter(
     chapter_unique_id: str,
+    body: RegenerateBody,
     word_count: int = 2000,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
     """重新生成指定章节：记忆体基于第1章到当前章节之前的所有内容，覆盖当前章节内容"""
     return await ChapterService.regenerate_with_ai(
-        db, chapter_unique_id, current_user["user_id"], word_count
+        db, chapter_unique_id, current_user["user_id"], word_count, body.chapter_summary
     )
 
 

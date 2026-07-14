@@ -1095,12 +1095,13 @@ class ChapterService:
 
     @staticmethod
     async def regenerate_with_ai(db: Session, chapter_unique_id: str, user_id: int,
-                                 word_count: int = 2000) -> dict:
+                                 word_count: int = 2000, chapter_summary: str = None) -> dict:
         """重新生成指定章节：记忆体基于第1章到当前章节之前的所有内容，覆盖当前章节
         :param db: 数据库会话
         :param chapter_unique_id: 要重新生成的章节唯一ID
         :param user_id: 用户ID
         :param word_count: 目标字数
+        :param chapter_summary: 剧情发展路线（前端编辑后传入，优先使用；为空则用DB中的）
         :return: 生成结果（含新内容和章节ID）
         """
         chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
@@ -1111,7 +1112,9 @@ class ChapterService:
 
         novel_unique_id = chapter.novel_unique_id
         chapter_name = chapter.chapter_name
-        chapter_summary = chapter.chapter_summary or ""
+        # 如果前端传入了chapter_summary（用户编辑后），优先用；否则用数据库里的
+        if chapter_summary is None:
+            chapter_summary = chapter.chapter_summary or ""
 
         # 获取作品设定
         novel_settings = ChapterService._get_novel_settings(novel_unique_id)

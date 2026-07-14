@@ -725,7 +725,9 @@ export default {
       if (!confirm('AI重新生成将覆盖当前章节内容，确定继续？')) return
       regenerating.value = true
       try {
-        const res = await api.post(`/chapters/regenerate/${editingChapterId.value}`, null, {
+        const res = await api.post(`/chapters/regenerate/${editingChapterId.value}`, {
+          chapter_summary: editChapterForm.chapter_summary
+        }, {
           params: { word_count: 2000 }
         })
         if (res.状态码 === 200) {
