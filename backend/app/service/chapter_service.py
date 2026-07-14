@@ -1051,6 +1051,197 @@ class ChapterService:
                 return fail(f"AI生成失败: {str(e)}", code=500)
 
     @staticmethod
+    async def regenerate_with_ai(db: Session, chapter_unique_id: str, user_id: int,
+                                 word_count: int = 2000) -> dict:
+        """重新生成指定章节：记忆体基于第1章到当前章节之前的所有内容，覆盖当前章节
+        :param db: 数据库会话
+        :param chapter_unique_id: 要重新生成的章节唯一ID
+        :param user_id: 用户ID
+        :param word_count: 目标字数
+        :return: 生成结果（含新内容和章节ID）
+        """
+        chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
+        if not chapter:
+            return fail("章节不存在", code=404)
+        if chapter.user_id != user_id:
+            return fail("无权操作此章节", code=403)
+
+        novel_unique_id = chapter.novel_unique_id
+        chapter_name = chapter.chapter_name
+        chapter_summary = chapter.chapter_summary or ""
+
+        # 获取作品设定
+        novel_settings = ChapterService._get_novel_settings(novel_unique_id)
+        settings_text = novel_settings.get('content', '无')
+
+        # 获取所有章节，按创建时间排序
+        all_chapters = ChapterDAO.get_by_novel_id(db, novel_unique_id)
+        sorted_chapters = sorted(all_chapters, key=lambda c: c.created_at or "")
+
+        # 找到当前章节位置，取第1章到当前章节之前的所有章节
+        current_idx = None
+        for i, ch in enumerate(sorted_chapters):
+            if ch.chapter_unique_id == chapter_unique_id:
+                current_idx = i
+                break
+
+        prev_chapters = sorted_chapters[:current_idx] if current_idx is not None and current_idx > 0 else []
+
+        # 构建记忆体：从第1章到前一章，逐章提取关键信息
+        memory_body = f"【作品设定】\n{settings_text}\n\n"
+
+        if prev_chapters:
+            # 对每一章提取关键信息
+            for i, ch in enumerate(prev_chapters, 1):
+                content = ch.content or ""
+                if not content:
+                    # 兜底从本地文件读取
+                    novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
+                    chapter_file = os.path.join(novel_dir, f"{ch.chapter_name}_{ch.chapter_unique_id}.txt")
+                    if os.path.exists(chapter_file):
+                        with open(chapter_file, "r", encoding="utf-8") as f:
+                            content = f.read()
+
+                if content and not content.strip().startswith("{"):
+                    # 提取章节摘要（前400字作为概要）
+                    snippet = content[:400].replace("\n", " ")
+                    memory_body += f"=== 第{i}章 {ch.chapter_name} ===\n"
+                    memory_body += f"内容概要: {snippet}...\n"
+                    memory_body += f"字数: {len(content)}字\n\n"
+                else:
+                    memory_body += f"=== 第{i}章 {ch.chapter_name} ===\n（暂无内容）\n\n"
+        else:
+            memory_body += "（这是第一章，无前文参考）\n"
+
+        # 上一章末尾内容（用于无缝衔接）
+        last_chapter_content = ""
+        if prev_chapters:
+            last_ch = prev_chapters[-1]
+            last_chapter_content = last_ch.content or ""
+            if not last_chapter_content:
+                novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
+                chapter_file = os.path.join(novel_dir, f"{last_ch.chapter_name}_{last_ch.chapter_unique_id}.txt")
+                if os.path.exists(chapter_file):
+                    with open(chapter_file, "r", encoding="utf-8") as f:
+                        last_chapter_content = f.read()
+
+        chapter_setting = f"""本章设定：
+章节名称：{chapter_name}
+本章概要：{chapter_summary or '无'}
+目标字数：{word_count}字"""
+
+        prompt = f"""你是一个文笔精湛的小说家，擅长创作生动、有感染力的网文章节。请根据以下设定和已写章节内容，重新生成这一章。
+
+【已写章节内容】（第1章到前一章的关键信息，必须严格遵循）
+{memory_body}
+
+【上一章节结尾】（必须无缝衔接，可以从动作/对话/场景自然过渡）
+{last_chapter_content[-2500:] if last_chapter_content else '这是第一章，无需承接'}
+
+{chapter_setting}
+
+【写作核心要求 —— 每条都必须做到】
+一、人物塑造（性格要鲜明立体）：
+- 每个出场角色要有独特的说话方式、动作习惯和内心活动
+- 通过对话、神态、心理活动来展示性格，不要直接贴标签
+- 角色的选择和行为要符合其已建立的性格设定
+- 用 2-3 个细节描写让角色鲜活（如：一个习惯动作、一句口头禅、一个表情变化）
+
+二、情感描写（要有情绪层次）：
+- 写出角色的内心感受：喜悦/愤怒/恐惧/悲伤/纠结/期待，要有情绪变化的过程
+- 情感不要一笔带过，至少用 2-3 句话展开描写
+- 关键情感节点要有内心独白或细腻的动作神态来呈现
+- 让读者能感受到角色的情绪波动，产生代入感
+
+三、场景与环境描写（要让读者身临其境）：
+- 每个场景切换时必须描写新环境：光线、气味、声音、温度、空间格局
+- 用五感（视觉/听觉/嗅觉/触觉/味觉）至少 2 种来渲染场景
+- 战斗场景：写出招式动作、灵力波动、破坏效果、周围人的反应
+- 日常场景：写出氛围感，不干巴巴的叙述
+
+四、情绪氛围营造（要有张力和节奏）：
+- 根据剧情需要营造对应氛围：紧张/温馨/诡异/悲壮/热血/压抑
+- 用短句和长句交替控制节奏：紧张时短句快节奏，抒情时长句慢节奏
+- 适当使用环境烘托情绪（如：阴雨衬托悲伤，阳光衬托希望）
+- 章节结尾必须留悬念或情绪钩子，让读者想看下一章
+
+五、剧情张力（要有冲突和推进）：
+- 每章至少有一个核心冲突或事件推进（战斗/争执/发现/决定/危机）
+- 剧情要有起伏：铺垫→冲突→转折→余韵，不是平铺直叙
+- 角色之间要有互动和化学反应（对话交锋、合作、对抗）
+- 如果本章是过渡章，也要有信息量推进（获取情报/关系变化/世界观展开）
+
+六、内容丰富度（情节要饱满）：
+- 字数控制在{word_count}字左右
+- 不要灌水，每段都推进剧情或塑造人物
+- 对话与叙述比例约 3:7，不要纯对话或纯叙述
+
+七、输出格式：
+- 只输出章节正文（含章节标题如「{chapter_name}」）
+- 不要加额外的说明、总结或注释
+- 段落分明，适当留白，增强可读性"""
+
+        async with httpx.AsyncClient(timeout=180) as client:
+            try:
+                response = await client.post(
+                    f"{deepseek_base_url()}/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {deepseek_api_key()}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": deepseek_model(),
+                        "messages": [
+                            {"role": "system", "content": "你是一个文笔精湛、擅长人物塑造和氛围营造的资深小说家。你写的小说人物性格鲜明、情感细腻、场景有画面感、剧情有张力。你擅长用细节描写让人物和场景活起来，用情绪变化让读者产生共鸣，用剧情冲突让故事扣人心弦。"},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "max_tokens": word_count * 3,
+                        "temperature": 0.85
+                    }
+                )
+                data = response.json()
+                if "choices" not in data or not data["choices"]:
+                    err_msg = str(data.get("error", {}).get("message", "未知错误"))
+                    system_logger.error(f"AI章节重新生成失败: {chapter_name} → {err_msg}")
+                    return fail("AI重新生成失败: " + err_msg, code=500)
+
+                generated_text = data["choices"][0]["message"]["content"]
+                actual_words = len(generated_text)
+                system_logger.info(f"AI章节重新生成成功: {chapter_name} ({actual_words}字) novel={novel_unique_id}")
+
+                # 更新当前章节（覆盖内容，不新建）
+                ChapterDAO.update(db, chapter,
+                    content=generated_text,
+                    word_count=actual_words
+                )
+
+                # 更新本地文件
+                novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
+                os.makedirs(novel_dir, exist_ok=True)
+                chapter_file = os.path.join(novel_dir, f"{chapter_name}_{chapter_unique_id}.txt")
+                with open(chapter_file, "w", encoding="utf-8") as f:
+                    f.write(generated_text)
+
+                # 清除草稿缓存
+                r = _redis()
+                if r:
+                    r.delete_pattern(f"chapters:drafts:user:{user_id}")
+
+                return success({
+                    "chapter_unique_id": chapter_unique_id,
+                    "chapter_name": chapter_name,
+                    "word_count": actual_words,
+                    "content": generated_text
+                }, f"{chapter_name} 重新生成成功")
+
+            except httpx.TimeoutException:
+                system_logger.error(f"AI章节重新生成超时: {chapter_name}")
+                return fail("AI接口调用超时，请重试", code=500)
+            except Exception as e:
+                system_logger.error(f"AI章节重新生成异常: {chapter_name} → {str(e)}")
+                return fail(f"AI重新生成失败: {str(e)}", code=500)
+
+    @staticmethod
     async def continue_with_ai(db: Session, chapter_unique_id: str, word_count: int = 800) -> dict:
         """AI 续写指定章节：根据作品设定+前文+当前内容，续写本章后续内容"""
         from app.dao.novel_dao import NovelDAO

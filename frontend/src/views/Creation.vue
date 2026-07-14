@@ -732,13 +732,8 @@ export default {
       if (!confirm('AI重新生成将覆盖当前章节内容，确定继续？')) return
       regenerating.value = true
       try {
-        const res = await api.post('/chapters/generate', null, {
-          params: {
-            novel_unique_id: chapterNovel.value.novel_unique_id,
-            chapter_name: editChapterForm.chapter_name,
-            chapter_summary: editChapterForm.chapter_summary,
-            word_count: 2000
-          }
+        const res = await api.post(`/chapters/regenerate/${editingChapterId.value}`, null, {
+          params: { word_count: 2000 }
         })
         if (res.状态码 === 200) {
           const newContent = res.数据?.content
@@ -746,7 +741,7 @@ export default {
             editChapterForm.content = newContent
             alert('重新生成成功，内容已更新到编辑区')
           } else {
-            alert('重新生成成功，请切换到草稿列表查看')
+            alert('重新生成成功，但未能获取内容')
           }
         } else {
           alert('重新生成失败: ' + res.消息)
