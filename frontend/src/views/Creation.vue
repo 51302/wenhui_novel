@@ -553,12 +553,6 @@ export default {
 
     const generateChapter = async () => {
       if (!chapterForm.chapter_name) return alert('请输入章节名称')
-      // 非VIP且次数用完的前端拦截
-      if (!isVip.value && freeQuota.value <= 0) {
-        alert('免费生成次数已用完，请开通VIP继续使用')
-        router.push('/vip')
-        return
-      }
       generating.value = true
       try {
         const res = await api.post('/chapters/generate', null, {
