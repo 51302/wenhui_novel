@@ -143,7 +143,7 @@
             <input v-model="chapterForm.locations" placeholder="涉及地点" />
             <input v-model="chapterForm.skills" placeholder="涉及技能" />
             <input v-model.number="chapterForm.word_count" type="number" placeholder="章节字数" />
-            <input v-model="chapterForm.chapter_summary" placeholder="本章概要(如：偷袭天道教宗)" />
+            <textarea v-model="chapterForm.chapter_summary" placeholder="剧情发展路线(如：主角偷袭天道教宗→夺取镇教之宝→被追杀→坠崖获机缘)" rows="4" /></textarea>
             <div class="chapter-btns">
               <button class="btn-ai" @click="generateChapter" :disabled="generating">
                 <span v-if="generating" class="spinner"></span>
@@ -170,7 +170,8 @@
           <button class="modal-close" @click="showChapterEditModal = false">&times;</button>
           <h2>编辑章节：{{ editChapterForm.chapter_name }}</h2>
           <div class="edit-row"><label>章节名称</label><input v-model="editChapterForm.chapter_name" /></div>
-          <div class="edit-row"><label>本章概要</label><input v-model="editChapterForm.chapter_summary" /></div>
+          <div class="edit-row"><label>剧情发展路线</label>
+            <textarea v-model="editChapterForm.chapter_summary" rows="4" placeholder="剧情发展路线(如：主角偷袭天道教宗→夺取镇教之宝→被追杀→坠崖获机缘)" /></div>
           <div class="edit-row"><label>章节正文</label>
             <textarea v-model="editChapterForm.content" rows="16" placeholder="章节正文内容" /></div>
           <div class="edit-actions">
