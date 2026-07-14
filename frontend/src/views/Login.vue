@@ -103,7 +103,7 @@
 </template>
 
 <script>
-import { ref, reactive } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api'
 
@@ -115,6 +115,11 @@ export default {
     const form = reactive({ username: '', password: '' })
     const error = ref('')
     const loggingIn = ref(false)
+
+    // 清除登录状态
+    onMounted(() => {
+      localStorage.removeItem('novel_user')
+    })
 
     const showCaptcha = ref(false)
     const captchaId = ref('')
