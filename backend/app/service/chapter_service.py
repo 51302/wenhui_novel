@@ -907,11 +907,45 @@ class ChapterService:
             chapter_name = f"第{chinese_num}章 {chapter_name}"
         
         novel_settings = ChapterService._get_novel_settings(novel_unique_id)
+        settings_text = novel_settings.get('content', '无')
 
-        # ===== 记忆体：一次加载，终身复用 =====
-        memory_body = await ChapterService._ensure_memory(novel_unique_id, db)
+        # ===== 记忆体：第1章到前一章的内容（不包含当前章及之后） =====
+        # 获取所有章节，按创建时间排序
+        all_chapters = ChapterDAO.get_by_novel_id(db, novel_unique_id)
+        sorted_chapters = sorted(all_chapters, key=lambda c: c.created_at or "")
+        prev_chapters = sorted_chapters[:-1] if len(sorted_chapters) > 1 else []
+
+        memory_body = f"【作品设定】\n{settings_text}\n\n"
+        if prev_chapters:
+            for i, ch in enumerate(prev_chapters, 1):
+                content = ch.content or ""
+                if not content:
+                    novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
+                    chapter_file = os.path.join(novel_dir, f"{ch.chapter_name}_{ch.chapter_unique_id}.txt")
+                    if os.path.exists(chapter_file):
+                        with open(chapter_file, "r", encoding="utf-8") as f:
+                            content = f.read()
+                if content and not content.strip().startswith("{"):
+                    snippet = content[:400].replace("\n", " ")
+                    memory_body += f"=== 第{i}章 {ch.chapter_name} ===\n"
+                    memory_body += f"内容概要: {snippet}...\n"
+                    memory_body += f"字数: {len(content)}字\n\n"
+                else:
+                    memory_body += f"=== 第{i}章 {ch.chapter_name} ===\n（暂无内容）\n\n"
+        else:
+            memory_body += "（这是第一章，无前文参考）\n"
+
         # 上一章末尾内容（用于紧密衔接）
-        last_chapter = ChapterService._get_last_chapter_content(db, novel_unique_id, chapter_name)
+        last_chapter = ""
+        if prev_chapters:
+            last_ch = prev_chapters[-1]
+            last_chapter = last_ch.content or ""
+            if not last_chapter:
+                novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
+                chapter_file = os.path.join(novel_dir, f"{last_ch.chapter_name}_{last_ch.chapter_unique_id}.txt")
+                if os.path.exists(chapter_file):
+                    with open(chapter_file, "r", encoding="utf-8") as f:
+                        last_chapter = f.read()
 
         chapter_setting = f"""本章设定：
 章节名称：{chapter_name}
@@ -922,9 +956,9 @@ class ChapterService:
 涉及技能：{skills or '无'}
 目标字数：{word_count}字"""
 
-        prompt = f"""你是一个文笔精湛的小说家，擅长创作生动、有感染力的网文章节。请根据以下设定和记忆体，写出高质量的小说章节。
+        prompt = f"""你是一个文笔精湛的小说家，擅长创作生动、有感染力的网文章节。请根据以下已写章节内容和设定，写出高质量的小说章节。
 
-【作品记忆体】（已写章节的人物、事件、世界观全貌，必须严格遵循）
+【已写章节内容】（第1章到前一章的关键信息，必须严格遵循）
 {memory_body}
 
 【上一章节结尾】（必须无缝衔接，可以从动作/对话/场景自然过渡）
