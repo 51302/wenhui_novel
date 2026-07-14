@@ -926,7 +926,7 @@ class ChapterService:
                         with open(chapter_file, "r", encoding="utf-8") as f:
                             content = f.read()
                 if content and not content.strip().startswith("{"):
-                    snippet = content[:400].replace("\n", " ")
+                    snippet = content[:1500].replace("\n", " ")
                     memory_body += f"=== 第{i}章 {ch.chapter_name} ===\n"
                     memory_body += f"内容概要: {snippet}...\n"
                     memory_body += f"字数: {len(content)}字\n\n"
@@ -1137,8 +1137,8 @@ class ChapterService:
                             content = f.read()
 
                 if content and not content.strip().startswith("{"):
-                    # 提取章节摘要（前400字作为概要）
-                    snippet = content[:400].replace("\n", " ")
+                    # 提取章节摘要（前1500字作为概要）
+                    snippet = content[:1500].replace("\n", " ")
                     memory_body += f"=== 第{i}章 {ch.chapter_name} ===\n"
                     memory_body += f"内容概要: {snippet}...\n"
                     memory_body += f"字数: {len(content)}字\n\n"
