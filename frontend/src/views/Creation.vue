@@ -136,7 +136,7 @@
           <button class="modal-close" @click="showChapterModal = false">&times;</button>
           <h2>{{ chapterNovel.title }} - 章节管理</h2>
           <div class="chapter-form">
-            <h3>{{ chapterMode === 'new' ? '新建章节' : '编辑章节' }}</h3>
+            <h3>新建章节</h3>
             <input v-model="chapterForm.chapter_name" placeholder="章节名称" />
             <input v-model="chapterForm.characters_involved" placeholder="涉及人物" />
             <input v-model="chapterForm.organizations" placeholder="涉及组织" />
@@ -144,15 +144,7 @@
             <input v-model="chapterForm.skills" placeholder="涉及技能" />
             <input v-model.number="chapterForm.word_count" type="number" placeholder="章节字数" />
             <input v-model="chapterForm.chapter_summary" placeholder="本章概要(如：偷袭天道教宗)" />
-            <template v-if="chapterMode === 'edit'">
-              <textarea v-model="chapterForm.content" rows="12" placeholder="章节正文内容" style="width:100%;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:8px;color:#e0e0e0;padding:12px;font-size:13px;resize:vertical;font-family:inherit;margin-top:8px" />
-              <div class="chapter-btns">
-                <button class="btn-save" @click="saveChapterEdit" :disabled="saving">💾 {{ saving ? '保存中...' : '保存修改' }}</button>
-                <button class="btn-regenerate" @click="regenerateChapter" :disabled="regenerating">🔄 {{ regenerating ? '重新生成中...' : 'AI重新生成' }}</button>
-                <button class="btn-cancel" @click="cancelChapterEdit">取消</button>
-              </div>
-            </template>
-            <div class="chapter-btns" v-else>
+            <div class="chapter-btns">
               <button class="btn-ai" @click="generateChapter" :disabled="generating">
                 <span v-if="generating" class="spinner"></span>
                 {{ generating ? '正在生成中...' : '一键AI生成' }}
@@ -168,6 +160,23 @@
               <button class="btn-edit-chapter" @click="editChapter(ch)" title="编辑章节">✎ 编辑</button>
               <button class="btn-delete-chapter" @click="deleteChapter(ch)" title="删除章节">✕ 删除</button>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 章节编辑独立弹窗 -->
+      <div v-if="showChapterEditModal" class="modal-overlay" @click.self="showChapterEditModal = false">
+        <div class="modal-content chapter-edit-modal">
+          <button class="modal-close" @click="showChapterEditModal = false">&times;</button>
+          <h2>编辑章节：{{ editChapterForm.chapter_name }}</h2>
+          <div class="edit-row"><label>章节名称</label><input v-model="editChapterForm.chapter_name" /></div>
+          <div class="edit-row"><label>本章概要</label><input v-model="editChapterForm.chapter_summary" /></div>
+          <div class="edit-row"><label>章节正文</label>
+            <textarea v-model="editChapterForm.content" rows="16" placeholder="章节正文内容" /></div>
+          <div class="edit-actions">
+            <button class="btn-save" @click="saveChapterEdit" :disabled="saving">💾 {{ saving ? '保存中...' : '保存修改' }}</button>
+            <button class="btn-regenerate" @click="regenerateChapter" :disabled="regenerating">🔄 {{ regenerating ? '重新生成中...' : 'AI重新生成' }}</button>
+            <button class="btn-cancel" @click="showChapterEditModal = false">取消</button>
           </div>
         </div>
       </div>
@@ -517,21 +526,23 @@ export default {
     // 章节管理
     const showChapterModal = ref(false)
     const chapterNovel = ref({})
-    const chapterMode = ref('new')
     const novelChapters = ref([])
     const generating = ref(false)
     const saving = ref(false)
     const regenerating = ref(false)
+    const showChapterEditModal = ref(false)
     const chapterForm = reactive({
       chapter_name: '', characters_involved: '', organizations: '',
       locations: '', skills: '', word_count: 2000, chapter_summary: '', content: ''
+    })
+    const editChapterForm = reactive({
+      chapter_name: '', chapter_summary: '', content: ''
     })
     const editingChapterId = ref(null)
 
     const openChapterModal = async (novel) => {
       chapterNovel.value = novel
       showChapterModal.value = true
-      chapterMode.value = 'new'
       editingChapterId.value = null
       Object.assign(chapterForm, { chapter_name: '', characters_involved: '', organizations: '', locations: '', skills: '', word_count: 2000, chapter_summary: '', content: '' })
       try {
@@ -686,70 +697,53 @@ export default {
     }
 
     const editChapter = (ch) => {
-      chapterMode.value = 'edit'
       editingChapterId.value = ch.chapter_unique_id
-      Object.assign(chapterForm, {
+      Object.assign(editChapterForm, {
         chapter_name: ch.chapter_name || '',
-        characters_involved: ch.characters_involved || '',
-        organizations: ch.organizations || '',
-        locations: ch.locations || '',
-        skills: ch.skills || '',
-        word_count: ch.word_count || 0,
         chapter_summary: ch.chapter_summary || '',
         content: ch.content || ''
       })
+      showChapterEditModal.value = true
     }
 
     const saveChapterEdit = async () => {
-      if (!chapterForm.chapter_name) return alert('请输入章节名称')
+      if (!editChapterForm.chapter_name) return alert('请输入章节名称')
       saving.value = true
       try {
         const res = await api.put(`/chapters/update/${editingChapterId.value}`, null, {
           params: {
-            content: chapterForm.content,
-            chapter_name: chapterForm.chapter_name,
-            chapter_summary: chapterForm.chapter_summary
+            content: editChapterForm.content,
+            chapter_name: editChapterForm.chapter_name,
+            chapter_summary: editChapterForm.chapter_summary
           }
         })
         if (res.状态码 === 200) {
           alert('章节修改成功')
-          // 刷新列表
           const r2 = await api.get(`/chapters/novel/${chapterNovel.value.novel_unique_id}`)
           if (r2.状态码 === 200) novelChapters.value = r2.数据
-          cancelChapterEdit()
+          showChapterEditModal.value = false
         } else alert(res.消息)
       } catch (e) { alert('修改失败: ' + (e.response?.data?.detail || e.message)) }
       finally { saving.value = false }
     }
 
-    const cancelChapterEdit = () => {
-      chapterMode.value = 'new'
-      editingChapterId.value = null
-      Object.assign(chapterForm, { chapter_name: '', characters_involved: '', organizations: '', locations: '', skills: '', word_count: 2000, chapter_summary: '', content: '' })
-    }
-
     const regenerateChapter = async () => {
-      if (!chapterForm.chapter_name) return alert('请输入章节名称')
+      if (!editChapterForm.chapter_name) return alert('请输入章节名称')
       if (!confirm('AI重新生成将覆盖当前章节内容，确定继续？')) return
       regenerating.value = true
       try {
         const res = await api.post('/chapters/generate', null, {
           params: {
             novel_unique_id: chapterNovel.value.novel_unique_id,
-            chapter_name: chapterForm.chapter_name,
-            characters_involved: chapterForm.characters_involved,
-            organizations: chapterForm.organizations,
-            locations: chapterForm.locations,
-            skills: chapterForm.skills,
-            word_count: chapterForm.word_count,
-            chapter_summary: chapterForm.chapter_summary
+            chapter_name: editChapterForm.chapter_name,
+            chapter_summary: editChapterForm.chapter_summary,
+            word_count: 2000
           }
         })
         if (res.状态码 === 200) {
           const newContent = res.数据?.content
           if (newContent) {
-            chapterForm.content = newContent
-            chapterForm.word_count = res.数据?.word_count || chapterForm.word_count
+            editChapterForm.content = newContent
             alert('重新生成成功，内容已更新到编辑区')
           } else {
             alert('重新生成成功，请切换到草稿列表查看')
@@ -844,9 +838,9 @@ export default {
 
     return { tab, isVip, isSvip, vipLevel, freeQuota, publishedToday, maxDailyQuota, quotaRemaining, quotaPercent, levelLabel, levelDesc, fetchTodayPublished, novelForm, createError, createSuccess, handleCreateNovel,
       myNovels, fetchMyNovels,
-      showChapterModal, chapterNovel, chapterMode, novelChapters, chapterForm, generating,
+      showChapterModal, chapterNovel, novelChapters, chapterForm, generating,
       openChapterModal, generateChapter,
-      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, editChapter, saveChapterEdit, cancelChapterEdit, regenerateChapter, continueChapter, continuing, deleteNovel, downloadNovel, formatTime, saving, regenerating,
+      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, editChapter, saveChapterEdit, regenerateChapter, continueChapter, continuing, deleteNovel, downloadNovel, formatTime, saving, regenerating, showChapterEditModal, editChapterForm,
       extracting, extractDraftInfo,
       genreOptions, selectedGenres, toggleGenre, handleCoverUpload, removeCover,
       showEditModal, editForm, editSelectedGenres, editError, editSuccess,
@@ -1080,6 +1074,19 @@ export default {
   padding: 8px 20px; border-radius: 8px; transition: all 0.2s;
 }
 .btn-cancel:hover { color: #f87171; border-color: rgba(248, 113, 113, 0.4) }
+
+/* 章节编辑独立弹窗 */
+.chapter-edit-modal { max-width: 700px; }
+.chapter-edit-modal h2 { margin-bottom: 20px; color: #e0e0e0; font-size: 18px; }
+.edit-row { margin-bottom: 14px; }
+.edit-row label { display: block; font-size: 13px; color: #8892b0; margin-bottom: 6px; }
+.edit-row input, .edit-row textarea {
+  width: 100%; padding: 10px 14px; background: rgba(15,15,40,0.5);
+  border: 1px solid rgba(102,126,234,0.2); border-radius: 8px;
+  color: #e0e0e0; font-size: 14px; font-family: inherit; resize: vertical;
+}
+.edit-row input:focus, .edit-row textarea:focus { outline: none; border-color: rgba(6,182,212,0.5); }
+.edit-actions { display: flex; gap: 10px; margin-top: 20px; }
 
 /* Draft */
 .draft-card { background: rgba(15,15,40,0.7); border: 1px solid rgba(102,126,234,0.12); border-radius: 14px; padding: 20px; margin-bottom: 16px; backdrop-filter: blur(10px); }
