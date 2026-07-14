@@ -14,8 +14,12 @@ api.interceptors.response.use(
   error => {
     if (error.response?.status === 401) {
       localStorage.removeItem('novel_user')
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login'
+      // /auth/me 的 401 由 App.vue 自行处理（清空 user 显示登录按钮）
+      // 其他 API 的 401 才跳转登录页
+      const isAuthCheck = error.config?.url?.includes('/auth/me')
+      if (!isAuthCheck && window.location.pathname !== '/login') {
+        // 使用 replace 而非 href，避免用户点后退又回到 401 页面
+        window.location.replace('/login')
       }
     }
     return Promise.reject(error)

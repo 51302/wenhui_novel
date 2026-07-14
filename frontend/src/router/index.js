@@ -29,4 +29,17 @@ const router = createRouter({
   routes
 })
 
+// 路由守卫：检查需要登录的页面
+router.beforeEach((to, from, next) => {
+  if (to.meta.requiresAuth) {
+    const stored = localStorage.getItem('novel_user')
+    if (!stored) {
+      // 未登录，跳转到登录页
+      next('/login')
+      return
+    }
+  }
+  next()
+})
+
 export default router

@@ -20,7 +20,10 @@
         </nav>
       </div>
       <div class="header-right">
-        <template v-if="user">
+        <!-- 正在验证登录状态，不显示任何按钮避免闪烁 -->
+        <template v-if="authChecking">
+        </template>
+        <template v-else-if="user">
           <span class="user-info">
             <span class="user-avatar">{{ user.username[0] }}</span>
             {{ user.username }}
@@ -62,12 +65,17 @@ export default {
   setup() {
     const router = useRouter()
     const user = ref(null)
+    const authChecking = ref(true)
 
     onMounted(async () => {
+      // 先检查 localStorage 是否有 token 存在的痕迹
       const stored = localStorage.getItem('novel_user')
-      if (stored) {
-        try { user.value = JSON.parse(stored) } catch { }
+      if (!stored) {
+        // localStorage 里都没有，直接跳过验证
+        authChecking.value = false
+        return
       }
+      // 有 localStorage，用 /auth/me 验证 token 是否仍有效
       try {
         const res = await api.get('/auth/me')
         if (res.状态码 === 200) {
@@ -77,6 +85,8 @@ export default {
       } catch (e) {
         user.value = null
         localStorage.removeItem('novel_user')
+      } finally {
+        authChecking.value = false
       }
     })
 
@@ -92,7 +102,7 @@ export default {
       router.push('/')
     }
 
-    return { user, onLoginSuccess, logout }
+    return { user, authChecking, onLoginSuccess, logout }
   }
 }
 </script>
