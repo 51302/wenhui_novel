@@ -168,6 +168,28 @@ def health_check():
     }
 
 
+# ====== 挂载前端 dist 静态文件（SPA 模式） ======
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+if _FRONTEND_DIST.exists():
+    # 先挂载静态资源目录
+    _ASSETS = _FRONTEND_DIST / "assets"
+    if _ASSETS.exists():
+        app.mount("/assets", StaticFiles(directory=str(_ASSETS)), name="assets")
+    # 兜底挂载 dist 下其他文件（covers、uploads、index.html 等）
+    # 注意：必须在 API 路由注册之后，否则会拦截 API 请求
+    from fastapi.responses import FileResponse, Response
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        # API 路径不拦截，由已有路由处理（返回 404 等）
+        if full_path.startswith("api/"):
+            return Response(status_code=404)
+        file_path = _FRONTEND_DIST / full_path
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(str(file_path))
+        # SPA fallback: 返回 index.html（Vue Router 处理前端路由）
+        return FileResponse(str(_FRONTEND_DIST / "index.html"))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=False)
