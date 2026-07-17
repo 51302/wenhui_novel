@@ -8,7 +8,7 @@ from typing import List, Dict, Optional
 class ChromaMemoryStore:
     """基于 ChromaDB 的向量记忆存储，用于小说创作上下文的语义检索"""
 
-    def __init__(self, persist_path: str = "./vector_db_data", collection_name: str = "novel_memory"):
+    def __init__(self, persist_path: str, collection_name: str = "novel_memory"):
         """初始化 ChromaDB 持久化客户端，自动创建 collection
         :param persist_path: 向量数据持久化目录
         :param collection_name: collection 名称
