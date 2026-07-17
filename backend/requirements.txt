@@ -10,8 +10,8 @@ bcrypt==4.0.1
 pydantic==2.5.2
 pyyaml==6.0.1
 numpy==1.26.4
-chromadb==0.4.18
-onnxruntime==1.16.3
+chromadb==0.6.3
+onnxruntime
 httpx==0.25.2
 python-multipart==0.0.6
 requests==2.31.0
