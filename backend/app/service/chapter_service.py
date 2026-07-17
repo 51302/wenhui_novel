@@ -377,32 +377,80 @@ class ChapterService:
 
 
     # ----------------------------------------------------------------
-    #  全量记忆体：逐章提取9维信息 → 聚合 → 存ChromaDB
+    #  全量记忆体：逐章提取 → 本地代码合并去重 → 存ChromaDB
     # ----------------------------------------------------------------
-    _AGGREGATE_MEMORY_PROMPT = """你是一位资深小说编辑。以下是从小说第1章到最后一章逐章提取的关键信息汇总（人物、组织、功法技能、关键事件、地点、时间、关键物品、实力变化、伏笔）。
 
-请根据以下汇总和作品设定，整理出完整的小说记忆体，按10个维度输出，关键事件必须详细完整不要遗漏：
-
-1.【人物】姓名|身份|性格|当前状态，如：张三|散修|阴险多疑|第3章加入青云宗
-2.【组织/势力】名称|性质|成员|动向，如：青云宗|正道宗门|弟子3000|正追查魔教（第3章）
-3.【功法/技能/法宝】名称|效果|归属，如：天雷诀|召唤雷电|张三从古墓获得（第5章）
-4.【关键事件】按时间顺序，每个事件详细描述，如：张三与李四在青云山决战，张三以天雷诀击败李四，夺得神秘玉佩（第5章）
-5.【地点】地名|特征|发生事件，如：青云山|灵气充沛|宗门所在|张三修炼突破（第3章）
-6.【时间线】关键时间节点，如：第3章-春季入宗；第5章-一月后突破练气三层
-7.【人物关系】A→B|关系类型，如：张三→李四|仇敌；王五→张三|师父
-8.【伏笔/悬念】未解之谜，如：张三身上玉佩来历不明，疑似与上古遗迹有关（第3章）
-9.【实力变化】角色|修为变化，如：张三|练气一层→练气三层（第5章突破）
-10.【关键物品】物品名|功能|归属，如：神秘玉佩|发光时提升修炼速度|张三所有（第3章）
-
-格式：每条一行纯文本，不需序号，无新信息写「无新增」。
-
-=== 作品设定 ===
-{settings}
-
-=== 逐章提取汇总 ===
-{chapters_summary}
-
-请整理出完整的记忆体："""
+    @staticmethod
+    def _aggregate_memory_by_code(settings_text: str, chapter_summaries: list) -> str:
+        """本地代码合并记忆体（不调 AI）：逐章提取结果按维度去重合并"""
+        DIMENSIONS = [
+            ("人物",     ["人物"],     "【人物】",     True),
+            ("组织",     ["组织"],     "【组织】",     True),
+            ("功法技能", ["功法技能"], "【功法技能】", True),
+            ("关键事件", ["关键事件"], "【关键事件】", False),
+            ("地点",     ["地点"],     "【地点】",     True),
+            ("伏笔",     ["伏笔"],     "【伏笔】",     True),
+            ("时间",     ["时间"],     "【时间】",     False),
+            ("关键物品", ["关键物品"], "【关键物品】", True),
+            ("实力变化", ["实力变化"], "【实力变化】", True),
+            ("境界",     ["境界"],     "【境界】",     True),
+            ("章节数",   ["章节数"],   "【章节数】",   False),
+        ]
+        raw = {d[0]: [] for d in DIMENSIONS}
+        chapter_count = 0
+        for summary in chapter_summaries:
+            lines = summary.split("\n")
+            chapter_name = ""
+            current_field = ""
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                header_m = re.match(r'^===\s*第?\d+章\s*(.+?)\s*===$', line)
+                if header_m:
+                    chapter_name = header_m.group(1).strip()
+                    chapter_count += 1
+                    continue
+                field_m = re.match(r'^\s*(\S+?)\s*[:：]\s*(.*)', line)
+                if field_m:
+                    fname = field_m.group(1).strip()
+                    fval = field_m.group(2).strip()
+                    for dim_name, aliases, _, _ in DIMENSIONS:
+                        if fname in aliases:
+                            if fval and fval not in ("无", "无新增", "无新", "—"):
+                                raw[dim_name].append((chapter_name, fval))
+                            current_field = dim_name
+                            break
+                elif current_field and line and not line.startswith("==="):
+                    for dim_name, _, _, _ in DIMENSIONS:
+                        if dim_name == current_field:
+                            raw[dim_name].append((chapter_name, line))
+                            break
+        sections = [f"【作品设定】\n{settings_text}\n"]
+        sections.append(f"当前已写{chapter_count}章\n")
+        for dim_name, _aliases, title, dedup in DIMENSIONS:
+            entries = raw[dim_name]
+            if not entries:
+                continue
+            if dedup:
+                merged = {}
+                for ch, val in entries:
+                    key = val.split("|")[0].strip() if "|" in val else val[:20]
+                    if key not in merged:
+                        merged[key] = val
+                    elif val != merged[key]:
+                        merged[key] = val
+                deduped = list(merged.values())
+                if deduped:
+                    sections.append(title)
+                    sections.extend(deduped)
+                    sections.append("")
+            else:
+                sections.append(title)
+                for _, val in entries:
+                    sections.append(val)
+                sections.append("")
+        return "\n".join(sections)
 
     @staticmethod
     async def _rebuild_memory_from_files(novel_unique_id: str, db: Session = None) -> str:
@@ -488,44 +536,9 @@ class ChapterService:
         system_logger.info(f"[记忆体] 逐章提取完成，共{chapter_num}章，摘要总长度={len(chapters_text)}")
 
 
-        # 用聚合摘要发给AI合成最终记忆体
-        prompt = ChapterService._AGGREGATE_MEMORY_PROMPT.replace(
-            "{settings}", settings_text
-        ).replace("{chapters_summary}", chapters_text)
-
-        extracted = ""
-        async with httpx.AsyncClient(timeout=120) as client:
-            try:
-                response = await client.post(
-                    f"{deepseek_base_url()}/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {deepseek_api_key()}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": deepseek_model(),
-                        "messages": [
-                            {"role": "system", "content": "你是一位资深小说编辑，擅长整理关键信息为结构化记忆体。"},
-                            {"role": "user", "content": prompt}
-                        ],
-                        "max_tokens": 4096,
-                        "temperature": 0.3
-                    }
-                )
-                data = response.json()
-                if "choices" in data and data["choices"]:
-                    extracted = data["choices"][0]["message"]["content"]
-                else:
-                    system_logger.error(f"[记忆体] 聚合失败: {data.get('error', {})}")
-
-            except Exception as e:
-                system_logger.error(f"[记忆体] 聚合异常: {e}")
-
-
-        memory = f"""【作品设定】
-{settings_text}
-
-{extracted if extracted else 'AI聚合失败，请稍后重试'}"""
+        # === 本地代码合并记忆体（不调 AI，按维度去重合并逐章提取结果）===
+        memory = ChapterService._aggregate_memory_by_code(settings_text, chapter_summaries)
+        system_logger.info(f"[记忆体] 代码合并完成，记忆体总长度={len(memory)} 字符")
 
         ChapterService._save_memory(novel_unique_id, memory)
         return memory
