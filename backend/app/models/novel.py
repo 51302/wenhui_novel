@@ -18,6 +18,7 @@ class Novel(Base):
     world_setting = Column(Text, comment="世界观设定")
     realm_setting = Column(Text, comment="境界设定(JSON)")
     characters = Column(Text, comment="角色设定(JSON)")
+    plot_development = Column(Text, comment="剧情发展路线")
     cover_image = Column(String(512), nullable=True, comment="封面图片")
     created_at = Column(DateTime, default=func.now(), comment="创建时间")
     created_by = Column(String(64), nullable=True, comment="创建人")

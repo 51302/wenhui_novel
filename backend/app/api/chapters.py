@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, Query, Body
-from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from datetime import datetime
 from app.models.base import get_db
@@ -7,6 +6,7 @@ from app.models.chapter import Chapter
 from app.models.novel import Novel
 from app.service.chapter_service import ChapterService
 from app.api.deps import get_current_user, check_generate_permission
+from fastapi.responses import StreamingResponse
 from app.utils.response import fail, success
 from app.utils.logger import system_logger
 from pydantic import BaseModel
@@ -116,12 +116,11 @@ def publish_chapter(
     body: dict = Body(...),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    _perm=Depends(check_generate_permission),
 ):
     """
     发布章节到作品圈
     附带 AI 提取的关键信息（人物/组织/地点/技能/事件等）
-    发布后同步到作品圈，不自动更新记忆体（由 extract-info 负责）
+    发布不扣减配额（配额仅在 AI 生成时扣减）
     """
     result = ChapterService.publish_chapter(
         db, chapter_unique_id,
@@ -164,13 +163,8 @@ async def extract_chapter_info(
     try:
         result = await ChapterService.extract_chapter_info(body.content, body.chapter_name)
         if result.get("success"):
-            # 提取成功 → 更新记忆体
-            if body.novel_unique_id and body.chapter_name:
-                ChapterService.save_extracted_to_memory(
-                    body.novel_unique_id, result["data"], body.chapter_name
-                )
             system_logger.info(f"AI关键信息提取成功: {body.chapter_name} (novel={body.novel_unique_id})")
-            return success(result["data"], "提取成功")
+            return success(result["data"], "提取成功（记忆体将在发布章节时自动保存）")
         return fail(result.get("error", "提取失败"))
     except Exception as e:
         system_logger.error(f"AI关键信息提取异常: {body.chapter_name} → {str(e)}")

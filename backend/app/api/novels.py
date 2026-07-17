@@ -13,7 +13,7 @@ def create_novel(
     description: str = "", story_background: str = "",
     world_setting: str = "", realm_setting: str = None,
     characters: str = None, genre: str = None,
-    cover_image: str = None,
+    cover_image: str = None, plot_development: str = None,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
     _perm=Depends(check_creation_access),
@@ -23,7 +23,8 @@ def create_novel(
     result = NovelService.create_novel(
         db, current_user["user_id"], current_user["username"],
         title, target_reader, description, story_background,
-        world_setting, realm_setting, characters, genre, cover_image, current_user["username"]
+        world_setting, realm_setting, characters, genre, cover_image,
+        plot_development=plot_development, created_by=current_user["username"]
     )
     if result.get("状态码") == 200:
         novel_id = result.get("数据", {}).get("novel_unique_id", "")
@@ -90,8 +91,9 @@ def update_novel(
     novel_unique_id: str,
     title: str = None, target_reader: str = None,
     description: str = None, story_background: str = None,
-    world_setting: str = None, genre: str = None,
-    cover_image: str = None,
+    world_setting: str = None, realm_setting: str = None,
+    characters: str = None, genre: str = None,
+    cover_image: str = None, plot_development: str = None,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
     _vip=Depends(check_creation_access),
@@ -100,7 +102,8 @@ def update_novel(
     from app.utils.logger import system_logger
     result = NovelService.update_novel(
         db, novel_unique_id, title, target_reader, description,
-        story_background, world_setting, genre, cover_image
+        story_background, world_setting, realm_setting, characters,
+        genre, cover_image, plot_development
     )
     if result.get("状态码") == 200:
         system_logger.info(f"小说更新成功: ID={novel_unique_id}, 用户={current_user['username']}")

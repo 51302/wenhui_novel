@@ -36,7 +36,8 @@ class NovelService:
                      title: str, target_reader: str, description: str = "",
                      story_background: str = "", world_setting: str = "",
                      realm_setting: str = None, characters: str = None,
-                     genre: str = None, cover_image: str = None, created_by: str = None) -> dict:
+                     genre: str = None, cover_image: str = None,
+                     plot_development: str = None, created_by: str = None) -> dict:
         """创建新作品，保存设定文件并同步到ES索引
         :param db: 数据库会话
         :param author_user_id: 作者用户ID
@@ -70,6 +71,7 @@ class NovelService:
             characters=characters,
             genre=genre,
             cover_image=cover_image,
+            plot_development=plot_development,
             created_by=created_by
         )
         novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
@@ -81,7 +83,8 @@ class NovelService:
 世界观设定：{world_setting}
 境界设定：{realm_setting or '无'}
 标签：{genre or '无'}
-角色设定：{characters or '无'}"""
+角色设定：{characters or '无'}
+剧情发展路线：{plot_development or '无'}"""
         with open(os.path.join(novel_dir, "作品设定.txt"), "w", encoding="utf-8") as f:
             f.write(settings_content)
         es_doc = {
@@ -234,6 +237,7 @@ class NovelService:
             "world_setting": novel.world_setting,
             "realm_setting": novel.realm_setting,
             "characters": novel.characters,
+            "plot_development": novel.plot_development,
             "cover_image": novel.cover_image,
             "created_at": novel.created_at.isoformat() if novel.created_at else None
         }
@@ -293,10 +297,10 @@ class NovelService:
                     shutil.rmtree(_novel_dir)
                 # 删除 ES 索引
                 es_service.delete_novel(_nid)
-                # 清除向量数据库
-                from app.utils.chroma_client import chroma_memory
-                if chroma_memory:
-                    chroma_memory.delete_by_prefix(f"{_nid}_")
+                # 清除向量数据库（整书记忆体目录）
+                from app.utils.chroma_client import novel_memory_manager
+                if novel_memory_manager:
+                    novel_memory_manager.delete_store(_nid)
             except BaseException as e:
                 from app.utils.logger import system_logger
                 system_logger.error(f"小说删除后台清理失败: {_nid} -> {e}")
@@ -309,7 +313,9 @@ class NovelService:
     def update_novel(db: Session, novel_unique_id: str, title: str = None,
                      target_reader: str = None, description: str = None,
                      story_background: str = None, world_setting: str = None,
-                     genre: str = None, cover_image: str = None) -> dict:
+                     realm_setting: str = None, characters: str = None,
+                     genre: str = None, cover_image: str = None,
+                     plot_development: str = None) -> dict:
         """局部更新作品信息，只更新提供的字段并刷新ES索引
         :param db: 数据库会话
         :param novel_unique_id: 作品唯一ID
@@ -344,8 +350,28 @@ class NovelService:
             novel.genre = genre
         if cover_image is not None:
             novel.cover_image = cover_image
-        
+        if realm_setting is not None:
+            novel.realm_setting = realm_setting
+        if characters is not None:
+            novel.characters = characters
+        if plot_development is not None:
+            novel.plot_development = plot_development
+
         db.commit()
+
+        # 更新作品设定.txt（同步 plot_development 到文件，供 AI 生成使用）
+        novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
+        settings_file = os.path.join(novel_dir, "作品设定.txt")
+        if os.path.exists(settings_file):
+            with open(settings_file, "r", encoding="utf-8") as f:
+                txt_content = f.read()
+            # 替换或追加 plot_development 行
+            if "\n剧情发展路线：" in txt_content:
+                txt_content = txt_content[:txt_content.rfind("\n剧情发展路线：")]
+            if plot_development is not None or novel.plot_development:
+                txt_content += f"\n剧情发展路线：{novel.plot_development or '无'}"
+            with open(settings_file, "w", encoding="utf-8") as f:
+                f.write(txt_content)
         
         # 更新 ES 索引
         es_doc = {

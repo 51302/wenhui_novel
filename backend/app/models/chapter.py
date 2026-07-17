@@ -21,7 +21,7 @@ class Chapter(Base):
     power_changes = Column(Text, nullable=True, comment="实力变化")
     foreshadowing = Column(Text, nullable=True, comment="伏笔/悬念")
     word_count = Column(Integer, default=0, comment="章节字数")
-    chapter_summary = Column(String(512), nullable=True, comment="本章概要")
+    chapter_summary = Column(Text, nullable=True, comment="本章概要")
     is_published = Column(SmallInteger, default=0, comment="是否发布: 0=草稿, 1=已发布")
     content = Column(Text, nullable=True, comment="章节正文内容")
     created_by = Column(String(64), nullable=True, comment="创建人")

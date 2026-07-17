@@ -22,6 +22,7 @@ from app.api.vip import router as vip_router
 from app.api.bookshelf import router as bookshelf_router
 from app.utils.redis_cache import RedisCache, redis_client as global_redis
 from app.utils.chroma_client import ChromaMemoryStore, chroma_memory as global_chroma
+from app.utils.chroma_client import NovelMemoryStoreManager, novel_memory_manager as global_manager
 from app.utils.logger import system_logger
 from app.config import get as cfg_get
 
@@ -29,7 +30,7 @@ from app.config import get as cfg_get
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """应用生命周期管理：启动时初始化 Redis/ChromaDB 连接并建表，关闭时记录日志"""
-    global global_redis, global_chroma
+    global global_redis, global_chroma, global_manager
 
     global_redis = RedisCache(
         host=os.getenv("REDIS_HOST", cfg_get("redis.host", "localhost")),
@@ -52,6 +53,19 @@ async def lifespan(application: FastAPI):
         system_logger.warning(f"ChromaDB 初始化失败(向量记忆功能不可用): {e}")
         import app.utils.chroma_client as mod_chroma
         mod_chroma.chroma_memory = None
+
+    # 初始化 NovelMemoryStoreManager（每本书独立 ChromaDB 实例）
+    try:
+        global_manager = NovelMemoryStoreManager(
+            base_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), "vector_db_data")
+        )
+        import app.utils.chroma_client as mod_chroma2
+        mod_chroma2.novel_memory_manager = global_manager
+        system_logger.info("NovelMemoryStoreManager 启动成功（每书独立记忆体）")
+    except Exception as e:
+        system_logger.warning(f"NovelMemoryStoreManager 初始化失败: {e}")
+        import app.utils.chroma_client as mod_chroma2
+        mod_chroma2.novel_memory_manager = None
 
     Base.metadata.create_all(bind=engine)
 

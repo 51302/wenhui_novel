@@ -270,9 +270,35 @@
             <span v-if="continuing[d.chapter_unique_id]" class="spinner"></span>
             {{ continuing[d.chapter_unique_id] ? '正在续写...' : '🤖 AI续写' }}
           </button>
-          <button @click="publishChapter(d)">发布章节</button>
+          <button @click="publishChapter(d)" :disabled="publishing[d.chapter_unique_id]">
+            <span v-if="publishing[d.chapter_unique_id]" class="spinner"></span>
+            {{ publishing[d.chapter_unique_id] ? '发布中...' : '发布章节' }}
+          </button>
           <button class="btn-danger" @click="deleteDraft(d)">删除</button>
         </div>
+      </div>
+    </div>
+
+    <!-- 发布加载遮罩 -->
+    <div v-if="publishOverlay.visible" class="modal-overlay publish-overlay">
+      <div class="publish-modal">
+        <div class="publish-spinner"></div>
+        <h3>正在发布章节「{{ publishOverlay.name }}」</h3>
+        <div class="publish-steps">
+          <div class="step" :class="{ done: publishOverlay.step >= 1, active: publishOverlay.step === 1 }">
+            <span class="step-icon">{{ publishOverlay.step > 1 ? '✅' : publishOverlay.step === 1 ? '⏳' : '○' }}</span>
+            <span>验证章节文本已生成</span>
+          </div>
+          <div class="step" :class="{ done: publishOverlay.step >= 2, active: publishOverlay.step === 2 }">
+            <span class="step-icon">{{ publishOverlay.step > 2 ? '✅' : publishOverlay.step === 2 ? '⏳' : '○' }}</span>
+            <span>记忆体数据入库</span>
+          </div>
+          <div class="step" :class="{ done: publishOverlay.step >= 3, active: publishOverlay.step === 3 }">
+            <span class="step-icon">{{ publishOverlay.step > 3 ? '✅' : publishOverlay.step === 3 ? '⏳' : '○' }}</span>
+            <span>同步到作品圈</span>
+          </div>
+        </div>
+        <p class="publish-hint">请耐心等候，数据正在录入中…</p>
       </div>
     </div>
   </div>
@@ -554,6 +580,10 @@ export default {
 
     const generateChapter = async () => {
       if (!chapterForm.chapter_name) return alert('请输入章节名称')
+      if (chapterForm.word_count > 2000) {
+        if (!confirm(`章节字数超过2000字上限（当前${chapterForm.word_count}字），将自动调整为2000字。是否继续？`)) return
+        chapterForm.word_count = 2000
+      }
       generating.value = true
       try {
         const res = await api.post('/chapters/generate', null, {
@@ -589,11 +619,14 @@ export default {
     const drafts = ref([])
     const continuing = reactive({})
     const extracting = reactive({})
+    const publishing = reactive({})
+    const publishOverlay = reactive({ visible: false, name: '', step: 0 })
     const fetchDrafts = async () => {
       try {
         const res = await api.get('/chapters/drafts')
         if (res.状态码 === 200) drafts.value = res.数据
-      } catch (e) { }
+        else console.error('获取草稿列表失败:', res)
+      } catch (e) { console.error('获取草稿列表异常:', e) }
     }
 
     const extractDraftInfo = async (d) => {
@@ -642,6 +675,11 @@ export default {
         return
       }
 
+      publishing[d.chapter_unique_id] = true
+      publishOverlay.visible = true
+      publishOverlay.name = d.chapter_name
+      publishOverlay.step = 1
+
       try {
         const body = { content: d.content }
         // 附带 AI 提取的信息
@@ -656,14 +694,29 @@ export default {
           body.power_changes = d._info.实力变化 || ''
           body.foreshadowing = d._info.伏笔 || ''
         }
+
+        publishOverlay.step = 2
         const res = await api.post(`/chapters/publish/${d.chapter_unique_id}`, body)
+
+        publishOverlay.step = 3
         if (res.状态码 === 200) {
+          await new Promise(r => setTimeout(r, 400)) // 短暂停留让用户看到全绿
+          publishOverlay.visible = false
           alert(res.消息)
-          fetchDrafts()
-          fetchTodayPublished()
-        } else alert(res.消息)
+          drafts.value = drafts.value.filter(draft => draft.chapter_unique_id !== d.chapter_unique_id)
+          await fetchDrafts()
+          await fetchTodayPublished()
+        } else {
+          publishOverlay.visible = false
+          alert(res.消息)
+        }
       } catch (e) {
+        publishOverlay.visible = false
         alert('发布失败: ' + (e.response?.data?.detail || e.message))
+      } finally {
+        publishing[d.chapter_unique_id] = false
+        publishOverlay.visible = false
+        publishOverlay.step = 0
       }
     }
 
@@ -673,7 +726,7 @@ export default {
         const res = await api.delete(`/chapters/delete/${d.chapter_unique_id}`)
         if (res.状态码 === 200) {
           alert('删除成功')
-          fetchDrafts()
+          await fetchDrafts()
         } else alert(res.消息)
       } catch (e) { alert('删除失败') }
     }
@@ -831,7 +884,7 @@ export default {
       showChapterModal, chapterNovel, novelChapters, chapterForm, generating,
       openChapterModal, generateChapter,
       drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, editChapter, saveChapterEdit, regenerateChapter, continueChapter, continuing, deleteNovel, downloadNovel, formatTime, saving, regenerating, showChapterEditModal, editChapterForm,
-      extracting, extractDraftInfo,
+      extracting, extractDraftInfo, publishing, publishOverlay,
       genreOptions, selectedGenres, toggleGenre, handleCoverUpload, removeCover,
       showEditModal, editForm, editSelectedGenres, editError, editSuccess,
       openEditModal, toggleEditGenre, handleEditCoverUpload, handleUpdateNovel
@@ -1110,4 +1163,65 @@ export default {
 .info-cell input { padding: 8px 10px; border: 1px solid rgba(102,126,234,0.2); border-radius: 6px; font-size: 12px; background: rgba(15,15,40,0.5); color: #e0e0e0; transition: border-color 0.3s; }
 .info-cell input:focus { outline: none; border-color: rgba(6,182,212,0.5); }
 @media (max-width: 768px) { .info-grid { grid-template-columns: repeat(2, 1fr); } }
+
+/* 发布加载遮罩 */
+.publish-overlay { z-index: 300; }
+.publish-modal {
+  background: rgba(18, 18, 44, 0.97);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(102, 126, 234, 0.25);
+  border-radius: 20px;
+  padding: 40px 48px;
+  text-align: center;
+  min-width: 400px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 80px rgba(102, 126, 234, 0.15);
+}
+.publish-spinner {
+  width: 56px; height: 56px;
+  border: 4px solid rgba(102, 126, 234, 0.2);
+  border-top-color: #667eea;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 24px;
+}
+.publish-modal h3 {
+  font-size: 18px; color: #e0e0e0;
+  margin: 0 0 28px; font-weight: 600;
+}
+.publish-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.step {
+  display: flex; align-items: center; gap: 12px;
+  font-size: 14px; color: #5a6080;
+  padding: 10px 16px;
+  background: rgba(15, 15, 40, 0.5);
+  border-radius: 10px;
+  border: 1px solid rgba(102, 126, 234, 0.08);
+  transition: all 0.4s;
+}
+.step.done {
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.25);
+  background: rgba(74, 222, 128, 0.06);
+}
+.step.active {
+  color: #e0e0e0;
+  border-color: rgba(102, 126, 234, 0.4);
+  background: rgba(102, 126, 234, 0.1);
+  box-shadow: 0 0 20px rgba(102, 126, 234, 0.1);
+}
+.step-icon { font-size: 18px; width: 28px; text-align: center; }
+.publish-hint {
+  font-size: 13px; color: #5a6080;
+  margin: 0;
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
 </style>
