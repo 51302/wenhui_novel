@@ -287,15 +287,15 @@
         <div class="publish-steps">
           <div class="step" :class="{ done: publishOverlay.step >= 1, active: publishOverlay.step === 1 }">
             <span class="step-icon">{{ publishOverlay.step > 1 ? '✅' : publishOverlay.step === 1 ? '⏳' : '○' }}</span>
-            <span>验证章节文本已生成</span>
+            <span>保存章节文本文件</span>
           </div>
           <div class="step" :class="{ done: publishOverlay.step >= 2, active: publishOverlay.step === 2 }">
             <span class="step-icon">{{ publishOverlay.step > 2 ? '✅' : publishOverlay.step === 2 ? '⏳' : '○' }}</span>
-            <span>记忆体数据入库</span>
+            <span>写入章节数据库</span>
           </div>
           <div class="step" :class="{ done: publishOverlay.step >= 3, active: publishOverlay.step === 3 }">
             <span class="step-icon">{{ publishOverlay.step > 3 ? '✅' : publishOverlay.step === 3 ? '⏳' : '○' }}</span>
-            <span>同步到作品圈</span>
+            <span>同步记忆体 & 作品圈</span>
           </div>
         </div>
         <p class="publish-hint">请耐心等候，数据正在录入中…</p>
@@ -695,9 +695,11 @@ export default {
           body.foreshadowing = d._info.伏笔 || ''
         }
 
+        // 阶段2：调用后端 API（后端内部三阶段验证：txt→MySQL→ChromaDB）
         publishOverlay.step = 2
         const res = await api.post(`/chapters/publish/${d.chapter_unique_id}`, body)
 
+        // 阶段3：后端返回成功 = 三阶段全部验证通过
         publishOverlay.step = 3
         if (res.状态码 === 200) {
           await new Promise(r => setTimeout(r, 400)) // 短暂停留让用户看到全绿
