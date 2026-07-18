@@ -94,5 +94,53 @@ class RedisCache:
         except Exception:
             return False
 
+    # ----------------------------------------------------------------
+    #  Hash 操作（用于记忆体持久存储，无 TTL）
+    # ----------------------------------------------------------------
+    def hget(self, key: str, field: str) -> Optional[str]:
+        """获取 Hash 中指定字段的值"""
+        if not self.client:
+            return None
+        try:
+            return self.client.hget(key, field)
+        except Exception:
+            return None
+
+    def hset(self, key: str, field: str, value: str) -> bool:
+        """设置 Hash 字段值"""
+        if not self.client:
+            return False
+        try:
+            return bool(self.client.hset(key, field, value))
+        except Exception:
+            return False
+
+    def hgetall(self, key: str) -> dict:
+        """获取 Hash 全部字段"""
+        if not self.client:
+            return {}
+        try:
+            return self.client.hgetall(key) or {}
+        except Exception:
+            return {}
+
+    def hdel(self, key: str, *fields: str) -> int:
+        """删除 Hash 中一个或多个字段"""
+        if not self.client or not fields:
+            return 0
+        try:
+            return self.client.hdel(key, *fields)
+        except Exception:
+            return 0
+
+    def exists(self, key: str) -> bool:
+        """检查 key 是否存在"""
+        if not self.client:
+            return False
+        try:
+            return bool(self.client.exists(key))
+        except Exception:
+            return False
+
 
 redis_client: Optional[RedisCache] = None

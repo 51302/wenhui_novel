@@ -297,10 +297,11 @@ class NovelService:
                     shutil.rmtree(_novel_dir)
                 # 删除 ES 索引
                 es_service.delete_novel(_nid)
-                # 清除向量数据库（整书记忆体目录）
-                from app.utils.chroma_client import novel_memory_manager
-                if novel_memory_manager:
-                    novel_memory_manager.delete_store(_nid)
+                # 清除 Redis 记忆体
+                import app.utils.redis_cache as redis_mod
+                r = redis_mod.redis_client
+                if r and r.ping():
+                    r.delete(f"memory:{_nid}")
             except BaseException as e:
                 from app.utils.logger import system_logger
                 system_logger.error(f"小说删除后台清理失败: {_nid} -> {e}")
