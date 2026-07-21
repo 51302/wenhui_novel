@@ -12,7 +12,7 @@ from app.service.es_service import es_service
 from app.config import deepseek_api_key, deepseek_base_url, deepseek_model
 from app.utils.logger import system_logger
 from app.prompts.chapter_prompts import (
-    LIGHT_EXTRACT_PROMPT,
+    LIGHT_EXTRACT_PROMPT, FULL_EXTRACT_PROMPT,
     MEMORY_DIMENSION_DEFS, MEMORY_EXTRACT_PROMPT, MEMORY_INCREMENTAL_PROMPT,
     get_memory_category_names, get_frontend_to_chroma_map,
     match_ai_label_to_chroma, get_chroma_dedup_map,
@@ -50,6 +50,84 @@ class ChapterService:
     def _memory_key(novel_unique_id: str) -> str:
         """Redis Hash key: memory:{novel_id}"""
         return f"memory:{novel_unique_id}"
+
+    @staticmethod
+    def clear_memory(novel_unique_id: str) -> dict:
+        """清空指定作品的全部 Redis 记忆体"""
+        r = _redis()
+        if not r or not r.ping():
+            return fail("Redis 不可用", code=500)
+        key = ChapterService._memory_key(novel_unique_id)
+        try:
+            existed = r.exists(key)
+            r.delete(key)
+            system_logger.info(f"[记忆体] 已清空 {novel_unique_id} 的记忆体（之前{'存在' if existed else '不存在'}）")
+            return success(None, "Redis 记忆体已清除")
+        except Exception as e:
+            system_logger.error(f"[记忆体] 清空失败: {e}")
+            return fail(f"清空失败: {str(e)}", code=500)
+
+    @staticmethod
+    def reset_and_rebuild_memory(novel_unique_id: str, db) -> dict:
+        """清空 Redis 记忆体 + 后台逐章 AI 提取重建
+
+        1. 删除 Redis Hash key
+        2. 统计已发布章节数
+        3. 启动后台线程：逐章读 TXT → AI 提取 → 写入 Redis
+        4. 立即返回章节数（不等待重建完成）
+        """
+        r = _redis()
+        if not r or not r.ping():
+            return fail("Redis 不可用", code=500)
+
+        # 清空
+        key = ChapterService._memory_key(novel_unique_id)
+        try:
+            r.delete(key)
+            system_logger.info(f"[记忆体重置] 已清空 {novel_unique_id} 的 Redis 记忆体")
+        except Exception as e:
+            system_logger.error(f"[记忆体重置] 清空失败: {e}")
+            return fail(f"清空失败: {str(e)}", code=500)
+
+        # 统计章节数
+        from app.dao.chapter_dao import ChapterDAO
+        all_ch = ChapterDAO.get_by_novel_id(db, novel_unique_id)
+        published = [c for c in all_ch if c.is_published]
+
+        chapter_count = len(published)
+        if chapter_count == 0:
+            system_logger.info(f"[记忆体重置] {novel_unique_id} 无已发布章节，无需重建")
+            return success({"章节数": 0, "消息": "记忆体已清除，暂无已发布章节"}, "重置完成")
+
+        # 后台线程：逐章 AI 提取写入 Redis
+        import threading
+        _nid = novel_unique_id
+        _db_factory = None
+        try:
+            from app.models.base import SessionLocal as _s
+            _db_factory = _s
+        except Exception:
+            pass
+
+        def _rebuild_async():
+            import asyncio
+            async def _work():
+                system_logger.info(f"[记忆体重置] 开始后台重建 {chapter_count} 章的记忆体...")
+                try:
+                    await ChapterService._rebuild_memory_from_files(_nid, db=None)
+                    system_logger.info(f"[记忆体重置] 后台重建完成: {_nid}")
+                except Exception as e:
+                    system_logger.error(f"[记忆体重置] 后台重建失败: {e}")
+            try:
+                asyncio.run(_work())
+            except Exception as e:
+                system_logger.error(f"[记忆体重置] 后台线程异常: {e}")
+
+        threading.Thread(target=_rebuild_async, daemon=True, name=f"memory-rebuild-{novel_unique_id[:8]}").start()
+
+        msg = f"记忆体已清除，正在后台重建 {chapter_count} 章记忆数据（章节越多越慢，请耐心等待）"
+        system_logger.info(f"[记忆体重置] {novel_unique_id}: {msg}")
+        return success({"章节数": chapter_count, "消息": msg}, "重置已启动，后台重建中...")
 
     @staticmethod
     def _ensure_memory_store():
@@ -280,6 +358,24 @@ class ChapterService:
         各维度根据前端 LIGHT_EXTRACT_PROMPT 约定的字段顺序转换。
         """
         lines = [l.strip() for l in raw_text.strip().split("\n") if l.strip()]
+        # 过滤掉表头行（如 "姓名|身份|性格特点|当前状态|修为"）、占位噪声
+        header_patterns = [
+            "姓名|身份", "名称|性质", "地名|特征", "物品名|功能",
+            "角色名|变化", "时间节点|发生", "名称|效果",
+        ]
+        noise_patterns = ["本章未提及", "本章未出现", "本章为背景", "本章无角色",
+                          "故填写", "故仅列出", "暂无"]
+
+        def is_noise(line: str) -> bool:
+            for p in header_patterns:
+                if line.startswith(p):
+                    return True
+            for p in noise_patterns:
+                if p in line:
+                    return True
+            return False
+
+        lines = [l for l in lines if not is_noise(l)]
         result = []
 
         if field == "人物":
@@ -287,6 +383,8 @@ class ChapterService:
             for line in lines:
                 parts = [p.strip() for p in line.split("|")]
                 name = parts[0] if len(parts) > 0 else ""
+                if not name or name == "无" or name == "（无）":
+                    continue
                 identity = parts[1] if len(parts) > 1 else ""
                 character = parts[2] if len(parts) > 2 else ""
                 status = parts[3] if len(parts) > 3 else ""
@@ -296,30 +394,32 @@ class ChapterService:
                 if identity: pieces.append(f"是{identity}")
                 if character: pieces.append(f"性格{character}")
                 if level: pieces.append(f"修为{level}")
-                if status: pieces.append(status)
+                if status and status not in ("无",): pieces.append(status)
                 if pieces:
                     result.append("，".join(pieces) + "。")
 
         elif field == "组织":
-            # 名称|性质|成员规模|当前动向
             for line in lines:
                 parts = [p.strip() for p in line.split("|")]
                 name = parts[0] if len(parts) > 0 else ""
+                if not name or name == "无" or name == "（无）":
+                    continue
                 nature = parts[1] if len(parts) > 1 else ""
                 scale = parts[2] if len(parts) > 2 else ""
                 trend = parts[3] if len(parts) > 3 else ""
                 pieces = [name] if name else []
-                if nature: pieces.append(f"是一个{nature}")
-                if scale: pieces.append(f"约有{scale}")
-                if trend: pieces.append(f"目前{trend}")
+                if nature and nature not in ("无",): pieces.append(f"是一个{nature}")
+                if scale and scale not in ("无",): pieces.append(f"约有{scale}")
+                if trend and trend not in ("无",): pieces.append(f"目前{trend}")
                 if pieces:
                     result.append("，".join(pieces) + "。")
 
         elif field == "功法技能":
-            # 名称|效果描述|使用者/归属|来源
             for line in lines:
                 parts = [p.strip() for p in line.split("|")]
                 name = parts[0] if len(parts) > 0 else ""
+                if not name or name == "无" or name == "（无）":
+                    continue
                 effect = parts[1] if len(parts) > 1 else ""
                 owner = parts[2] if len(parts) > 2 else ""
                 source = parts[3] if len(parts) > 3 else ""
@@ -331,10 +431,11 @@ class ChapterService:
                     result.append("，".join(pieces) + "。")
 
         elif field == "地点":
-            # 地名|特征描述|发生了什么
             for line in lines:
                 parts = [p.strip() for p in line.split("|")]
                 name = parts[0] if len(parts) > 0 else ""
+                if not name or name == "无" or name == "（无）":
+                    continue
                 feature = parts[1] if len(parts) > 1 else ""
                 event = parts[2] if len(parts) > 2 else ""
                 pieces = [name] if name else []
@@ -344,21 +445,23 @@ class ChapterService:
                     result.append("，".join(pieces) + "。")
 
         elif field == "时间":
-            # 时间节点|发生了什么事
             for line in lines:
                 parts = [p.strip() for p in line.split("|")]
                 time = parts[0] if len(parts) > 0 else ""
                 event = parts[1] if len(parts) > 1 else ""
+                if not time or time == "无":
+                    continue
                 if time and event:
                     result.append(f"{time}，{event}。")
                 elif time:
                     result.append(f"时间节点：{time}。")
 
         elif field == "关键物品":
-            # 物品名|功能效果|归属/发现者
             for line in lines:
                 parts = [p.strip() for p in line.split("|")]
                 name = parts[0] if len(parts) > 0 else ""
+                if not name or name == "无" or name == "（无）":
+                    continue
                 effect = parts[1] if len(parts) > 1 else ""
                 owner = parts[2] if len(parts) > 2 else ""
                 pieces = [name] if name else []
@@ -368,10 +471,11 @@ class ChapterService:
                     result.append("，".join(pieces) + "。")
 
         elif field == "实力变化":
-            # 角色名|变化前→变化后|原因
             for line in lines:
                 parts = [p.strip() for p in line.split("|")]
                 name = parts[0] if len(parts) > 0 else ""
+                if not name or name == "无" or name == "（无）":
+                    continue
                 change = parts[1] if len(parts) > 1 else ""
                 reason = parts[2] if len(parts) > 2 else ""
                 pieces = [name] if name else []
@@ -381,10 +485,9 @@ class ChapterService:
                     result.append("，".join(pieces) + "。")
 
         elif field in ("关键事件", "伏笔"):
-            # 自由文本，直接保留原文（通常是自然语言描述的列表项）
             for line in lines:
                 clean = line.lstrip("0123456789.、- ")
-                if clean:
+                if clean and clean not in ("无", "无。", "（无）"):
                     result.append(clean + "。")
 
         if result:
@@ -465,14 +568,14 @@ class ChapterService:
         info_data = {}
         try:
             async with httpx.AsyncClient(timeout=120) as client:
-                prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-8000:])
+                prompt = FULL_EXTRACT_PROMPT.replace("{content}", content[-15000:])
                 response = await client.post(
                     f"{deepseek_base_url()}/v1/chat/completions",
                     headers={"Authorization": f"Bearer {deepseek_api_key()}", "Content-Type": "application/json"},
                     json={"model": deepseek_model(), "messages": [
-                        {"role": "system", "content": "你是一位资深小说编辑，擅长从文本中提取结构化信息。"},
+                        {"role": "system", "content": "你是一位资深小说编辑，擅长从文本中提取结构化信息，输出详尽完整的章节分析报告。"},
                         {"role": "user", "content": prompt}
-                    ], "max_tokens": 4000, "temperature": 0.2},
+                    ], "max_tokens": 8000, "temperature": 0.2},
                 )
                 if response.status_code == 200:
                     data = response.json()
@@ -488,6 +591,97 @@ class ChapterService:
         if info_data:
             ChapterService.save_extracted_to_memory(novel_unique_id, info_data, chapter_name)
         system_logger.info(f"[记忆体重建] {chapter_name} 记忆体重建完成")
+
+    @staticmethod
+    async def _extract_and_append_to_memory(novel_unique_id: str, content: str,
+                                             chapter_name: str, chapter_summary: str):
+        """发布章节时后台 AI 提取维度信息并写入 Redis 记忆体"""
+        info_data = {}
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-8000:])
+                response = await client.post(
+                    f"{deepseek_base_url()}/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {deepseek_api_key()}", "Content-Type": "application/json"},
+                    json={"model": deepseek_model(), "messages": [
+                        {"role": "system", "content": "你是一位资深小说编辑，擅长从文本中提取结构化信息。"},
+                        {"role": "user", "content": prompt}
+                    ], "max_tokens": 4000, "temperature": 0.2},
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    content_resp = data["choices"][0]["message"]["content"]
+                    info_data = ChapterService._parse_extract_result(content_resp)
+                    system_logger.info(f"[发布-提取] AI 提取完成: {len(info_data)} 个维度")
+                else:
+                    system_logger.error(f"[发布-提取] AI 请求失败: {response.status_code}")
+        except Exception as e:
+            system_logger.error(f"[发布-提取] AI 提取异常: {e}")
+            if chapter_summary:
+                info_data["关键事件"] = chapter_summary
+
+        if info_data:
+            ChapterService.save_extracted_to_memory(novel_unique_id, info_data, chapter_name)
+            system_logger.info(f"[发布-提取] {chapter_name} 维度信息已写入 Redis 记忆体")
+        else:
+            system_logger.warning(f"[发布-提取] {chapter_name} 无提取数据，记忆体未更新")
+
+    @staticmethod
+    def _parse_extract_result(raw_text: str) -> dict:
+        """解析 AI 提取结果 → frontend 管道符格式（供 save_extracted_to_memory 使用）
+        
+        AI 输出格式:
+        ---人物---
+        姓名|身份|性格|状态|修为
+        ---组织---
+        名称|性质|规模|动向
+        ---功法技能---
+        名称|效果|归属者|来源
+        ---关键事件---
+        事件描述...
+        ---地点---
+        地名|特征|事件
+        ---时间---
+        时间节点|事件
+        ---关键物品---
+        物品名|功能|归属
+        ---实力变化---
+        角色名|变化前→变化后|原因
+        ---伏笔---
+        描述...
+        """
+        result = {}
+        # 维度映射: AI header → frontend field name
+        # 支持 LIGHT_EXTRACT_PROMPT 和 FULL_EXTRACT_PROMPT 两种格式
+        section_map = {
+            "人物": "人物",
+            "组织": "组织", "组织/势力": "组织",
+            "功法技能": "功法技能", "功法/技能/法宝": "功法技能",
+            "关键事件": "关键事件",
+            "地点": "地点",
+            "时间": "时间", "时间线": "时间",
+            "关键物品": "关键物品",
+            "实力变化": "实力变化",
+            "伏笔": "伏笔", "伏笔/悬念": "伏笔",
+        }
+
+        # 按 ---xxx--- 切分
+        sections = re.split(r'^---\s*(.+?)\s*---\s*$', raw_text, flags=re.MULTILINE)
+        # sections[0]=前缀, sections[1]=header1, sections[2]=body1, ...
+
+        for i in range(1, len(sections), 2):
+            header = sections[i].strip()
+            body = sections[i + 1].strip() if i + 1 < len(sections) else ""
+            front_field = section_map.get(header, header)
+
+            lines = [l.strip() for l in body.split("\n") if l.strip()]
+            # 过滤掉分隔线、提示语、空行
+            lines = [l for l in lines
+                     if not l.startswith("（") and not l.startswith("---") and l != "无" and l != "无。"]
+            if lines:
+                result[front_field] = "\n".join(lines)
+
+        return result
 
     @staticmethod
     async def _incremental_memory_update(novel_unique_id: str, db: Session,
@@ -759,6 +953,100 @@ class ChapterService:
 
         ChapterService._save_memory(novel_unique_id, memory)
         return memory
+
+    @staticmethod
+    async def _ensure_memory_chain(novel_unique_id: str, db: Session = None, current_chapter_num: int = 1) -> str:
+        """三数据源完整性校验 + 记忆体加载
+
+        对当前章节号之前的所有已发布章节，逐一检查 TXT/MySQL/Redis：
+        - TXT 文件存在 → ✅
+        - MySQL content 非空 → ✅
+        - Redis 含该章节条目 → ✅
+        三者任一缺失：从 TXT 读取内容 → AI 提取维度信息 → 写入 Redis
+
+        最终返回完整的记忆体文本。
+        """
+        cn_unit = {'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9}
+        def _parse_cn(s):
+            if s.isdigit(): return int(s)
+            v=c=0
+            for ch in s:
+                if ch=='十': v+=c*10 if c>0 else 10; c=0
+                elif ch=='百': v+=c*100 if c>0 else 100; c=0
+                elif ch in cn_unit: c=cn_unit[ch]
+            return v+c
+
+        def _chapter_num(name):
+            m = re.search(r'第([^章]+)章', name or '')
+            return _parse_cn(m.group(1)) if m else 99999
+
+        # 获取所有已发布章节
+        all_chapters = ChapterDAO.get_by_novel_id(db, novel_unique_id) if db else []
+        published = [c for c in all_chapters if c.is_published]
+        # 筛选序号 < current_chapter_num 的章节
+        prev_chapters = [c for c in published if _chapter_num(c.chapter_name) < current_chapter_num]
+        prev_chapters.sort(key=lambda c: _chapter_num(c.chapter_name))
+
+        novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
+        r = _redis()
+        mem_key = ChapterService._memory_key(novel_unique_id)
+
+        repaired_count = 0
+        for ch in prev_chapters:
+            ch_num = _chapter_num(ch.chapter_name)
+            ch_name = ch.chapter_name
+
+            # 检查 1: TXT
+            txt_path = os.path.join(novel_dir, f"{ch_name}_{ch.chapter_unique_id}.txt")
+            txt_exists = os.path.exists(txt_path)
+
+            # 检查 2: MySQL
+            mysql_ok = bool(ch.content and len(ch.content) > 50)
+
+            # 检查 3: Redis
+            redis_ok = False
+            if r and r.ping():
+                for cat in get_memory_category_names():
+                    val = r.hget(mem_key, cat) or ""
+                    if ch_name in val:
+                        redis_ok = True
+                        break
+
+            # 状态日志
+            status = f"TXT={'✅' if txt_exists else '❌'} MySQL={'✅' if mysql_ok else '❌'} Redis={'✅' if redis_ok else '❌'}"
+            if txt_exists and mysql_ok and redis_ok:
+                system_logger.info(f"[三源校验] 第{ch_num}章 {ch_name}: {status} — 通过")
+                continue
+
+            # 缺失修复：从 TXT 读取 → AI 提取 → 写入 Redis
+            system_logger.warning(f"[三源校验] 第{ch_num}章 {ch_name}: {status} — 开始修复")
+            content = ch.content or ""
+
+            if not content and txt_exists:
+                try:
+                    with open(txt_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    system_logger.info(f"[三源校验] 从 TXT 读取 {ch_name}: {len(content)} 字")
+                except Exception as e:
+                    system_logger.error(f"[三源校验] 读取 TXT 失败 {ch_name}: {e}")
+
+            if not content:
+                system_logger.error(f"[三源校验] 第{ch_num}章 {ch_name}: 无内容可提取，跳过")
+                continue
+
+            # AI 提取并写入 Redis
+            await ChapterService._extract_and_append_to_memory(
+                novel_unique_id, content, ch_name,
+                ch.chapter_summary or ""
+            )
+            repaired_count += 1
+            system_logger.info(f"[三源校验] 第{ch_num}章 {ch_name}: 已从 TXT 提取并写入 Redis")
+
+        if repaired_count > 0:
+            system_logger.info(f"[三源校验] 修复完成: 共补充 {repaired_count} 章的记忆体数据")
+
+        # 最终加载记忆体
+        return await ChapterService._ensure_memory(novel_unique_id, db)
 
     @staticmethod
     async def _ensure_memory(novel_unique_id: str, db: Session = None) -> str:
@@ -1184,9 +1472,9 @@ class ChapterService:
             chapter_name = f"第{chinese_num}章 {chapter_name}"
 
         # ============================================================
-        # 记忆体：从 ChromaDB 加载（没有则从 txt 全量构建）
+        # 三数据源完整性校验：逐章检查 TXT/MySQL/Redis，缺失则从 TXT 补
         # ============================================================
-        memory_body = await ChapterService._ensure_memory(novel_unique_id, db)
+        memory_body = await ChapterService._ensure_memory_chain(novel_unique_id, db, chapter_num)
         system_logger.info(f"[章节生成] 记忆体长度={len(memory_body)} 字符")
 
         # ============================================================
@@ -1206,14 +1494,22 @@ class ChapterService:
             m = re.search(r'第([一二三四五六七八九十百零\d]+)章', ch.chapter_name or '')
             if m:
                 num_str = m.group(1)
-                # 中文数字映射
-                cn_num = {'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10,'零':0,'百':100}
                 if num_str.isdigit():
                     return int(num_str)
-                # 尝试解析中文数字
+                # 正确解析中文数字：二十=20，二十一=21，一百二十=120
+                cn_unit = {'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9}
                 val = 0
-                for c_char in num_str:
-                    val += cn_num.get(c_char, 0)
+                cur = 0
+                for ch in num_str:
+                    if ch == '十':
+                        val += cur * 10 if cur > 0 else 10
+                        cur = 0
+                    elif ch == '百':
+                        val += cur * 100 if cur > 0 else 100
+                        cur = 0
+                    elif ch in cn_unit:
+                        cur = cn_unit[ch]
+                val += cur
                 return val if val > 0 else 9999
             return 9999
         published_chapters.sort(key=_chapter_sort_key)
@@ -1235,7 +1531,7 @@ class ChapterService:
 
             if last_chapter_full:
                 last_chapter_ending = last_chapter_full[-500:]
-                system_logger.info(f"[章节生成] 续写锚点：上一章末尾500字 | 内容: {last_chapter_ending}")
+                system_logger.info(f"[章节生成] 续写锚点：上一章末尾500字（开头: {last_chapter_ending[:80]}...）")
 
             # 取最近3章用于去重检测
             recent_3 = published_chapters[-3:] if len(published_chapters) >= 3 else published_chapters
@@ -1275,8 +1571,10 @@ class ChapterService:
 
         system_prompt = GENERATE_SYSTEM_PROMPT
 
-        # 追加字数指令到 prompt 末尾
-        prompt += f"\n\n本章字数：{word_count}字左右。章节标题：「{chapter_name}」"
+        # 追加字数指令到 prompt 末尾（硬性要求）
+        min_words = max(word_count - 500, 800)
+        prompt += f"\n\n🔴 字数硬性要求：本章必须写 {word_count} 字左右（最少 {min_words} 字）。开头第一句就是正文，结尾最后一句话写完立刻停笔。绝对禁止凑字数或水文字。"
+        prompt += f"\n章节标题：「{chapter_name}」"
 
         # ============================================================
         # API 调用（带重试）
@@ -1477,10 +1775,22 @@ class ChapterService:
             m = re.search(r'第([一二三四五六七八九十百零\d]+)章', ch.chapter_name or '')
             if m:
                 num_str = m.group(1)
-                cn_num = {'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10,'零':0,'百':100}
                 if num_str.isdigit():
                     return int(num_str)
-                val = sum(cn_num.get(c, 0) for c in num_str)
+                # 正确解析中文数字：二十=20，二十一=21，一百二十=120
+                cn_unit = {'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9}
+                val = 0
+                cur = 0
+                for ch in num_str:
+                    if ch == '十':
+                        val += cur * 10 if cur > 0 else 10
+                        cur = 0
+                    elif ch == '百':
+                        val += cur * 100 if cur > 0 else 100
+                        cur = 0
+                    elif ch in cn_unit:
+                        cur = cn_unit[ch]
+                val += cur
                 return val if val > 0 else 9999
             return 9999
         published_chapters.sort(key=_chapter_sort_key)
@@ -1489,8 +1799,8 @@ class ChapterService:
         cur_num = _chapter_sort_key(chapter)
         prev_chapters_for_gen = [c for c in published_chapters if _chapter_sort_key(c) < cur_num]
 
-        # 构建记忆体：统一使用 Redis _load_memory（和 generate_with_ai 一致）
-        memory_body = ChapterService._load_memory(novel_unique_id) or f"【作品设定】\n{settings_text}\n\n（暂无记忆体数据）"
+        # 构建记忆体：三数据源完整性校验（和 generate_with_ai 一致）
+        memory_body = await ChapterService._ensure_memory_chain(novel_unique_id, db, cur_num)
 
         # 上一章末尾内容（用于无缝衔接）
         last_chapter_content = ""
@@ -1898,8 +2208,25 @@ class ChapterService:
 
             # ====== 独立验证：逐个维度读回 ======
             if saved_count == 0:
+                # 前端未传提取字段 → 后台 AI 提取后写入 Redis
                 t3_ok = True
-                system_logger.info("[发布-验证] ✅ 记忆体 跳过（无AI提取信息，无需写入）")
+                system_logger.info("[发布-验证] ✅ 记忆体 前端未传提取信息，启动后台 AI 提取")
+                try:
+                    import threading, asyncio
+                    _nid = novel_unique_id
+                    _ct = content_to_save
+                    _cn = chapter_name
+                    _cs = chapter.chapter_summary or ""
+                    def _extract_and_save():
+                        try:
+                            asyncio.run(ChapterService._extract_and_append_to_memory(
+                                _nid, _ct, _cn, _cs
+                            ))
+                        except BaseException as e:
+                            system_logger.error(f"[发布-验证] 后台AI提取失败: {e}")
+                    threading.Thread(target=_extract_and_save, daemon=True).start()
+                except Exception as e:
+                    system_logger.error(f"[发布-验证] 启动后台AI提取线程失败: {e}")
             elif not (r and r.ping()):
                 system_logger.error("[发布-验证] ❌ Redis 不可用")
             else:
@@ -2023,6 +2350,7 @@ class ChapterService:
             chapter_file = os.path.join(novel_dir, f"{chapter.chapter_name}_{chapter.chapter_unique_id}.txt")
             with open(chapter_file, "w", encoding="utf-8") as f:
                 f.write(content)
+            update_data["content"] = content
             update_data["word_count"] = len(content)
         if chapter_name is not None:
             old_file = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id,

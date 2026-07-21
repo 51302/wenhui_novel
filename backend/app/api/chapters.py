@@ -209,6 +209,24 @@ def today_published_count(
     return success({"published_today": count}, "查询成功")
 
 
+@router.post("/reset-memory/{novel_unique_id}")
+def reset_novel_memory(
+    novel_unique_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """重置指定作品的全部 Redis 记忆体：清空 + 后台逐章 AI 提取重建"""
+    novel = db.query(Novel).filter(
+        Novel.novel_unique_id == novel_unique_id,
+        Novel.author_user_id == current_user["user_id"],
+    ).first()
+    if not novel:
+        return fail("无权限操作该作品", code=403)
+    result = ChapterService.reset_and_rebuild_memory(novel_unique_id, db)
+    system_logger.info(f"用户 {current_user['username']} 重置了作品 {novel.title} 的 Redis 记忆体")
+    return result
+
+
 @router.get("/download/{novel_unique_id}")
 def download_novel(
     novel_unique_id: str,

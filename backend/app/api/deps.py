@@ -87,6 +87,23 @@ def get_current_user(
         raise HTTPException(status_code=401, detail=str(e))
 
 
+def get_optional_current_user(
+    request: Request = None,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    novel_token: Optional[str] = Cookie(None)
+) -> Optional[dict]:
+    """获取当前登录用户身份（可选版），未登录返回 None 而不是 401
+    :param request: FastAPI请求对象
+    :param credentials: HTTP Bearer令牌凭据
+    :param novel_token: Cookie中的令牌
+    :return: 用户身份字典或None
+    """
+    try:
+        return get_current_user(request, credentials, novel_token)
+    except HTTPException:
+        return None
+
+
 def invalidate_user_cache(user_id: int):
     """当用户 VIP 状态变更时，清除缓存"""
     r = _redis()

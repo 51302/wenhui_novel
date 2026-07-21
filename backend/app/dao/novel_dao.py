@@ -39,14 +39,16 @@ class NovelDAO:
 
     @staticmethod
     def list_novels(db: Session, target_reader: str = None, genre: str = None,
-                    page: int = 1, page_size: int = 12, fast_total: bool = True) -> tuple:
-        """分页查询作品列表，支持按频道/题材筛选
+                    page: int = 1, page_size: int = 12, fast_total: bool = True,
+                    author_user_id: int = None) -> tuple:
+        """分页查询作品列表，支持按频道/题材/作者筛选
         :param db: 数据库会话
         :param target_reader: 目标读者频道（男频/女频），可选
         :param genre: 题材标签，可选
         :param page: 页码
         :param page_size: 每页数量
         :param fast_total: 是否用information_schema快速估算总数
+        :param author_user_id: 按作者ID筛选（仅看自己的作品），可选
         :return: (作品列表, 总数)
         """
         query = db.query(Novel)
@@ -54,11 +56,14 @@ class NovelDAO:
             query = query.filter(Novel.target_reader == target_reader)
         if genre:
             query = query.filter(Novel.genre == genre)
+        if author_user_id:
+            query = query.filter(Novel.author_user_id == author_user_id)
         # 优化: 用 information_schema 估算行数(毫秒级) 替代 COUNT(*)(全表扫描)
-        if fast_total:
-            total = db.execute(text("SELECT AUTO_INCREMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='novels'")).scalar() or 0
-        else:
+        # 加了作者筛选后走精确 count
+        if author_user_id or not fast_total:
             total = query.count()
+        else:
+            total = db.execute(text("SELECT AUTO_INCREMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='novels'")).scalar() or 0
         novels = query.order_by(desc(Novel.created_at)).offset(
             (page - 1) * page_size).limit(page_size).all()
         return novels, int(total)

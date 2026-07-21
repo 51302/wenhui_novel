@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
+from typing import Optional
 from app.models.base import get_db
 from app.service.novel_service import NovelService
-from app.api.deps import get_current_user, check_creation_access
+from app.api.deps import get_current_user, get_optional_current_user, check_creation_access
 
 router = APIRouter(prefix="/api/novels", tags=["小说"])
 
@@ -40,9 +41,20 @@ def list_novels(
     genre: str = Query(None, description="题材"),
     page: int = Query(1, ge=1),
     page_size: int = Query(12, ge=1, le=50),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Optional[dict] = Depends(get_optional_current_user),
 ):
-    """分页查询小说作品列表，支持按受众和题材筛选"""
+    """分页查询小说作品列表，支持按受众和题材筛选
+    若 config.yaml 中 show_all_works=false，则仅返回当前登录用户的自己的作品（需登录）
+    """
+    from app.config import show_all_works
+    if not show_all_works():
+        if not current_user:
+            raise HTTPException(status_code=401, detail="请先登录")
+        return NovelService.list_novels(
+            db, target_reader, genre, page, page_size,
+            author_user_id=current_user["user_id"]
+        )
     return NovelService.list_novels(db, target_reader, genre, page, page_size)
 
 

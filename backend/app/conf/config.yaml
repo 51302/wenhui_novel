@@ -2,6 +2,7 @@ app:
   name: "文辉小说"
   version: "1.0.0"
   debug: true
+  show_all_works: false   # true=首页展示所有作品  false=用户只能看到自己的作品
 
 mysql:
   host: localhost

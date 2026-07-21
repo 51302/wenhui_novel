@@ -106,17 +106,20 @@ class NovelService:
 
     @staticmethod
     def list_novels(db: Session, target_reader: str = None, genre: str = None,
-                    page: int = 1, page_size: int = 12) -> dict:
+                    page: int = 1, page_size: int = 12,
+                    author_user_id: int = None) -> dict:
         """分页查询作品列表，支持按受众和题材筛选，带Redis缓存
         :param db: 数据库会话
         :param target_reader: 受众筛选（男频/女频）
         :param genre: 题材筛选
         :param page: 页码
         :param page_size: 每页数量
+        :param author_user_id: 按作者ID筛选，可选
         :return: 分页作品列表
         """
-        cache_key = f"novels:list:tr={target_reader}:g={genre}:p={page}:ps={page_size}"
-        r = _redis()
+        cache_key = f"novels:list:tr={target_reader}:g={genre}:p={page}:ps={page_size}:uid={author_user_id}"
+        # 按用户筛选时不走缓存（每人数据不同，且可能频繁变化）
+        r = _redis() if not author_user_id else None
         if r:
             cached = r.get(cache_key)
             if cached:
@@ -131,7 +134,7 @@ class NovelService:
                 if cached:
                     return success(cached)
 
-            novels, total = NovelDAO.list_novels(db, target_reader, genre, page, page_size)
+            novels, total = NovelDAO.list_novels(db, target_reader, genre, page, page_size, author_user_id=author_user_id)
             result = {
                 "items": [{
                 "novel_unique_id": n.novel_unique_id,

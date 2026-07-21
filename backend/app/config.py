@@ -89,6 +89,13 @@ def vip_default_plan() -> str:
     return get("vip.default_plan", "vip_monthly")
 
 
+def show_all_works() -> bool:
+    """首页是否展示所有作品（true=所有人可见，false=仅自己可见）
+    :return: 布尔值，默认 True
+    """
+    return get("app.show_all_works", True)
+
+
 def reload():
     """热重载后强制重新读取（uvicorn --reload 时模块级缓存不刷新）"""
     global _config_cache

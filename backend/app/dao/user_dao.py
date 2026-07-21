@@ -17,13 +17,13 @@ class UserDAO:
     @staticmethod
     def _reset_daily_quota(user: User):
         """
-        如果 quota_date 不是今天，则重置为对应等级的每日配额
+        如果 quota_date 不是今天（按北京时间），则重置为对应等级的每日配额
         :param user: 用户对象（会直接修改属性，外部需要 commit）
         """
-        today = datetime.utcnow().date()
+        now = datetime.now()  # 服务器本地时间（北京时间 GMT+8）
         quota_today = user.quota_date.date() if user.quota_date else None
-        if quota_today != today:
-            user.quota_date = datetime.utcnow()
+        if quota_today != now.date():
+            user.quota_date = now
             user.free_generate_quota = DAILY_QUOTA_MAP.get(user.vip_level, 3)
 
     @staticmethod
