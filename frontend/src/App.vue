@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div id="app-root">
     <!-- 星空背景 -->
     <div class="stars-layer"></div>
@@ -12,11 +12,14 @@
           <span class="logo-text">文辉小说</span>
         </router-link>
         <nav class="nav-links">
-          <router-link to="/"><span class="nav-icon">🏠</span> 首页</router-link>
-          <router-link to="/circle"><span class="nav-icon">🌐</span> 作品圈</router-link>
+          <router-link v-if="user" to="/"><span class="nav-icon">🏠</span> 首页</router-link>
+          <router-link v-if="user" to="/circle" :class="{ 'nav-disabled': !showAllWorks }">
+            <span class="nav-icon">🌐</span> 作品圈
+            <span v-if="!showAllWorks" class="disabled-badge">内测中</span>
+          </router-link>
           <router-link v-if="user" to="/bookshelf"><span class="nav-icon">📚</span> 书架</router-link>
           <router-link v-if="user" to="/vip"><span class="nav-icon">💎</span> 开通会员</router-link>
-          <router-link to="/creation"><span class="nav-icon">✏️</span> 创作中心</router-link>
+          <router-link v-if="user" to="/creation"><span class="nav-icon">✏️</span> 创作中心</router-link>
         </nav>
       </div>
       <div class="header-right">
@@ -66,8 +69,20 @@ export default {
     const router = useRouter()
     const user = ref(null)
     const authChecking = ref(true)
+    const showAllWorks = ref(true)
+
+    const fetchConfig = async () => {
+      try {
+        const res = await api.get('/config/public')
+        if (res.状态码 === 200) {
+          showAllWorks.value = res.数据?.show_all_works !== false
+        }
+      } catch (e) { }
+    }
 
     onMounted(async () => {
+      // 先获取公开配置
+      fetchConfig()
       // 先检查 localStorage 是否有 token 存在的痕迹
       const stored = localStorage.getItem('novel_user')
       if (!stored) {
@@ -102,7 +117,7 @@ export default {
       router.push('/')
     }
 
-    return { user, authChecking, onLoginSuccess, logout }
+    return { user, authChecking, showAllWorks, onLoginSuccess, logout }
   }
 }
 </script>
@@ -182,6 +197,24 @@ input, textarea, select, button { font-family: inherit; }
   box-shadow: 0 0 20px var(--accent-glow);
 }
 .nav-icon { margin-right: 4px; }
+
+.nav-disabled {
+  opacity: 0.5 !important;
+  cursor: not-allowed !important;
+  pointer-events: none;
+  filter: grayscale(0.6);
+}
+.disabled-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 10px;
+}
 
 .header-right { display: flex; align-items: center; gap: 14px; }
 .user-info { 

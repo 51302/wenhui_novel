@@ -151,7 +151,7 @@ class NovelService:
             "page_size": page_size
         }
         if r:
-            r.set(cache_key, result)
+            r.set(cache_key, result, ttl=30)
         return success(result)
 
     @staticmethod

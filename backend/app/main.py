@@ -20,8 +20,10 @@ from app.api.interactions import router as interactions_router
 from app.api.upload import router as upload_router
 from app.api.vip import router as vip_router
 from app.api.bookshelf import router as bookshelf_router
+from app.api.config import router as config_router
 from app.utils.redis_cache import RedisCache, redis_client as global_redis
 from app.utils.logger import system_logger
+from app.utils.task_queue import TaskQueue
 from app.config import get as cfg_get
 
 
@@ -31,11 +33,11 @@ async def lifespan(application: FastAPI):
     global global_redis
 
     global_redis = RedisCache(
-        host=os.getenv("REDIS_HOST", cfg_get("redis.host", "localhost")),
-        port=int(os.getenv("REDIS_PORT", cfg_get("redis.port", 6379))),
-        password=os.getenv("REDIS_PASSWORD", cfg_get("redis.password", "")),
-        db=cfg_get("redis.db", 0),
-        default_ttl=cfg_get("redis.cache_ttl", 3600)
+        host=os.environ.get("REDIS_HOST", cfg_get("redis.host")),
+        port=int(os.environ.get("REDIS_PORT", cfg_get("redis.port", 6379))),
+        password=os.environ.get("REDIS_PASSWORD", cfg_get("redis.password", "")),
+        db=cfg_get("redis.db"),
+        default_ttl=cfg_get("redis.cache_ttl")
     )
     import app.utils.redis_cache as mod_redis
     mod_redis.redis_client = global_redis
@@ -52,6 +54,18 @@ async def lifespan(application: FastAPI):
         system_logger.info(f"服务启动成功 → MySQL={'✓' if db_ok else '✗'} Redis={'✓' if redis_ok else '✗'}")
     except Exception as e:
         system_logger.warning(f"服务启动完成(部分服务不可用): {e}")
+
+    # ====== 启动后台 Worker 线程（消费 Redis 任务队列） ======
+    try:
+        from app.service.chapter_service import ChapterService
+        TaskQueue.start_worker("ai:extract", ChapterService._worker_extract_info, concurrency=2)
+        TaskQueue.start_worker("ai:generate", ChapterService._worker_generate, concurrency=2)
+        TaskQueue.start_worker("ai:regenerate", ChapterService._worker_regenerate, concurrency=2)
+        TaskQueue.start_worker("ai:continue", ChapterService._worker_continue, concurrency=2)
+        TaskQueue.start_worker("ai:reset-memory", ChapterService._worker_reset_memory, concurrency=1)
+        system_logger.info("后台Worker线程启动完成 (ai:extract/generate/regenerate/continue/reset-memory)")
+    except Exception as e:
+        system_logger.error(f"启动Worker线程失败: {e}")
 
     yield  # 服务运行中...
 
@@ -83,6 +97,7 @@ app.include_router(interactions_router)
 app.include_router(upload_router)
 app.include_router(vip_router)
 app.include_router(bookshelf_router)
+app.include_router(config_router)
 
 # ====== 请求日志中间件 ======
 @app.middleware("http")
@@ -154,6 +169,33 @@ def health_check():
                  "status": "ok" if mysql_alive else "degraded"}
     }
 
+
+# ====== Debug: Redis 队列诊断端点 ======
+from app.utils.task_queue import _redis as _task_redis, TASK_QUEUE_PREFIX
+import json as _json
+@app.get("/api/debug/queue")
+def debug_queue():
+    """调试端点：检查 Redis 连接和队列状态"""
+    r = _task_redis()
+    from app.utils.task_queue import TASK_QUEUE_PREFIX
+    import time as _time
+    qkey = f"{TASK_QUEUE_PREFIX}ai:extract"
+    unique_test_key = f"debug:rpush:{int(_time.time())}"
+    rpush_uuid = str(int(_time.time() * 1000000) % 100000000)
+    unique_rpush = r.rpush(unique_test_key, rpush_uuid) if r else False
+    _time.sleep(0.1)
+    unique_len = r.client.llen(unique_test_key) if (r and r.client) else -1
+    unique_items = r.client.lrange(unique_test_key, 0, -1) if (r and r.client) else []
+    r.client.delete(unique_test_key)
+    return {
+        "has_client": str(r.client is not None) if r else "no_r",
+        "redis_ping": str(r.ping()) if r else False,
+        "unique_rpush_ok": str(unique_rpush),
+        "unique_test_key": unique_test_key,
+        "unique_len_after": str(unique_len),
+        "unique_items": unique_items,
+        "queue_exists": str(bool(r.client.exists(qkey)) if r and r.client else False),
+    }
 
 # ====== 挂载前端 dist 静态文件（SPA 模式） ======
 _FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"

@@ -11,6 +11,7 @@ import app.utils.redis_cache as redis_mod
 from app.service.es_service import es_service
 from app.config import deepseek_api_key, deepseek_base_url, deepseek_model
 from app.utils.logger import system_logger
+from app.utils.task_queue import run_async
 from app.prompts.chapter_prompts import (
     LIGHT_EXTRACT_PROMPT, FULL_EXTRACT_PROMPT,
     MEMORY_DIMENSION_DEFS, MEMORY_EXTRACT_PROMPT, MEMORY_INCREMENTAL_PROMPT,
@@ -20,7 +21,7 @@ from app.prompts.chapter_prompts import (
     GENERATE_SYSTEM_PROMPT, GENERATE_CREATIVE_DIRECTION,
 )
 
-NOVEL_DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "novel_structure_data")
+NOVEL_DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "novel_structure_data")
 os.makedirs(NOVEL_DATA_PATH, exist_ok=True)
 
 
@@ -30,6 +31,20 @@ def _redis():
 
 
 class ChapterService:
+
+    @staticmethod
+    def _get_chapter_txt_path(novel_unique_id: str, chapter_name: str, chapter_unique_id: str) -> str:
+        """获取章节 TXT 文件路径"""
+        return os.path.join(NOVEL_DATA_PATH, novel_unique_id, f"{chapter_name}_{chapter_unique_id}.txt")
+
+    @staticmethod
+    def _read_chapter_content_from_file(novel_unique_id: str, chapter_name: str, chapter_unique_id: str) -> str:
+        """从 TXT 文件读取章节正文内容，文件不存在返回空字符串"""
+        txt_path = ChapterService._get_chapter_txt_path(novel_unique_id, chapter_name, chapter_unique_id)
+        if os.path.exists(txt_path):
+            with open(txt_path, "r", encoding="utf-8") as f:
+                return f.read()
+        return ""
 
     @staticmethod
     def _get_novel_settings(novel_unique_id: str) -> dict:
@@ -958,11 +973,10 @@ class ChapterService:
     async def _ensure_memory_chain(novel_unique_id: str, db: Session = None, current_chapter_num: int = 1) -> str:
         """三数据源完整性校验 + 记忆体加载
 
-        对当前章节号之前的所有已发布章节，逐一检查 TXT/MySQL/Redis：
+        对当前章节号之前的所有已发布章节，逐一检查 TXT/Redis：
         - TXT 文件存在 → ✅
-        - MySQL content 非空 → ✅
         - Redis 含该章节条目 → ✅
-        三者任一缺失：从 TXT 读取内容 → AI 提取维度信息 → 写入 Redis
+        任一缺失：从 TXT 读取内容 → AI 提取维度信息 → 写入 Redis
 
         最终返回完整的记忆体文本。
         """
@@ -991,19 +1005,21 @@ class ChapterService:
         r = _redis()
         mem_key = ChapterService._memory_key(novel_unique_id)
 
-        repaired_count = 0
+        # ============================================================
+        # 第一遍：识别所有需要修复的章节，收集内容和概要
+        # ============================================================
+        repair_candidates = []  # [(ch_name, content, summary), ...]
         for ch in prev_chapters:
             ch_num = _chapter_num(ch.chapter_name)
             ch_name = ch.chapter_name
 
-            # 检查 1: TXT
-            txt_path = os.path.join(novel_dir, f"{ch_name}_{ch.chapter_unique_id}.txt")
-            txt_exists = os.path.exists(txt_path)
+            # 检查 1: MySQL 章节记录是否存在
+            from app.models.chapter import Chapter as ChapterModel
+            mysql_ok = db.query(ChapterModel).filter(
+                ChapterModel.chapter_unique_id == ch.chapter_unique_id
+            ).first() is not None
 
-            # 检查 2: MySQL
-            mysql_ok = bool(ch.content and len(ch.content) > 50)
-
-            # 检查 3: Redis
+            # 检查 2: Redis
             redis_ok = False
             if r and r.ping():
                 for cat in get_memory_category_names():
@@ -1012,38 +1028,81 @@ class ChapterService:
                         redis_ok = True
                         break
 
-            # 状态日志
-            status = f"TXT={'✅' if txt_exists else '❌'} MySQL={'✅' if mysql_ok else '❌'} Redis={'✅' if redis_ok else '❌'}"
-            if txt_exists and mysql_ok and redis_ok:
+            status = f"MySQL={'✅' if mysql_ok else '❌'} Redis={'✅' if redis_ok else '❌'}"
+            if mysql_ok and redis_ok:
                 system_logger.info(f"[三源校验] 第{ch_num}章 {ch_name}: {status} — 通过")
                 continue
 
-            # 缺失修复：从 TXT 读取 → AI 提取 → 写入 Redis
             system_logger.warning(f"[三源校验] 第{ch_num}章 {ch_name}: {status} — 开始修复")
-            content = ch.content or ""
-
-            if not content and txt_exists:
-                try:
-                    with open(txt_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    system_logger.info(f"[三源校验] 从 TXT 读取 {ch_name}: {len(content)} 字")
-                except Exception as e:
-                    system_logger.error(f"[三源校验] 读取 TXT 失败 {ch_name}: {e}")
-
+            content = ChapterService._read_chapter_content_from_file(
+                novel_unique_id, ch.chapter_name, ch.chapter_unique_id
+            )
             if not content:
                 system_logger.error(f"[三源校验] 第{ch_num}章 {ch_name}: 无内容可提取，跳过")
                 continue
 
-            # AI 提取并写入 Redis
-            await ChapterService._extract_and_append_to_memory(
-                novel_unique_id, content, ch_name,
-                ch.chapter_summary or ""
-            )
-            repaired_count += 1
-            system_logger.info(f"[三源校验] 第{ch_num}章 {ch_name}: 已从 TXT 提取并写入 Redis")
+            repair_candidates.append((ch_name, content, ch.chapter_summary or ""))
 
-        if repaired_count > 0:
-            system_logger.info(f"[三源校验] 修复完成: 共补充 {repaired_count} 章的记忆体数据")
+        # ============================================================
+        # 第二遍：根据 memory_extract_threads 并发提取 + 串行写入 Redis
+        # ============================================================
+        if repair_candidates:
+            import asyncio
+            from app.config import get as cfg
+            max_concurrency = cfg("chromadb.memory_extract_threads", 10)
+            sem = asyncio.Semaphore(max_concurrency)
+
+            async def _extract_only(chapter_name: str, content: str, summary: str) -> tuple:
+                """仅做 AI 提取，不写 Redis"""
+                async with sem:
+                    info_data = {}
+                    try:
+                        async with httpx.AsyncClient(timeout=120) as client:
+                            prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-8000:])
+                            resp = await client.post(
+                                f"{deepseek_base_url()}/v1/chat/completions",
+                                headers={
+                                    "Authorization": f"Bearer {deepseek_api_key()}",
+                                    "Content-Type": "application/json"
+                                },
+                                json={
+                                    "model": deepseek_model(),
+                                    "messages": [
+                                        {"role": "system", "content": "你是一位资深小说编辑，擅长从文本中提取结构化信息。"},
+                                        {"role": "user", "content": prompt}
+                                    ],
+                                    "max_tokens": 4000, "temperature": 0.2
+                                },
+                            )
+                            if resp.status_code == 200:
+                                data = resp.json()
+                                text = data["choices"][0]["message"]["content"]
+                                info_data = ChapterService._parse_extract_result(text)
+                    except Exception as e:
+                        system_logger.error(f"[并发修复] AI提取异常 {chapter_name}: {e}")
+                    return chapter_name, info_data
+
+            # 并发 AI 提取
+            system_logger.info(
+                f"[三源校验] 开始并发修复 {len(repair_candidates)} 章记忆体"
+                f"（并发数={max_concurrency}）"
+            )
+            results = await asyncio.gather(*[
+                _extract_only(name, ct, sm)
+                for name, ct, sm in repair_candidates
+            ])
+
+            # 串行写入 Redis（避免并发 HSET 覆盖）
+            written = 0
+            for ch_name, info_data in results:
+                if info_data:
+                    ChapterService.save_extracted_to_memory(novel_unique_id, info_data, ch_name)
+                    written += 1
+
+            system_logger.info(
+                f"[三源校验] 修复完成: 共提取 {len(results)} 章，"
+                f"写入 Redis {written} 章"
+            )
 
         # 最终加载记忆体
         return await ChapterService._ensure_memory(novel_unique_id, db)
@@ -1074,11 +1133,23 @@ class ChapterService:
         """
         从章节内容中 AI 提取关键信息（轻量级，不存记忆体）
         返回结构化 dict 供前端展示
+        使用内容哈希缓存避免重复调用DeepSeek
         """
         if not content or len(content) < 50:
             return {"success": True, "data": {"人物": "", "组织": "", "功法技能": "",
                      "关键事件": "", "地点": "", "时间": "",
                      "关键物品": "", "实力变化": "", "伏笔": ""}}
+
+        # 内容哈希缓存：相同内容直接返回缓存结果
+        import hashlib
+        content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
+        cache_key = f"extract:info:{content_hash}"
+        r = _redis()
+        if r:
+            cached = r.get(cache_key)
+            if cached:
+                system_logger.info(f"[提取缓存] 命中内容哈希缓存: {chapter_name} hash={content_hash[:12]}")
+                return cached
 
         # 截取内容：短章节全取，超长取前5000+后3000（覆盖开头和结尾关键事件）
         content_len = len(content)
@@ -1146,10 +1217,13 @@ class ChapterService:
                 if field not in result:
                     result[field] = ""
 
-            return {"success": True, "data": result}
+            final_result = {"success": True, "data": result}
+            # 写入缓存（TTL 1小时）
+            if r:
+                r.set(cache_key, final_result, ttl=3600)
+            return final_result
         except Exception as e:
             system_logger.error(f"[提取信息] 异常: {e}")
-
             return {"success": False, "error": str(e)}
 
     @staticmethod
@@ -1204,8 +1278,10 @@ class ChapterService:
                        chapter_name: str, characters_involved: str = None,
                        organizations: str = None, locations: str = None,
                        skills: str = None, word_count: int = 0,
-                       chapter_summary: str = None, created_by: str = None) -> dict:
+                       chapter_summary: str = None, created_by: str = None,
+                       chapter_number: int = None) -> dict:
         """创建空白章节草稿，保存到数据库和本地文件
+
         :param db: 数据库会话
         :param novel_unique_id: 作品唯一ID
         :param user_id: 用户ID
@@ -1217,6 +1293,7 @@ class ChapterService:
         :param word_count: 目标字数
         :param chapter_summary: 章节概要
         :param created_by: 创建者名称
+        :param chapter_number: 章节序号，不传则自动计算
         :return: 创建结果（含chapter_unique_id）
         """
         # 同名草稿覆盖：先删旧草稿，避免重复生成导致章节数累加
@@ -1234,17 +1311,17 @@ class ChapterService:
                 break
 
         chapter_unique_id = uuid.uuid4().hex
+        # 自动计算章节序号
+        if chapter_number is None:
+            existing_count = ChapterDAO.count_by_novel_id(db, novel_unique_id)
+            chapter_number = existing_count + 1
         chapter = ChapterDAO.create(
             db,
             novel_unique_id=novel_unique_id,
             user_id=user_id,
             chapter_unique_id=chapter_unique_id,
             chapter_name=chapter_name,
-            characters_involved=characters_involved,
-            organizations=organizations,
-            locations=locations,
-            skills=skills,
-            word_count=word_count,
+            chapter_number=chapter_number,
             chapter_summary=chapter_summary,
             is_published=0,
             created_by=created_by
@@ -1252,12 +1329,8 @@ class ChapterService:
         chapter_data = {
             "chapter_unique_id": chapter_unique_id,
             "chapter_name": chapter_name,
+            "chapter_number": chapter_number,
             "novel_unique_id": novel_unique_id,
-            "characters_involved": characters_involved,
-            "organizations": organizations,
-            "locations": locations,
-            "skills": skills,
-            "word_count": word_count,
             "chapter_summary": chapter_summary,
             "is_published": 0
         }
@@ -1521,13 +1594,9 @@ class ChapterService:
         if published_chapters:
             last_ch = published_chapters[-1]
             system_logger.info(f"[章节生成] 续写锚点：基于已发布最后一章 [{last_ch.chapter_name}]")
-            last_chapter_full = last_ch.content or ""
-            if not last_chapter_full:
-                novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
-                chapter_file = os.path.join(novel_dir, f"{last_ch.chapter_name}_{last_ch.chapter_unique_id}.txt")
-                if os.path.exists(chapter_file):
-                    with open(chapter_file, "r", encoding="utf-8") as f:
-                        last_chapter_full = f.read()
+            last_chapter_full = ChapterService._read_chapter_content_from_file(
+                novel_unique_id, last_ch.chapter_name, last_ch.chapter_unique_id
+            )
 
             if last_chapter_full:
                 last_chapter_ending = last_chapter_full[-500:]
@@ -1536,13 +1605,9 @@ class ChapterService:
             # 取最近3章用于去重检测
             recent_3 = published_chapters[-3:] if len(published_chapters) >= 3 else published_chapters
             for ch in recent_3:
-                content = ch.content or ""
-                if not content:
-                    novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
-                    chapter_file = os.path.join(novel_dir, f"{ch.chapter_name}_{ch.chapter_unique_id}.txt")
-                    if os.path.exists(chapter_file):
-                        with open(chapter_file, "r", encoding="utf-8") as f:
-                            content = f.read()
+                content = ChapterService._read_chapter_content_from_file(
+                    novel_unique_id, ch.chapter_name, ch.chapter_unique_id
+                )
                 if content:
                     previous_text_for_duplicate += content + "\n"
 
@@ -1573,7 +1638,7 @@ class ChapterService:
 
         # 追加字数指令到 prompt 末尾（硬性要求）
         min_words = max(word_count - 500, 800)
-        prompt += f"\n\n🔴 字数硬性要求：本章必须写 {word_count} 字左右（最少 {min_words} 字）。开头第一句就是正文，结尾最后一句话写完立刻停笔。绝对禁止凑字数或水文字。"
+        prompt += f"\n\n🔴 字数硬性要求：本章必须写 {min_words}~{word_count} 字。开头第一句就是正文，结尾最后一句话写完立刻停笔。绝对禁止凑字数或水文字。"
         prompt += f"\n章节标题：「{chapter_name}」"
 
         # ============================================================
@@ -1597,7 +1662,7 @@ class ChapterService:
                                 {"role": "system", "content": system_prompt},
                                 {"role": "user", "content": prompt}
                             ],
-                            "max_tokens": word_count * 3,
+                            "max_tokens": int(word_count * 1.8),
                             "temperature": 0.75,
                             "top_p": 0.9,
                             "frequency_penalty": 0.5,
@@ -1615,6 +1680,14 @@ class ChapterService:
 
                     if generated_text and len(generated_text) > 100:
                         actual_words = len(generated_text)
+                        # 只有明显偏短（不足要求的60%）才重试
+                        min_acceptable = max(int(word_count * 0.6), 500)
+                        if actual_words < min_acceptable and attempt < MAX_RETRIES:
+                            system_logger.warning(
+                                f"[重试 {attempt+1}] {chapter_name} 仅{actual_words}字"
+                                f"，不足要求的60%({min_acceptable})"
+                            )
+                            continue
                         system_logger.info(f"AI章节生成成功: {chapter_name} ({actual_words}字)")
                         break
                     else:
@@ -1644,6 +1717,24 @@ class ChapterService:
         )
 
         # ============================================================
+        # 后处理：字数上限截断（最多允许超出 10%）
+        # ============================================================
+        max_allowed = int(word_count * 1.1)
+        if len(generated_text) > max_allowed:
+            before_len = len(generated_text)
+            trimmed = generated_text[:max_allowed]
+            # 在最后一个句号/感叹号/问号处截断
+            last_end = max(trimmed.rfind('。'), trimmed.rfind('！'),
+                           trimmed.rfind('？'), trimmed.rfind('\n'))
+            if last_end > max_allowed * 0.7:  # 找到了合适的截断点
+                generated_text = trimmed[:last_end + 1]
+            else:
+                generated_text = trimmed
+            system_logger.info(
+                f"[字数截断] {chapter_name} 从 {before_len} 字截到 {len(generated_text)} 字"
+            )
+
+        # ============================================================
         # 后处理：文学质量检查
         # ============================================================
         quality_issues = ChapterService._check_literary_quality(generated_text, previous_text_for_duplicate)
@@ -1665,14 +1756,10 @@ class ChapterService:
                 user_id=user_id,
                 chapter_unique_id=chapter_unique_id,
                 chapter_name=chapter_name,
-                characters_involved=characters_involved,
-                organizations=organizations,
-                locations=locations,
-                skills=skills,
-                word_count=actual_word_count,
+                chapter_number=chapter_num,
                 chapter_summary=chapter_summary,
+                word_count=actual_word_count,
                 is_published=0,
-                content=generated_text,
                 created_by=created_by
             )
         except Exception as e:
@@ -1806,13 +1893,9 @@ class ChapterService:
         last_chapter_content = ""
         if prev_chapters_for_gen:
             last_ch = prev_chapters_for_gen[-1]
-            last_chapter_content = last_ch.content or ""
-            if not last_chapter_content:
-                novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
-                chapter_file = os.path.join(novel_dir, f"{last_ch.chapter_name}_{last_ch.chapter_unique_id}.txt")
-                if os.path.exists(chapter_file):
-                    with open(chapter_file, "r", encoding="utf-8") as f:
-                        last_chapter_content = f.read()
+            last_chapter_content = ChapterService._read_chapter_content_from_file(
+                novel_unique_id, last_ch.chapter_name, last_ch.chapter_unique_id
+            )
 
         # 构建自然语言概要
         summary_narrative = ""
@@ -1865,7 +1948,6 @@ class ChapterService:
 
                 # 更新当前章节（覆盖内容，不新建）
                 ChapterDAO.update(db, chapter,
-                    content=generated_text,
                     word_count=actual_words
                 )
 
@@ -1903,14 +1985,10 @@ class ChapterService:
         if not chapter:
             return fail("章节不存在", code=404)
 
-        # 读取当前章节已有内容：优先从 DB content 字段，兜底本地文件
-        existing_content = chapter.content or ""
-        if not existing_content:
-            novel_dir = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id)
-            chapter_file = os.path.join(novel_dir, f"{chapter.chapter_name}_{chapter.chapter_unique_id}.txt")
-            if os.path.exists(chapter_file):
-                with open(chapter_file, "r", encoding="utf-8") as f:
-                    existing_content = f.read()
+        # 读取当前章节已有内容：优先从本地 TXT 文件，兜底 DB
+        existing_content = ChapterService._read_chapter_content_from_file(
+            chapter.novel_unique_id, chapter.chapter_name, chapter.chapter_unique_id
+        )
 
         # 当前章节已写内容（取末尾部分作为上下文）
         context_content = existing_content[-2000:] if len(existing_content) > 2000 else existing_content
@@ -1973,8 +2051,8 @@ class ChapterService:
                 with open(chapter_file, "w", encoding="utf-8") as f:
                     f.write(new_content)
 
-                # 更新数据库字数 + 内容
-                ChapterDAO.update(db, chapter, word_count=len(new_content), content=new_content)
+                # 更新数据库字数
+                ChapterDAO.update(db, chapter, word_count=len(new_content))
 
                 await ChapterService._refresh_memory_after_generate(
                     chapter.novel_unique_id, db, new_content, chapter.chapter_name,
@@ -2018,24 +2096,27 @@ class ChapterService:
             if os.path.exists(chapter_file):
                 with open(chapter_file, "r", encoding="utf-8") as f:
                     content = f.read()
+            # 优先使用数据库字数字段，否则从文件内容计算
+            wc = ch.word_count if ch.word_count else len(content)
             result.append({
                 "chapter_unique_id": ch.chapter_unique_id,
                 "novel_unique_id": ch.novel_unique_id,
                 "chapter_name": ch.chapter_name,
-                "word_count": ch.word_count,
+                "chapter_number": ch.chapter_number,
+                "word_count": wc,
                 "chapter_summary": ch.chapter_summary,
                 "content": content,
                 "is_published": ch.is_published,
                 "created_at": ch.created_at.isoformat() if ch.created_at else None,
-                "characters_involved": ch.characters_involved,
-                "organizations": ch.organizations,
-                "locations": ch.locations,
-                "skills": ch.skills,
-                "events": ch.events,
-                "time_info": ch.time_info,
-                "key_items": ch.key_items,
-                "power_changes": ch.power_changes,
-                "foreshadowing": ch.foreshadowing,
+                "characters_involved": "",
+                "organizations": "",
+                "locations": "",
+                "skills": "",
+                "events": "",
+                "time_info": "",
+                "key_items": "",
+                "power_changes": "",
+                "foreshadowing": "",
             })
         if r:
             r.set(cache_key, result)
@@ -2061,7 +2142,13 @@ class ChapterService:
 
         novel_unique_id = chapter.novel_unique_id
         chapter_name = chapter.chapter_name
-        content_to_save = content or chapter.content or ""
+        # 优先用前端传入的 content，否则从 TXT 文件读取
+        if content:
+            content_to_save = content
+        else:
+            content_to_save = ChapterService._read_chapter_content_from_file(
+                novel_unique_id, chapter.chapter_name, chapter.chapter_unique_id
+            )
 
         if not content_to_save.strip():
             return fail("章节内容为空，无法发布", code=400)
@@ -2101,20 +2188,16 @@ class ChapterService:
             return fail(f"章节发布失败：文件保存异常 - {str(e)}", code=500)
 
         # ============================================================
-        # 阶段2：更新 MySQL → commit → 独立SELECT验证
+        # 阶段2：更新 MySQL（is_published + word_count）→ commit → 独立SELECT验证
         # ============================================================
         t2_ok = False
         try:
-            update_data = {"is_published": 1, "content": content_to_save, "word_count": len(content_to_save)}
-            if characters_involved: update_data["characters_involved"] = characters_involved
-            if organizations: update_data["organizations"] = organizations
-            if locations: update_data["locations"] = locations
-            if skills: update_data["skills"] = skills
-            if events: update_data["events"] = events
-            if time_info: update_data["time_info"] = time_info
-            if key_items: update_data["key_items"] = key_items
-            if power_changes: update_data["power_changes"] = power_changes
-            if foreshadowing: update_data["foreshadowing"] = foreshadowing
+            actual_word_count = len(content_to_save)
+            update_data = {"is_published": 1, "word_count": actual_word_count}
+
+            # 同步更新 ORM 对象，后续回滚场景能拿到正确值
+            chapter.word_count = actual_word_count
+            chapter.is_published = 1
 
             ChapterDAO.update(db, chapter, **update_data)
             db.flush()
@@ -2123,7 +2206,7 @@ class ChapterService:
             # ====== 独立验证：绕过 ORM 直接 SELECT ======
             from sqlalchemy import text
             row = db.execute(
-                text("SELECT is_published, content, word_count FROM chapters WHERE chapter_unique_id = :uid"),
+                text("SELECT is_published, word_count FROM chapters WHERE chapter_unique_id = :uid"),
                 {"uid": chapter_unique_id}
             ).fetchone()
 
@@ -2136,12 +2219,11 @@ class ChapterService:
                 return fail("章节发布失败：数据库记录丢失", code=500)
 
             db_is_published = row[0]
-            db_content = row[1] or ""
-            db_word_count = row[2] or 0
+            db_word_count = row[1] or 0
 
             if db_is_published == 1 and db_word_count > 0:
                 t2_ok = True
-                system_logger.info(f"[发布-验证] ✅ MySQL写入成功 | is_published={db_is_published} | word_count={db_word_count} | content长度={len(db_content)}")
+                system_logger.info(f"[发布-验证] ✅ MySQL写入成功 | is_published={db_is_published} | word_count={db_word_count}")
             else:
                 system_logger.error(f"[发布-验证] ❌ MySQL验证失败 | is_published={db_is_published} | word_count={db_word_count}")
                 if t1_ok and chapter_file and os.path.exists(chapter_file):
@@ -2330,12 +2412,11 @@ class ChapterService:
         )
 
     @staticmethod
-    def update_chapter(db: Session, chapter_unique_id: str, content: str = None,
+    def update_chapter(db: Session, chapter_unique_id: str,
                        chapter_name: str = None, chapter_summary: str = None) -> dict:
-        """更新已存在的章节内容、名称或概要
+        """更新已存在的章节名称或概要
         :param db: 数据库会话
         :param chapter_unique_id: 章节唯一ID
-        :param content: 新章节正文
         :param chapter_name: 新章节名称
         :param chapter_summary: 新章节概要
         :return: 操作结果
@@ -2344,14 +2425,6 @@ class ChapterService:
         if not chapter:
             return fail("章节不存在", code=404)
         update_data = {}
-        if content is not None:
-            novel_dir = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id)
-            os.makedirs(novel_dir, exist_ok=True)
-            chapter_file = os.path.join(novel_dir, f"{chapter.chapter_name}_{chapter.chapter_unique_id}.txt")
-            with open(chapter_file, "w", encoding="utf-8") as f:
-                f.write(content)
-            update_data["content"] = content
-            update_data["word_count"] = len(content)
         if chapter_name is not None:
             old_file = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id,
                                     f"{chapter.chapter_name}_{chapter.chapter_unique_id}.txt")
@@ -2366,24 +2439,6 @@ class ChapterService:
         r3 = _redis()
         if r3:
             r3.delete_pattern(f"chapters:*")
-        # 章节内容更新后异步重建记忆体（先清除该章节旧条目，再追加新条目）
-        if content is not None:
-            import asyncio, threading
-            _nid = chapter.novel_unique_id
-            _ct = content
-            _cn = chapter_name or chapter.chapter_name
-            _cs = chapter_summary or chapter.chapter_summary or ""
-            _old_cn = chapter.chapter_name  # 旧章节名（用于清除旧条目）
-            def _async_rebuild():
-                try:
-                    asyncio.run(ChapterService._rebuild_memory_for_chapter(
-                        _nid, _old_cn, _ct, _cn, _cs
-                    ))
-                except BaseException as e:
-                    system_logger.error(f"[更新章节] 记忆体重建失败: {e}")
-            t = threading.Thread(target=_async_rebuild, daemon=True)
-            t.start()
-            system_logger.info(f"[更新章节] {chapter_name or chapter.chapter_name} 已保存，记忆体后台重建中")
         return success(None, "章节更新成功")
 
     @staticmethod
@@ -2441,10 +2496,12 @@ class ChapterService:
 
     @staticmethod
     def get_novel_chapters(db: Session, novel_unique_id: str) -> dict:
-        """获取指定作品的所有章节列表，带Redis缓存
-        :param db: 数据库会话
-        :param novel_unique_id: 作品唯一ID
-        :return: 章节列表（含正文内容）
+        """获取指定作品的所有章节列表，带Redis缓存（TTL 300秒）
+
+        性能优化：
+          1. 逐章内容单独缓存到 Redis，避免冷启动时反复读 TXT 文件
+          2. 文件读取使用 ThreadPoolExecutor 并行完成
+          3. 总列表缓存 TTL 从 60s 延长至 300s，减少缓存穿透
         """
         cache_key = f"chapters:novel:{novel_unique_id}:all"
         r5 = _redis()
@@ -2452,27 +2509,160 @@ class ChapterService:
             cached = r5.get(cache_key)
             if cached:
                 return success(cached)
+
         chapters = ChapterDAO.get_by_novel_id(db, novel_unique_id)
-        result = []
-        for ch in chapters:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _load_content(ch):
+            """从 Redis 内容缓存或 TXT 文件读取单章正文"""
+            content_ck = f"chapter:content:{ch.chapter_unique_id}"
+            if r5:
+                cached_content = r5.get(content_ck)
+                if cached_content is not None:
+                    return ch, cached_content
             novel_dir = os.path.join(NOVEL_DATA_PATH, ch.novel_unique_id)
             chapter_file = os.path.join(novel_dir, f"{ch.chapter_name}_{ch.chapter_unique_id}.txt")
             content = ""
             if os.path.exists(chapter_file):
                 with open(chapter_file, "r", encoding="utf-8") as f:
                     content = f.read()
+            if r5 and content:
+                r5.set(content_ck, content, ttl=600)
+            return ch, content
+
+        content_map = {}
+        if chapters:
+            with ThreadPoolExecutor(max_workers=min(len(chapters), 10)) as pool:
+                futures = {pool.submit(_load_content, ch): ch for ch in chapters}
+                for future in as_completed(futures):
+                    ch, content = future.result()
+                    content_map[ch.id] = content
+
+        result = []
+        for ch in chapters:
+            content = content_map.get(ch.id, "")
+            wc = ch.word_count if ch.word_count else len(content)
             result.append({
                 "chapter_unique_id": ch.chapter_unique_id,
                 "chapter_name": ch.chapter_name,
-                "word_count": ch.word_count,
+                "chapter_number": ch.chapter_number,
+                "word_count": wc,
                 "chapter_summary": ch.chapter_summary,
                 "content": content,
                 "is_published": ch.is_published,
                 "created_at": ch.created_at.isoformat() if ch.created_at else None
             })
+
         if r5:
-            r5.set(cache_key, result)
+            r5.set(cache_key, result, ttl=300)
         return success(result)
+
+    # ============================================================
+    # Worker Handler 方法（供 TaskQueue Worker 线程调用）
+    # ============================================================
+
+    @staticmethod
+    def _worker_extract_info(task_id: str, task_data: dict) -> dict:
+        """Worker handler：从章节内容中 AI 提取关键信息"""
+        content = task_data.get("content", "")
+        chapter_name = task_data.get("chapter_name", "")
+        try:
+            result = run_async(ChapterService.extract_chapter_info, content, chapter_name)
+            return result
+        except Exception as e:
+            system_logger.error(f"[Worker-extract] 异常: {e}")
+            return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def _worker_generate(task_id: str, task_data: dict) -> dict:
+        """Worker handler：AI 生成章节正文"""
+        from app.models.base import SessionLocal
+        db = SessionLocal()
+        try:
+            result = run_async(
+                ChapterService.generate_with_ai,
+                db,
+                novel_unique_id=task_data["novel_unique_id"],
+                user_id=task_data["user_id"],
+                chapter_name=task_data["chapter_name"],
+                characters_involved=task_data.get("characters_involved"),
+                organizations=task_data.get("organizations"),
+                locations=task_data.get("locations"),
+                skills=task_data.get("skills"),
+                word_count=task_data.get("word_count", 2000),
+                chapter_summary=task_data.get("chapter_summary"),
+                created_by=task_data.get("created_by"),
+            )
+            # 标准化返回格式
+            if result.get("状态码") == 200:
+                return {"success": True, "data": result.get("数据")}
+            return {"success": False, "error": result.get("消息", "生成失败")}
+        except Exception as e:
+            system_logger.error(f"[Worker-generate] 异常: {e}")
+            return {"success": False, "error": str(e)}
+        finally:
+            db.close()
+
+    @staticmethod
+    def _worker_regenerate(task_id: str, task_data: dict) -> dict:
+        """Worker handler：AI 重新生成章节"""
+        from app.models.base import SessionLocal
+        db = SessionLocal()
+        try:
+            result = run_async(
+                ChapterService.regenerate_with_ai,
+                db,
+                chapter_unique_id=task_data["chapter_unique_id"],
+                user_id=task_data["user_id"],
+                word_count=task_data.get("word_count", 2000),
+                chapter_summary=task_data.get("chapter_summary"),
+            )
+            if result.get("状态码") == 200:
+                return {"success": True, "data": result.get("数据")}
+            return {"success": False, "error": result.get("消息", "重新生成失败")}
+        except Exception as e:
+            system_logger.error(f"[Worker-regenerate] 异常: {e}")
+            return {"success": False, "error": str(e)}
+        finally:
+            db.close()
+
+    @staticmethod
+    def _worker_continue(task_id: str, task_data: dict) -> dict:
+        """Worker handler：AI 续写章节"""
+        from app.models.base import SessionLocal
+        db = SessionLocal()
+        try:
+            result = run_async(
+                ChapterService.continue_with_ai,
+                db,
+                chapter_unique_id=task_data["chapter_unique_id"],
+                word_count=task_data.get("word_count", 800),
+            )
+            if result.get("状态码") == 200:
+                return {"success": True, "data": result.get("数据")}
+            return {"success": False, "error": result.get("消息", "续写失败")}
+        except Exception as e:
+            system_logger.error(f"[Worker-continue] 异常: {e}")
+            return {"success": False, "error": str(e)}
+        finally:
+            db.close()
+
+    @staticmethod
+    def _worker_reset_memory(task_id: str, task_data: dict) -> dict:
+        """Worker handler：重置作品 Redis 记忆体"""
+        from app.models.base import SessionLocal
+        db = SessionLocal()
+        try:
+            result = ChapterService.reset_and_rebuild_memory(
+                task_data["novel_unique_id"], db
+            )
+            return result
+        except Exception as e:
+            system_logger.error(f"[Worker-reset-memory] 异常: {e}")
+            return {"success": False, "error": str(e)}
+        finally:
+            db.close()
+
 
 # ============================================================
 # 独立函数：重复检测

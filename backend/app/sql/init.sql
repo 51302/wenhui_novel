@@ -17,7 +17,10 @@ CREATE TABLE IF NOT EXISTS `users` (
   `status` TINYINT DEFAULT 1 COMMENT '状态: 0=禁用, 1=正常',
   `email` VARCHAR(128) DEFAULT NULL COMMENT '邮箱',
   `phone` VARCHAR(20) DEFAULT NULL COMMENT '手机号',
-  `is_super_admin` TINYINT DEFAULT 0 COMMENT '超级管理员: 0=否, 1=是',
+  `vip_level` TINYINT DEFAULT 0 COMMENT 'VIP等级: 0=免费, 1=VIP, 2=SVIP',
+  `vip_expire_at` DATETIME DEFAULT NULL COMMENT 'VIP过期时间',
+  `free_generate_quota` INT DEFAULT 6 COMMENT '每日AI生成剩余配额',
+  `quota_date` DATE DEFAULT NULL COMMENT '配额日期(用于跨天重置)',
   `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   INDEX `idx_username` (`username`),
   INDEX `idx_status` (`status`)
@@ -26,9 +29,9 @@ CREATE TABLE IF NOT EXISTS `users` (
 -- 插入默认超级管理员账号
 -- 用户名: superuser1
 -- 密码: super123 (bcrypt加密后的hash)
-INSERT INTO `users` (`username`, `password`, `is_super_admin`, `status`) VALUES
-('superuser1', '$2b$12$fUWTUPXaIP1lmECa/BP1yOgW9KXI9QdT2afC0AOCTqOQOy50BXY7O', 1, 1)
-ON DUPLICATE KEY UPDATE `is_super_admin` = 1, `status` = 1;
+INSERT INTO `users` (`username`, `password`, `vip_level`, `status`, `free_generate_quota`, `quota_date`) VALUES
+('superuser1', '$2b$12$fUWTUPXaIP1lmECa/BP1yOgW9KXI9QdT2afC0AOCTqOQOy50BXY7O', 2, 1, 50, CURDATE())
+ON DUPLICATE KEY UPDATE `vip_level` = 2, `status` = 1;
 
 -- 小说作品表
 CREATE TABLE IF NOT EXISTS `novels` (
@@ -45,6 +48,7 @@ CREATE TABLE IF NOT EXISTS `novels` (
   `realm_setting` TEXT COMMENT '境界设定(JSON)',
   `characters` LONGTEXT COMMENT '角色设定(JSON)',
   `cover_image` VARCHAR(512) DEFAULT NULL COMMENT '封面图片',
+  `plot_development` TEXT COMMENT '剧情发展路线',
   `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `created_by` VARCHAR(64) DEFAULT NULL COMMENT '创建人',
   `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -62,13 +66,10 @@ CREATE TABLE IF NOT EXISTS `chapters` (
   `user_id` INT NOT NULL COMMENT '用户ID',
   `chapter_unique_id` VARCHAR(64) NOT NULL UNIQUE COMMENT '章节唯一ID',
   `chapter_name` VARCHAR(256) NOT NULL COMMENT '章节名称',
-  `characters_involved` TEXT COMMENT '涉及人物(JSON)',
-  `organizations` TEXT COMMENT '涉及组织(JSON)',
-  `locations` TEXT COMMENT '涉及地点(JSON)',
-  `skills` TEXT COMMENT '涉及技能(JSON)',
-  `word_count` INT DEFAULT 0 COMMENT '章节字数',
-  `chapter_summary` VARCHAR(512) DEFAULT NULL COMMENT '本章概要',
+  `chapter_number` INT DEFAULT 0 COMMENT '章节序号(如1,2,3...)',
+  `chapter_summary` TEXT DEFAULT NULL COMMENT '本章概要',
   `is_published` TINYINT DEFAULT 0 COMMENT '是否发布: 0=草稿, 1=已发布',
+  `word_count` INT DEFAULT 0 COMMENT '章节字数',
   `created_by` VARCHAR(64) DEFAULT NULL COMMENT '创建人',
   `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',

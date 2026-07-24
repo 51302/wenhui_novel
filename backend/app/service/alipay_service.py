@@ -231,10 +231,11 @@ def _build_signed_form(biz_content: dict, method: str, is_demo: bool = False) ->
     if ALIPAY_RETURN_URL:
         params["return_url"] = ALIPAY_RETURN_URL
 
-    # 支付宝签名规则：参数按key排序，参数值进行URL编码，签名字符串再RSA2签名
+    # 支付宝签名规则：参数按key排序，参数值不编码，签名字符串再RSA2签名
     sorted_params = sorted(params.items())
-    sign_str = "&".join(f"{k}={quote_plus(str(v), encoding='utf-8')}" for k, v in sorted_params)
-    params["sign"] = _sign(sign_str)
+    sign_str = "&".join(f"{k}={v}" for k, v in sorted_params)
+    sign = _sign(sign_str)
+    params["sign"] = sign
 
     if is_demo:
         return _build_demo_page(params, biz_content)
@@ -244,7 +245,8 @@ def _build_signed_form(biz_content: dict, method: str, is_demo: bool = False) ->
 
 def _build_alipay_form(params: dict) -> str:
     """构建跳转支付宝收银台的 HTML 表单"""
-    html = f'<form id="alipayForm" action="{GATEWAY_URL}" method="POST" accept-charset="utf-8">'
+    action_url = f"{GATEWAY_URL}?charset={params.get('charset', 'utf-8')}"
+    html = f'<form id="alipayForm" action="{action_url}" method="POST" accept-charset="utf-8">'
     for k, v in params.items():
         html += f'<input type="hidden" name="{_escape_html(str(k))}" value="{_escape_html(str(v))}">'
     html += '<script>document.getElementById("alipayForm").submit();</script></form>'

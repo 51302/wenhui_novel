@@ -5,6 +5,41 @@
       <p>自定义界面外观及其他偏好</p>
     </div>
 
+<!-- ===== 会员信息 ===== -->
+    <section class="settings-section" v-if="user && user.user_id">
+      <div class="section-header">
+        <div class="section-icon" style="background:var(--gold-gradient)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+        </div>
+        <div>
+          <h2>会员信息</h2>
+          <span class="section-desc">你的会员等级与权益状态</span>
+        </div>
+      </div>
+
+      <div class="vip-info-card" :class="'vip-' + vipLevelClass">
+        <div class="vip-level-badge">
+          <span class="vip-icon" v-if="vipLevel >= 2">👑</span>
+          <span class="vip-icon" v-else-if="vipLevel >= 1">💎</span>
+          <span class="vip-icon" v-else>🔓</span>
+          <span class="vip-name">{{ vipLevelName }}</span>
+        </div>
+        <div class="vip-expire-section">
+          <span class="vip-expire-label">到期时间</span>
+          <span class="vip-expire-value" :class="{ expired: isExpired }">
+            {{ expireTime }}
+          </span>
+          <span class="vip-remaining" v-if="vipLevel >= 1 && !isExpired">
+            {{ remainingText }}
+          </span>
+          <span class="vip-remaining expired" v-else-if="vipLevel >= 1 && isExpired">
+            已过期
+          </span>
+          <router-link v-if="vipLevel < 2" to="/vip" class="btn-upgrade">升级会员</router-link>
+        </div>
+      </div>
+    </section>
+
     <!-- ===== 主题色调 ===== -->
     <section class="settings-section scan-line">
       <div class="section-header">
@@ -137,8 +172,9 @@
 </template>
 
 <script>
-import { ref } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useTheme } from '../stores/themeStore'
+import api from '../api'
 
 export default {
   name: 'Settings',
@@ -151,7 +187,70 @@ export default {
       bottomLine: true,
     })
 
-    return { theme, themes, setTheme, effects }
+    const user = ref({})
+    const vipLevel = ref(0)
+    const expireTime = ref('')
+    const remainingText = ref('')
+    const isExpired = ref(false)
+    const vipLevelClass = ref('free')
+
+    const vipLevelName = computed(() => {
+      if (vipLevel.value >= 2) return 'SVIP 会员'
+      if (vipLevel.value >= 1) return 'VIP 会员'
+      return '免费用户'
+    })
+
+    onMounted(async () => {
+      const stored = localStorage.getItem('novel_user')
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored)
+          user.value = parsed
+          vipLevel.value = parsed.vip_level || 0
+          calcExpire(parsed.vip_expire_at)
+        } catch (e) {}
+      }
+      try {
+        const res = await api.get('/auth/me')
+        if (res.状态码 === 200) {
+          user.value = res.数据
+          vipLevel.value = res.数据.vip_level || 0
+          localStorage.setItem('novel_user', JSON.stringify(res.数据))
+          calcExpire(res.数据.vip_expire_at)
+        }
+      } catch (e) {}
+    })
+
+    function calcExpire(expireAt) {
+      if (!expireAt) {
+        expireTime.value = vipLevel.value >= 1 ? '永久' : '无'
+        remainingText.value = ''
+        isExpired.value = false
+        vipLevelClass.value = vipLevel.value >= 2 ? 'svip' : (vipLevel.value >= 1 ? 'vip' : 'free')
+        return
+      }
+      const now = new Date()
+      const expire = new Date(expireAt.replace(' ', 'T'))
+      expireTime.value = expireAt
+      const diff = expire - now
+      if (diff <= 0) {
+        isExpired.value = true
+        remainingText.value = '已过期'
+        vipLevelClass.value = 'free'
+      } else {
+        isExpired.value = false
+        const days = Math.floor(diff / 86400000)
+        const hours = Math.floor((diff % 86400000) / 3600000)
+        if (days > 0) {
+          remainingText.value = '还剩 ' + days + ' 天 ' + hours + ' 小时'
+        } else {
+          remainingText.value = '还剩 ' + hours + ' 小时'
+        }
+        vipLevelClass.value = vipLevel.value >= 2 ? 'svip' : 'vip'
+      }
+    }
+
+    return { theme, themes, setTheme, effects, user, vipLevel, vipLevelName, vipLevelClass, expireTime, remainingText, isExpired }
   }
 }
 </script>
@@ -301,5 +400,69 @@ export default {
 }
 .switch input:checked + .slider::before {
   transform: translateX(20px);
+}
+
+/* ===== VIP 会员信息 ===== */
+.vip-info-card {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 20px 24px; border-radius: 16px;
+  border: 1px solid var(--border);
+  transition: all 0.3s;
+}
+.vip-info-card.vip-svip {
+  background: linear-gradient(135deg, rgba(245,158,11,0.12), rgba(217,119,6,0.08));
+  border-color: rgba(245,158,11,0.3);
+  box-shadow: 0 0 30px rgba(245,158,11,0.1);
+}
+.vip-info-card.vip-vip {
+  background: linear-gradient(135deg, rgba(6,182,212,0.1), rgba(139,92,246,0.08));
+  border-color: rgba(6,182,212,0.25);
+}
+.vip-info-card.vip-free {
+  background: var(--bg-card-hover);
+}
+.vip-level-badge {
+  display: flex; align-items: center; gap: 12px;
+}
+.vip-icon { font-size: 28px; }
+.vip-name {
+  font-size: 18px; font-weight: 700;
+  background: var(--gold-gradient);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.vip-free .vip-name {
+  background: none; -webkit-text-fill-color: var(--text-secondary); color: var(--text-secondary);
+}
+.vip-expire-section {
+  text-align: right; display: flex; flex-direction: column; gap: 4px;
+}
+.vip-expire-label {
+  font-size: 12px; color: var(--text-muted);
+}
+.vip-expire-value {
+  font-size: 13px; color: var(--text-secondary);
+}
+.vip-expire-value.expired {
+  color: #f87171;
+}
+.vip-remaining {
+  font-size: 14px; font-weight: 600;
+  color: var(--gold);
+}
+.vip-remaining.expired {
+  color: #f87171;
+}
+.btn-upgrade {
+  display: inline-block; margin-top: 6px;
+  padding: 6px 16px; border-radius: 8px;
+  font-size: 12px; font-weight: 700;
+  color: #fff; background: var(--gold-gradient);
+  text-align: center; cursor: pointer;
+  box-shadow: 0 4px 12px rgba(245,158,11,0.3);
+  transition: all 0.3s;
+}
+.btn-upgrade:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 20px rgba(245,158,11,0.5);
 }
 </style>

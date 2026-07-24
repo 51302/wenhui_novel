@@ -151,7 +151,7 @@ class ProfileService:
         following_count = len(following_users)
         bookshelf_count = len(BookshelfDAO.list_by_user(db, user_id))
 
-        is_vip = user.is_super_admin == 1 or (user.vip_expire_at and user.vip_expire_at > datetime.now())
+        is_vip = user.vip_level >= 1 and (user.vip_expire_at and user.vip_expire_at > datetime.now())
 
         result = {
             "user_id": user.id,

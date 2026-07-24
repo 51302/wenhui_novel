@@ -1,5 +1,4 @@
 import bcrypt
-import redis
 import os
 import re
 import random
@@ -11,25 +10,14 @@ from app.application.jwt_handler import create_token, verify_token
 from app.utils.response import success, fail
 from app.config import get as cfg_get
 from app.utils.logger import system_logger
+import app.utils.redis_cache as redis_mod
 
 logger = logging.getLogger(__name__)
 
 
 def _get_redis():
-    """获取 Redis 连接"""
-    try:
-        cfg_password = cfg_get("redis.password", "")
-        r = redis.Redis(
-            host=os.environ.get('REDIS_HOST', cfg_get("redis.host", "localhost")),
-            port=int(os.environ.get('REDIS_PORT', cfg_get("redis.port", 6379))),
-            password=os.environ.get('REDIS_PASSWORD', cfg_password),
-            db=cfg_get("redis.db", 0), decode_responses=True,
-            socket_connect_timeout=3
-        )
-        r.ping()
-        return r
-    except Exception:
-        return None
+    """获取全局 Redis 单例"""
+    return redis_mod.redis_client
 
 
 # 邮箱正则
@@ -82,13 +70,78 @@ def _verify_code(key_prefix: str, target: str, code: str) -> bool:
     r = _get_redis()
     if r:
         stored = r.get(f"{key_prefix}:{target}")
-        if stored and stored == code:
+        if stored is not None and str(stored) == str(code):
             r.delete(f"{key_prefix}:{target}")
             return True
     return False
 
 
 class AuthService:
+
+    @staticmethod
+    def generate_and_store_code(email: str) -> dict:
+        """仅生成验证码并存入Redis（同步，很快），不发送邮件"""
+        if not _is_valid_email(email):
+            return fail("邮箱格式无效，请输入有效的邮箱地址", code=400)
+        code = _generate_code()
+        _store_code("email_code", email, code)
+        logger.info(f"[邮件-存储] {email} 验证码: {code}（待后台发送）")
+        return success({"code": code}, "验证码已生成")
+
+    @staticmethod
+    def send_email_async(email: str, code: str):
+        """后台异步发送邮件（由BackgroundTasks调用，不影响HTTP响应）"""
+        logger.info(f"[邮件-异步] 开始发送验证码至 {email}")
+        email_cfg = {
+            "resend_api_key": cfg_get("email.resend_api_key", ""),
+            "from_name": cfg_get("email.from_name", "文辉小说"),
+            "from_email": cfg_get("email.from_email", "onboarding@resend.dev"),
+        }
+        website_url = cfg_get("app.website_url", "https://${TAILSCALE_DOMAIN}")
+        api_key = email_cfg.get('resend_api_key', '')
+        from_name = email_cfg.get('from_name', '文辉小说')
+        from_email = email_cfg.get('from_email', 'onboarding@resend.dev')
+
+        if api_key:
+            try:
+                resp = requests.post(
+                    "https://api.resend.com/emails",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "from": f"{from_name} <{from_email}>",
+                        "to": [email],
+                        "subject": "文辉小说 - 邮箱验证码",
+                        "html": f"""
+                        <div style="max-width:480px;margin:0 auto;font-family:Arial,sans-serif;
+                                    background:#1a1a2e;color:#e0e0e0;padding:32px;border-radius:12px">
+                          <h2 style="color:#06b6d4;text-align:center">文辉小说 ✦ 邮箱验证</h2>
+                          <p>您正在进行账号注册验证，验证码如下：</p>
+                          <div style="background:#0f0f28;text-align:center;padding:20px;border-radius:8px;
+                                      margin:16px 0;font-size:32px;letter-spacing:8px;color:#06b6d4;font-weight:700">
+                            {code}
+                          </div>
+                          <p style="color:#8892b0;font-size:13px">验证码 5 分钟内有效，请勿透露给他人。</p>
+                          <div style="text-align:center;margin-top:24px;padding-top:20px;border-top:1px solid #333">
+                            <a href="{website_url}/register" style="color:#06b6d4;text-decoration:none;font-size:13px">
+                              点击前往文辉小说完成注册 →
+                            </a>
+                          </div>
+                        </div>
+                        """
+                    },
+                    timeout=10
+                )
+                if resp.status_code == 200:
+                    logger.info(f"[邮件-异步] 验证码已发送至 {email}")
+                else:
+                    logger.error(f"[邮件-异步] Resend 发送失败: {resp.status_code} {resp.text}")
+            except Exception as e:
+                logger.error(f"[邮件-异步] 异常: {e}")
+        else:
+            logger.info(f"[邮件-异步-演示] {email} 验证码: {code}")
 
     @staticmethod
     def send_email_code(email: str) -> dict:
@@ -103,9 +156,11 @@ class AuthService:
             "from_name": cfg_get("email.from_name", "文辉小说"),
             "from_email": cfg_get("email.from_email", "onboarding@resend.dev"),
         }
+        # 网站域名（用于邮件中的链接，从配置文件读取）
+        website_url = cfg_get("app.website_url", "https://${TAILSCALE_DOMAIN}")
         api_key = email_cfg.get('resend_api_key', '')
         from_name = email_cfg.get('from_name', '文辉小说')
-        from_email = email_cfg.get('from_email', 'noreply@wenhuixs.com')
+        from_email = email_cfg.get('from_email', 'onboarding@resend.dev')
 
         if api_key:
             # 通过 Resend 发真实邮件
@@ -130,6 +185,11 @@ class AuthService:
                             {code}
                           </div>
                           <p style="color:#8892b0;font-size:13px">验证码 5 分钟内有效，请勿透露给他人。</p>
+                          <div style="text-align:center;margin-top:24px;padding-top:20px;border-top:1px solid #333">
+                            <a href="{website_url}/register" style="color:#06b6d4;text-decoration:none;font-size:13px">
+                              点击前往文辉小说完成注册 →
+                            </a>
+                          </div>
                         </div>
                         """
                     },
@@ -155,8 +215,7 @@ class AuthService:
     @staticmethod
     def register(db: Session, username: str, password: str,
                  email: str = None, phone: str = None,
-                 email_code: str = None,
-                 is_super_admin: int = 0) -> dict:
+                 email_code: str = None) -> dict:
         """用户注册：校验邮箱验证码、创建账号并返回JWT令牌
         :param db: 数据库会话
         :param username: 用户名
@@ -164,7 +223,6 @@ class AuthService:
         :param email: 邮箱（必填）
         :param phone: 手机号（选填）
         :param email_code: 邮箱验证码
-        :param is_super_admin: 是否超级管理员
         :return: 注册结果（含token）
         """
         # 邮箱必填
@@ -197,13 +255,12 @@ class AuthService:
             return fail("该邮箱已经注册", code=400)
 
         hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=8)).decode("utf-8")
-        user = UserDAO.create(db, username, hashed, email, phone, is_super_admin)
-        token = create_token(user.id, user.username, user.is_super_admin, user.vip_level)
+        user = UserDAO.create(db, username, hashed, email, phone)
+        token = create_token(user.id, user.username, user.vip_level)
         UserDAO.update_token(db, user, token)
         return success({
             "user_id": user.id,
             "username": user.username,
-            "is_super_admin": user.is_super_admin,
             "is_vip": user.vip_level >= 1,
             "is_svip": user.vip_level >= 2,
             "vip_level": user.vip_level,
@@ -246,13 +303,12 @@ class AuthService:
         if not bcrypt.checkpw(password.encode("utf-8"), user.password.encode("utf-8")):
             system_logger.warning(f"登录: 密码错误 - {username}")
             return fail("用户名或密码错误", code=401)
-        token = create_token(user.id, user.username, user.is_super_admin, user.vip_level)
+        token = create_token(user.id, user.username, user.vip_level)
         UserDAO.update_token(db, user, token)
         system_logger.info(f"登录: 认证成功 - {username} (ID={user.id}, vip_level={user.vip_level})")
         return success({
             "user_id": user.id,
             "username": user.username,
-            "is_super_admin": user.is_super_admin,
             "is_vip": user.vip_level >= 1,
             "is_svip": user.vip_level >= 2,
             "vip_level": user.vip_level,
@@ -284,7 +340,6 @@ class AuthService:
             return {
                 "user_id": payload["user_id"],
                 "username": payload["username"],
-                "is_super_admin": payload.get("is_super_admin", 0),
                 "vip_level": payload.get("vip_level", 0),
             }
         except ValueError:

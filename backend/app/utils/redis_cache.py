@@ -142,5 +142,44 @@ class RedisCache:
         except Exception:
             return False
 
+    # ----------------------------------------------------------------
+    #  List 操作（用于任务队列）
+    # ----------------------------------------------------------------
+    def rpush(self, key: str, value: str) -> bool:
+        """向 List 尾部追加元素"""
+        if not self.client:
+            return False
+        try:
+            return bool(self.client.rpush(key, value))
+        except Exception:
+            return False
+
+    def blpop(self, key: str, timeout: int = 0) -> tuple:
+        """阻塞式弹出 List 头部元素
+        :return: (key, value) 或 None
+        """
+        if not self.client:
+            return None
+        try:
+            return self.client.blpop(key, timeout=timeout)
+        except Exception:
+            return None
+
+    def lrange(self, key: str, start: int = 0, end: int = -1) -> list:
+        """获取 List 范围内的元素"""
+        if not self.client:
+            return []
+        try:
+            return self.client.lrange(key, start, end) or []
+        except Exception:
+            return []
+
+    # ----------------------------------------------------------------
+    #  兼容性别名（供旧代码使用 setex 直接调用）
+    # ----------------------------------------------------------------
+    def setex(self, key: str, ttl: int, value: str) -> bool:
+        """设置带过期时间的键值对（兼容旧代码）"""
+        return self.set(key, value, ttl=ttl)
+
 
 redis_client: Optional[RedisCache] = None

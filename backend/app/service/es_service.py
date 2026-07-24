@@ -1,8 +1,9 @@
-import os
+
 from elasticsearch import Elasticsearch
 from typing import Optional
+from app.config import get as cfg_get
 
-ES_HOST = os.getenv("ES_HOST", "http://localhost:9200")
+ES_HOST = cfg_get("elasticsearch.host", "http://localhost:9200")
 INDEX_NOVELS = "novels"
 
 

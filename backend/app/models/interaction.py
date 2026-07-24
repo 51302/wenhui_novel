@@ -1,10 +1,17 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, func, SmallInteger
+from sqlalchemy import Column, Integer, String, DateTime, Text, func, SmallInteger, Index
 from app.models.base import Base
 
 
 class WorkInteraction(Base):
     """作品互动表，记录用户对作品的点赞、关注、收藏与评论"""
     __tablename__ = "work_interactions"
+
+    __table_args__ = (
+        Index("idx_wi_created_at", "created_at"),
+        Index("idx_wi_novel_id", "novel_unique_id"),
+        Index("idx_wi_user_novel", "user_id", "novel_unique_id"),
+        Index("idx_wi_interactor_novel", "interactor_id", "novel_unique_id"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True, comment="自增ID")
     user_id = Column(Integer, nullable=False, comment="用户ID(被互动者)")

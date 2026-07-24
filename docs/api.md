@@ -1,6 +1,6 @@
 # 文辉小说 API 接入文档
 
-> 版本：v1.0.0 | 基础地址：`http://127.0.0.1:8000` | Swagger 文档：`/api/docs`
+> 版本：v1.1.0 | 基础地址：`http://127.0.0.1:8000` | Swagger 文档：`/api/docs`
 
 ---
 
@@ -33,7 +33,7 @@
 | Cookie | 登录/注册成功后自动设置 `novel_token` Cookie（httpOnly，30天），浏览器自动携带 |
 | Header | 请求头 `Authorization: Bearer <jwt_token>` |
 
-> 超管接口：`is_super_admin=1` 才能调用，普通用户调用返回 403。
+> 需要 VIP 权限的接口根据用户 `vip_level` 判定：0=免费用户，1=VIP，2=SVIP。
 
 ---
 
@@ -52,8 +52,7 @@ POST /api/auth/register
   "password": "string (必填, ≥8位)",
   "email": "string (必填, 有效邮箱格式)",
   "phone": "string (选填, 11位数字)",
-  "email_code": "string (必填, 邮箱验证码)",
-  "is_super_admin": 0
+  "email_code": "string (必填, 邮箱验证码)"
 }
 ```
 
@@ -65,7 +64,9 @@ POST /api/auth/register
   "数据": {
     "user_id": 1,
     "username": "testuser",
-    "is_super_admin": 0,
+    "is_vip": false,
+    "is_svip": false,
+    "vip_level": 0,
     "token": "eyJhbG..."
   }
 }
@@ -83,9 +84,7 @@ POST /api/auth/login
 ```json
 {
   "username": "string (必填)",
-  "password": "string (必填)",
-  "captcha_id": "string (选填, 滑动验证码ID)",
-  "captcha_x": 0
+  "password": "string (必填)"
 }
 ```
 
@@ -97,7 +96,9 @@ POST /api/auth/login
   "数据": {
     "user_id": 1,
     "username": "testuser",
-    "is_super_admin": 0,
+    "is_vip": true,
+    "is_svip": false,
+    "vip_level": 1,
     "token": "eyJhbG..."
   }
 }
@@ -105,27 +106,7 @@ POST /api/auth/login
 
 ---
 
-### 1.3 获取滑动验证码
-
-```
-GET /api/auth/captcha
-```
-
-**响应**
-```json
-{
-  "状态码": 200,
-  "消息": "验证码生成成功",
-  "数据": {
-    "captcha_id": "abc123",
-    "captcha_x": 150
-  }
-}
-```
-
----
-
-### 1.4 发送邮箱验证码
+### 1.3 发送邮箱验证码
 
 ```
 POST /api/auth/send-email-code
@@ -134,7 +115,7 @@ POST /api/auth/send-email-code
 **请求体**
 ```json
 {
-  "target": "lwp51302@163.com"
+  "target": "user@example.com"
 }
 ```
 
@@ -146,11 +127,11 @@ POST /api/auth/send-email-code
 }
 ```
 
-> 验证码 5 分钟有效。目前通过 Resend 发送，发件地址为 `onboarding@resend.dev`。
+> 验证码 5 分钟有效。通过 Resend 发送，发件地址为 `noreply@wenhui.xyz`。
 
 ---
 
-### 1.5 退出登录
+### 1.4 退出登录
 
 ```
 POST /api/auth/logout
@@ -167,7 +148,7 @@ POST /api/auth/logout
 
 ---
 
-### 1.6 获取当前用户信息 🔒
+### 1.5 获取当前用户信息 🔒
 
 ```
 GET /api/auth/me
@@ -181,8 +162,11 @@ GET /api/auth/me
   "数据": {
     "user_id": 1,
     "username": "testuser",
-    "is_super_admin": 0,
-    "vip_expire_at": "2026-08-01 12:00:00"
+    "vip_level": 1,
+    "is_vip": true,
+    "is_svip": false,
+    "vip_expire_at": "2026-08-23 12:00:00",
+    "free_generate_quota": 10
   }
 }
 ```
@@ -191,7 +175,7 @@ GET /api/auth/me
 
 ## 二、作品模块 `/api/novels`
 
-### 2.1 创建作品 🔒👑
+### 2.1 创建作品 🔒
 
 ```
 POST /api/novels/create
@@ -313,7 +297,7 @@ GET /api/novels/my
 
 ---
 
-### 2.6 编辑作品 🔒👑
+### 2.6 编辑作品 🔒
 
 ```
 PUT /api/novels/update/{novel_unique_id}
@@ -334,7 +318,7 @@ PUT /api/novels/update/{novel_unique_id}
 
 ---
 
-### 2.7 删除作品 🔒👑
+### 2.7 删除作品 🔒
 
 ```
 DELETE /api/novels/delete/{novel_unique_id}
@@ -346,7 +330,7 @@ DELETE /api/novels/delete/{novel_unique_id}
 
 ## 三、章节模块 `/api/chapters`
 
-### 3.1 手动创建章节 🔒👑
+### 3.1 手动创建章节 🔒
 
 ```
 POST /api/chapters/create
@@ -368,7 +352,7 @@ POST /api/chapters/create
 
 ---
 
-### 3.2 AI 生成章节 🔒👑
+### 3.2 AI 生成章节 🔒
 
 ```
 POST /api/chapters/generate
@@ -390,7 +374,7 @@ GET /api/chapters/drafts
 
 ---
 
-### 3.4 更新章节 🔒👑
+### 3.4 更新章节 🔒
 
 ```
 PUT /api/chapters/update/{chapter_unique_id}
@@ -407,7 +391,7 @@ PUT /api/chapters/update/{chapter_unique_id}
 
 ---
 
-### 3.5 发布章节 🔒👑
+### 3.5 发布章节 🔒
 
 ```
 POST /api/chapters/publish/{chapter_unique_id}
@@ -424,7 +408,7 @@ POST /api/chapters/publish/{chapter_unique_id}
 
 ---
 
-### 3.6 删除章节 🔒👑
+### 3.6 删除章节 🔒
 
 ```
 DELETE /api/chapters/delete/{chapter_unique_id}
@@ -673,7 +657,9 @@ GET /api/vip/status
   "消息": "查询成功",
   "数据": {
     "is_vip": true,
-    "vip_expire_at": "2026-08-01 12:00:00",
+    "is_svip": true,
+    "vip_level": 2,
+    "vip_expire_at": "2026-08-23 12:00:00",
     "username": "testuser"
   }
 }
@@ -699,9 +685,32 @@ POST /api/vip/notify
 
 ---
 
-## 七、系统端点
+## 七、配置模块 `/api/config`
 
-### 7.1 健康检查
+### 7.1 获取公开配置
+
+```
+GET /api/config/public
+```
+
+**响应**
+```json
+{
+  "状态码": 200,
+  "消息": "查询成功",
+  "数据": {
+    "show_all_works": false
+  }
+}
+```
+
+> 返回前端公开配置项，无需登录。
+
+---
+
+## 八、系统端点
+
+### 8.1 健康检查
 
 ```
 GET /api/health
@@ -729,7 +738,14 @@ GET /api/health
 | 图标 | 含义 |
 |------|------|
 | 🔒 | 需要登录认证 |
-| 👑 | 仅超级管理员 (`is_super_admin=1`) |
+
+### VIP 等级
+
+| 等级 | 值 | 说明 |
+|------|-----|------|
+| 免费用户 | `vip_level=0` | 基础使用权限 |
+| VIP 会员 | `vip_level=1` | 10 章/天 AI 生成配额 |
+| SVIP 会员 | `vip_level=2` | 50 章/天 AI 生成配额 |
 
 ### 错误码速查
 
@@ -739,6 +755,6 @@ GET /api/health
 | 400 | 参数错误 / 业务逻辑错误 |
 | 401 | 未登录 / Token 无效或过期 |
 | 402 | 支付未完成 |
-| 403 | 权限不足（非超管操作超管接口） |
+| 403 | 权限不足 |
 | 404 | 资源不存在 |
 | 500 | 服务器内部错误 |

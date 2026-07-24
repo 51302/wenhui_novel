@@ -21,9 +21,9 @@ class UserDAO:
         :param user: 用户对象（会直接修改属性，外部需要 commit）
         """
         now = datetime.now()  # 服务器本地时间（北京时间 GMT+8）
-        quota_today = user.quota_date.date() if user.quota_date else None
+        quota_today = user.quota_date if user.quota_date else None
         if quota_today != now.date():
-            user.quota_date = now
+            user.quota_date = now.date()
             user.free_generate_quota = DAILY_QUOTA_MAP.get(user.vip_level, 3)
 
     @staticmethod
@@ -55,14 +55,13 @@ class UserDAO:
 
     @staticmethod
     def create(db: Session, username: str, hashed_password: str,
-               email: str = None, phone: str = None, is_super_admin: int = 0) -> User:
+               email: str = None, phone: str = None) -> User:
         """创建新用户
         :param db: 数据库会话
         :param username: 用户名
         :param hashed_password: bcrypt加密后的密码
         :param email: 邮箱（可选）
         :param phone: 手机号（可选）
-        :param is_super_admin: 是否VIP会员，0=否
         :return: 新创建的用户对象
         """
         user = User(
@@ -70,7 +69,6 @@ class UserDAO:
             password=hashed_password,
             email=email,
             phone=phone,
-            is_super_admin=is_super_admin,
             vip_level=0,
             free_generate_quota=6,
             quota_date=datetime.utcnow(),
@@ -100,7 +98,6 @@ class UserDAO:
         """
         user = db.query(User).filter(User.id == user_id).first()
         if user:
-            user.is_super_admin = 1  # 保留兼容
             user.vip_level = vip_level
             user.vip_expire_at = datetime.utcnow() + timedelta(days=duration_days)
             db.commit()
@@ -115,7 +112,6 @@ class UserDAO:
         user = db.query(User).filter(User.id == user_id).first()
         if user and user.vip_level > 0 and user.vip_expire_at:
             if datetime.utcnow() > user.vip_expire_at:
-                user.is_super_admin = 0
                 user.vip_level = 0
                 user.vip_expire_at = None
                 user.free_generate_quota = 3  # 降级后重置为免费配额

@@ -63,8 +63,8 @@ def get_current_user(
         try:
             UserDAO.check_and_downgrade_expired(db, user_id)
             user = UserDAO.get_by_id(db, user_id)
-            is_super_admin = user.is_super_admin if user else 0
-            is_vip = is_super_admin == 1 or (
+            vip_level = user.vip_level if user else 0
+            is_vip = vip_level >= 1 and (
                 user and user.vip_expire_at and user.vip_expire_at > datetime.now()
             )
         finally:
@@ -73,9 +73,11 @@ def get_current_user(
         result = {
             "user_id": user_id,
             "username": username,
-            "is_super_admin": is_super_admin,
+            "vip_level": vip_level,
             "is_vip": is_vip,
+            "is_svip": vip_level >= 2,
             "free_generate_quota": user.free_generate_quota if user else 0,
+            "vip_expire_at": user.vip_expire_at.strftime("%Y-%m-%d %H:%M:%S") if user and user.vip_expire_at else None,
         }
 
         # 写入 Redis 缓存

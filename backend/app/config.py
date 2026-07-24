@@ -42,10 +42,10 @@ def get(key: str, default=None):
 # ============================================================
 
 def jwt_secret() -> str:
-    """获取 JWT 签名密钥，优先读取环境变量 JWT_SECRET_KEY
+    """获取 JWT 签名密钥，从配置文件读取
     :return: JWT 密钥字符串
     """
-    return os.getenv("JWT_SECRET_KEY", get("jwt.secret_key", "wenhui-novel-jwt-secret-key-2024"))
+    return get("jwt.secret_key", "wenhui-novel-jwt-secret-key-2024")
 
 
 def jwt_algorithm() -> str:
@@ -63,17 +63,17 @@ def jwt_expire_minutes() -> int:
 
 
 def deepseek_api_key() -> str:
-    """获取 DeepSeek API 密钥，优先读取环境变量 DEEPSEEK_API_KEY
+    """获取 DeepSeek API 密钥，从配置文件读取
     :return: API 密钥字符串
     """
-    return os.getenv("DEEPSEEK_API_KEY", get("deepseek.api_key", ""))
+    return get("deepseek.api_key", "")
 
 
 def deepseek_base_url() -> str:
-    """获取 DeepSeek API 基础地址，优先读取环境变量 DEEPSEEK_BASE_URL
+    """获取 DeepSeek API 基础地址，从配置文件读取
     :return: API 基础 URL
     """
-    return os.getenv("DEEPSEEK_BASE_URL", get("deepseek.base_url", "https://api.deepseek.com"))
+    return get("deepseek.base_url", "https://api.deepseek.com")
 
 
 def deepseek_model() -> str:

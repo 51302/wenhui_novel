@@ -9,7 +9,15 @@ from typing import Optional
 # SeaweedFS Filer 地址（Docker 内部用 filer:8888，宿主机用 localhost:8888）
 FILER_HOST = os.environ.get("SEAWEEDFS_FILER_HOST", "localhost")
 FILER_PORT = int(os.environ.get("SEAWEEDFS_FILER_PORT", "8888"))
-FILER_BASE_URL = f"http://{FILER_HOST}:{FILER_PORT}"
+# 支持HTTPS配置
+FILER_PROTOCOL = os.environ.get("SEAWEEDFS_FILER_PROTOCOL", "http")
+FILER_BASE_URL = f"{FILER_PROTOCOL}://{FILER_HOST}:{FILER_PORT}"
+
+# 外部访问URL（用于返回给前端）
+EXTERNAL_FILER_HOST = os.environ.get("SEAWEEDFS_EXTERNAL_HOST", FILER_HOST)
+EXTERNAL_FILER_PORT = os.environ.get("SEAWEEDFS_EXTERNAL_PORT", FILER_PORT)
+EXTERNAL_FILER_PROTOCOL = os.environ.get("SEAWEEDFS_EXTERNAL_PROTOCOL", FILER_PROTOCOL)
+EXTERNAL_FILER_BASE_URL = f"{EXTERNAL_FILER_PROTOCOL}://{EXTERNAL_FILER_HOST}:{EXTERNAL_FILER_PORT}"
 
 # 上传目录（Filer 里的路径）
 UPLOAD_COLLECTION = "uploads"
@@ -27,6 +35,7 @@ def upload_file(file_bytes: bytes, filename: str, content_type: str = "") -> Opt
     """
     上传文件到 SeaweedFS Filer。
     成功返回访问 URL（如 http://localhost:8888/uploads/xxx.jpg），失败返回 None。
+    返回的URL使用外部访问地址配置，确保前端可以正常访问。
     """
     url = _filer_url(filename)
     headers = {}
@@ -36,7 +45,8 @@ def upload_file(file_bytes: bytes, filename: str, content_type: str = "") -> Opt
         with httpx.Client(timeout=_TIMEOUT) as client:
             resp = client.put(url, content=file_bytes, headers=headers)
             if resp.status_code in (200, 201, 204):
-                return url
+                # 返回外部可访问的URL
+                return f"{EXTERNAL_FILER_BASE_URL}/{UPLOAD_COLLECTION}/{filename}"
             print(f"[SeaweedFS] 上传失败 HTTP {resp.status_code}: {resp.text[:200]}")
             return None
     except Exception as e:

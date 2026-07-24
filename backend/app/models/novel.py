@@ -1,10 +1,15 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, func
+from sqlalchemy import Column, Integer, String, DateTime, Text, func, Index
 from app.models.base import Base
 
 
 class Novel(Base):
     """小说/作品表，存储作品基本信息与世界观设定等元数据"""
     __tablename__ = "novels"
+
+    __table_args__ = (
+        Index("idx_novel_created_at", "created_at"),
+        Index("idx_novel_author", "author_user_id"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True, comment="作品自增ID")
     novel_unique_id = Column(String(64), unique=True, nullable=False, comment="作品唯一ID")

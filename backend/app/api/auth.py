@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Response, Body
+from fastapi import APIRouter, Depends, Response, Body, BackgroundTasks
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 from app.models.base import get_db
@@ -15,7 +15,6 @@ class RegisterRequest(BaseModel):
     email: str                                           # 必填
     phone: str = None                                    # 选填
     email_code: str                                      # 邮箱验证码（必填）
-    is_super_admin: int = 0
 
     @field_validator("password")
     @classmethod
@@ -59,8 +58,7 @@ def register(req: RegisterRequest, response: Response, db: Session = Depends(get
     result = AuthService.register(
         db, req.username, req.password,
         req.email, req.phone,
-        req.email_code,
-        req.is_super_admin
+        req.email_code
     )
     if result.get("状态码") == 200:
         system_logger.info(f"用户注册成功: {req.username} (邮箱={req.email})")
@@ -89,9 +87,25 @@ def get_captcha():
 
 
 @router.post("/send-email-code")
-def send_email_code(req: SendCodeRequest = Body(...)):
-    """发送邮箱验证码"""
-    return AuthService.send_email_code(req.target)
+def send_email_code(req: SendCodeRequest = Body(...), background_tasks: BackgroundTasks = None):
+    """发送邮箱验证码（后台异步发送，立即返回）"""
+    from app.utils.logger import system_logger
+
+    # 先生成验证码并存入Redis（同步，很快）
+    result = AuthService.generate_and_store_code(req.target)
+    if result.get("状态码") != 200:
+        return result
+
+    # 后台异步发送邮件
+    if background_tasks:
+        code = result.get("数据", {}).get("code", "")
+        background_tasks.add_task(AuthService.send_email_async, req.target, code)
+        system_logger.info(f"[邮件] 已加入后台任务: {req.target}")
+    else:
+        # 无BackgroundTasks时走同步
+        return AuthService.send_email_code(req.target)
+
+    return success(None, "验证码已发送至您的邮箱，请查收")
 
 
 @router.post("/logout")
@@ -102,21 +116,9 @@ def logout(response: Response):
 
 
 @router.get("/me")
-def get_me(current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
-    """获取当前登录用户信息（从 cookie 或 header）"""
-    from app.dao.user_dao import UserDAO
-    user = UserDAO.get_by_id(db, current_user["user_id"])
-    vip_expire_at = None
-    if user and user.vip_expire_at:
-        vip_expire_at = user.vip_expire_at.strftime("%Y-%m-%d %H:%M:%S")
-    return success({
-        **current_user,
-        "vip_level": user.vip_level if user else 0,
-        "is_vip": (user.vip_level >= 1) if user else False,
-        "is_svip": (user.vip_level >= 2) if user else False,
-        "vip_expire_at": vip_expire_at,
-        "free_generate_quota": user.free_generate_quota if user else 0,
-    }, "已登录")
+def get_me(current_user: dict = Depends(get_current_user)):
+    """获取当前登录用户信息（从缓存读取，无需查DB）"""
+    return success(current_user, "已登录")
 
 
 @router.get("/my-profile")

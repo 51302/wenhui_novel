@@ -1,12 +1,12 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
-import os
+from app.config import get as cfg_get
 
-MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
-MYSQL_PORT = os.getenv("MYSQL_PORT", "3306")
-MYSQL_USER = os.getenv("MYSQL_USER", "liuwenpeng")
-MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "liuwenpeng123")
-MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "easy-novel")
+MYSQL_HOST = cfg_get("mysql.host")
+MYSQL_PORT = cfg_get("mysql.port")
+MYSQL_USER = cfg_get("mysql.user")
+MYSQL_PASSWORD = cfg_get("mysql.password")
+MYSQL_DATABASE = cfg_get("mysql.database")
 
 DATABASE_URL = f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
 

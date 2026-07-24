@@ -9,13 +9,32 @@ from app.api.deps import get_current_user, check_generate_permission
 from fastapi.responses import StreamingResponse
 from app.utils.response import fail, success
 from app.utils.logger import system_logger
+from app.utils.task_queue import TaskQueue
 from pydantic import BaseModel
 from urllib.parse import quote
 import io
+import os
 import zipfile
 
 router = APIRouter(prefix="/api/chapters", tags=["章节"])
 
+
+# ============================================================
+# 任务状态查询（供前端轮询异步任务结果）
+# ============================================================
+
+@router.get("/tasks/{task_id}")
+def get_task_status(task_id: str):
+    """查询异步任务状态
+    返回: {"status": "pending|processing|done|failed", "result": {...}, "error": "..."}
+    """
+    status = TaskQueue.get_status(task_id)
+    return success(status, "查询成功")
+
+
+# ============================================================
+# 章节 CRUD
+# ============================================================
 
 @router.post("/create")
 def create_chapter(
@@ -23,6 +42,7 @@ def create_chapter(
     characters_involved: str = None, organizations: str = None,
     locations: str = None, skills: str = None,
     word_count: int = 0, chapter_summary: str = None,
+    chapter_number: int = None,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
@@ -31,12 +51,12 @@ def create_chapter(
         db, novel_unique_id, current_user["user_id"],
         chapter_name, characters_involved, organizations,
         locations, skills, word_count, chapter_summary,
-        current_user["username"]
+        current_user["username"], chapter_number
     )
 
 
 @router.post("/generate")
-async def generate_chapter(
+def generate_chapter(
     novel_unique_id: str, chapter_name: str,
     characters_involved: str = None, organizations: str = None,
     locations: str = None, skills: str = None,
@@ -44,13 +64,26 @@ async def generate_chapter(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """调用AI生成章节正文内容"""
-    return await ChapterService.generate_with_ai(
-        db, novel_unique_id, current_user["user_id"],
-        chapter_name, characters_involved, organizations,
-        locations, skills, word_count, chapter_summary,
-        current_user["username"]
-    )
+    """调用AI生成章节正文内容（异步：提交队列后返回 task_id，前端轮询结果）"""
+    task_id = TaskQueue.push("ai:generate", {
+        "novel_unique_id": novel_unique_id,
+        "user_id": current_user["user_id"],
+        "chapter_name": chapter_name,
+        "characters_involved": characters_involved,
+        "organizations": organizations,
+        "locations": locations,
+        "skills": skills,
+        "word_count": word_count,
+        "chapter_summary": chapter_summary,
+        "created_by": current_user["username"],
+    }, ttl=1800)
+    if not task_id:
+        return fail("系统繁忙，请稍后重试", code=503)
+    system_logger.info(f"[队列] 提交AI生成任务: {chapter_name} → task_id={task_id}")
+    return success({
+        "task_id": task_id,
+        "queue_name": "ai:generate",
+    }, "AI生成任务已提交，请稍后查询结果")
 
 
 class RegenerateBody(BaseModel):
@@ -65,21 +98,39 @@ async def regenerate_chapter(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """重新生成指定章节：记忆体基于第1章到当前章节之前的所有内容，覆盖当前章节内容"""
-    return await ChapterService.regenerate_with_ai(
-        db, chapter_unique_id, current_user["user_id"], word_count, body.chapter_summary
+    """重新生成指定章节（同步：直接调用 AI 并返回内容，前端不需要轮询）"""
+    from app.service.chapter_service import ChapterService
+    result = await ChapterService.regenerate_with_ai(
+        db, chapter_unique_id, current_user["user_id"],
+        word_count=word_count, chapter_summary=body.chapter_summary,
     )
+    if result.get("状态码") == 200:
+        ch = result.get("数据", {})
+        system_logger.info(f"AI重新生成成功: {ch.get('chapter_name','')} ({ch.get('word_count',0)}字) ID={chapter_unique_id}")
+    else:
+        system_logger.warning(f"AI重新生成失败: ID={chapter_unique_id} → {result.get('消息', '')}")
+    return result
 
 
 @router.post("/continue/{chapter_unique_id}")
-async def continue_chapter(
+def continue_chapter(
     chapter_unique_id: str,
     word_count: int = 800,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """AI续写指定章节：根据作品设定、前序章节、当前内容续写"""
-    return await ChapterService.continue_with_ai(db, chapter_unique_id, word_count)
+    """AI续写指定章节（异步：提交队列后返回 task_id，前端轮询结果）"""
+    task_id = TaskQueue.push("ai:continue", {
+        "chapter_unique_id": chapter_unique_id,
+        "word_count": word_count,
+    }, ttl=1800)
+    if not task_id:
+        return fail("系统繁忙，请稍后重试", code=503)
+    system_logger.info(f"[队列] 提交AI续写任务: {chapter_unique_id} → task_id={task_id}")
+    return success({
+        "task_id": task_id,
+        "queue_name": "ai:continue",
+    }, "AI续写任务已提交，请稍后查询结果")
 
 
 @router.get("/drafts")
@@ -88,11 +139,16 @@ def get_drafts(
     current_user: dict = Depends(get_current_user)
 ):
     """获取当前用户的所有草稿章节"""
-    return ChapterService.get_drafts(db, current_user["user_id"])
+    try:
+        return ChapterService.get_drafts(db, current_user["user_id"])
+    except Exception as e:
+        system_logger.error(f"获取草稿列表失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return fail(f"获取草稿列表失败: {str(e)}", code=500)
 
 
 class UpdateChapterBody(BaseModel):
-    content: str = None
     chapter_name: str = None
     chapter_summary: str = None
 
@@ -104,9 +160,9 @@ def update_chapter(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """更新章节内容、名称或概要"""
+    """更新章节名称或概要"""
     return ChapterService.update_chapter(
-        db, chapter_unique_id, body.content, body.chapter_name, body.chapter_summary
+        db, chapter_unique_id, chapter_name=body.chapter_name, chapter_summary=body.chapter_summary
     )
 
 
@@ -129,7 +185,6 @@ def publish_chapter(
         organizations=body.get("organizations"),
         locations=body.get("locations"),
         skills=body.get("skills"),
-        events=body.get("events"),
         time_info=body.get("time_info"),
         key_items=body.get("key_items"),
         power_changes=body.get("power_changes"),
@@ -148,29 +203,30 @@ class ExtractInfoBody(BaseModel):
     chapter_name: str = ""
     novel_unique_id: str = ""
 
+
 @router.post("/extract-info")
-async def extract_chapter_info(
+def extract_chapter_info(
     body: ExtractInfoBody,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
     """
-    前端草稿箱：从章节内容中 AI 提取关键信息
-    返回: 人物、组织、功法/技能、关键事件、地点、时间线、关键物品、实力变化、伏笔/悬念
+    前端草稿箱：从章节内容中 AI 提取关键信息（异步队列）
+    返回 task_id，前端轮询 /api/chapters/tasks/{task_id} 获取结果
     """
     if not body.content or len(body.content.strip()) < 10:
         return fail("章节内容太短，无法提取")
-    try:
-        result = await ChapterService.extract_chapter_info(body.content, body.chapter_name)
-        if result.get("success"):
-            system_logger.info(f"AI关键信息提取成功: {body.chapter_name} (novel={body.novel_unique_id})")
-            return success(result["data"], "提取成功（记忆体将在发布章节时自动保存）")
-        return fail(result.get("error", "提取失败"))
-    except Exception as e:
-        system_logger.error(f"AI关键信息提取异常: {body.chapter_name} → {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return fail(f"提取异常: {str(e)}")
+    task_id = TaskQueue.push("ai:extract", {
+        "content": body.content,
+        "chapter_name": body.chapter_name,
+    }, ttl=1800)
+    if not task_id:
+        return fail("系统繁忙，请稍后重试", code=503)
+    system_logger.info(f"[队列] 提交AI提取任务: {body.chapter_name} → task_id={task_id}")
+    return success({
+        "task_id": task_id,
+        "queue_name": "ai:extract",
+    }, "AI提取任务已提交，请稍后查询结果")
 
 
 @router.delete("/delete/{chapter_unique_id}")
@@ -200,13 +256,19 @@ def today_published_count(
     """统计当前用户今日已发布的章节数量
     用于前端显示「今日已发布 X/Y 章」
     """
-    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    count = db.query(Chapter).filter(
-        Chapter.user_id == current_user["user_id"],
-        Chapter.is_published == True,
-        Chapter.created_at >= today_start,
-    ).count()
-    return success({"published_today": count}, "查询成功")
+    try:
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        count = db.query(Chapter).filter(
+            Chapter.user_id == current_user["user_id"],
+            Chapter.is_published == True,
+            Chapter.created_at >= today_start,
+        ).count()
+        return success({"published_today": count}, "查询成功")
+    except Exception as e:
+        system_logger.error(f"统计今日发布数量失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return fail(f"统计今日发布数量失败: {str(e)}", code=500)
 
 
 @router.post("/reset-memory/{novel_unique_id}")
@@ -215,16 +277,23 @@ def reset_novel_memory(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """重置指定作品的全部 Redis 记忆体：清空 + 后台逐章 AI 提取重建"""
+    """重置指定作品的全部 Redis 记忆体（异步队列）"""
     novel = db.query(Novel).filter(
         Novel.novel_unique_id == novel_unique_id,
         Novel.author_user_id == current_user["user_id"],
     ).first()
     if not novel:
         return fail("无权限操作该作品", code=403)
-    result = ChapterService.reset_and_rebuild_memory(novel_unique_id, db)
-    system_logger.info(f"用户 {current_user['username']} 重置了作品 {novel.title} 的 Redis 记忆体")
-    return result
+    task_id = TaskQueue.push("ai:reset-memory", {
+        "novel_unique_id": novel_unique_id,
+    }, ttl=3600)
+    if not task_id:
+        return fail("系统繁忙，请稍后重试", code=503)
+    system_logger.info(f"用户 {current_user['username']} 提交重置作品 {novel.title} 记忆体任务 → task_id={task_id}")
+    return success({
+        "task_id": task_id,
+        "queue_name": "ai:reset-memory",
+    }, "记忆体重置任务已提交，请稍后查询结果")
 
 
 @router.get("/download/{novel_unique_id}")
@@ -250,9 +319,15 @@ def download_novel(
         return fail("该作品暂无章节", code=404)
 
     zip_buf = io.BytesIO()
+    novel_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "novel_structure_data", novel_unique_id)
     with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
         for i, ch in enumerate(chapters, 1):
-            content = ch.content.strip() if ch.content else "（本章暂无内容）"
+            # 从 TXT 文件读取正文
+            content = "（本章暂无内容）"
+            txt_path = os.path.join(novel_dir, f"{ch.chapter_name}_{ch.chapter_unique_id}.txt")
+            if os.path.exists(txt_path):
+                with open(txt_path, "r", encoding="utf-8") as f:
+                    content = f.read()
             filename = f"第{i}章 {ch.chapter_name}.txt"
             zf.writestr(filename, content.encode('utf-8-sig'))
 

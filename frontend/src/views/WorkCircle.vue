@@ -1,8 +1,15 @@
 <template>
-  <div class="circle-page">
+  <div class="circle-page" :class="{ 'page-disabled': !showAllWorks }">
     <div class="circle-header">
       <h1>🌐 作品圈</h1>
       <p>互动动态流 · 查看评论 · 发表看法</p>
+    </div>
+
+    <!-- 功能未开放提示 -->
+    <div v-if="!showAllWorks" class="disabled-tip">
+      <div class="tip-icon">🔒</div>
+      <h3>作品圈暂未开放</h3>
+      <p>该功能正在内测中，敬请期待~</p>
     </div>
 
     <div v-if="loading" class="loading">
@@ -136,6 +143,7 @@ export default {
     const page = ref(1)
     const hasMore = ref(false)
     const loadingMore = ref(false)
+    const showAllWorks = ref(true)
 
     // VIP 判断
     const user = JSON.parse(localStorage.getItem('novel_user') || '{}')
@@ -162,7 +170,17 @@ export default {
     const bookmarkedItems = reactive({})
     const followedItems = reactive({})
 
+    const fetchConfig = async () => {
+      try {
+        const res = await api.get('/config/public')
+        if (res.状态码 === 200) {
+          showAllWorks.value = res.数据?.show_all_works !== false
+        }
+      } catch (e) { }
+    }
+
     const fetchFeed = async (append = false) => {
+      if (!showAllWorks.value) { loading.value = false; return }
       try {
         if (!append) loading.value = true
         const res = await api.get('/interactions/feed', { params: { page: page.value, page_size: 10 } })
@@ -262,7 +280,10 @@ export default {
 
     const goReader = (nid) => router.push(`/reader/${nid}`)
 
-    onMounted(() => fetchFeed())
+    onMounted(async () => {
+      await fetchConfig()
+      fetchFeed()
+    })
 
     return {
       feedItems, loading, errorMsg, hasMore, loadingMore,
@@ -271,7 +292,8 @@ export default {
       likedItems, bookmarkedItems, followedItems,
       toggleComments, submitComment, doLike, doBookmark, doFollow,
       loadMore, formatTime, goReader,
-      isVip, vipToastShow, showVipTip
+      isVip, vipToastShow, showVipTip,
+      showAllWorks
     }
   }
 }
@@ -392,4 +414,42 @@ export default {
 }
 .vip-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
 .toast-vip-link { color: #f59e0b; font-weight: 700; text-decoration: underline; margin: 0 2px; }
+
+/* 页面置灰效果 */
+.page-disabled {
+  position: relative;
+  filter: grayscale(0.8);
+  pointer-events: none;
+  opacity: 0.7;
+}
+.page-disabled .feed-list,
+.page-disabled .loading,
+.page-disabled .error {
+  display: none;
+}
+
+/* 功能未开放提示 */
+.disabled-tip {
+  text-align: center;
+  padding: 80px 40px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  margin-bottom: 24px;
+  pointer-events: auto;
+}
+.disabled-tip .tip-icon {
+  font-size: 64px;
+  margin-bottom: 20px;
+  opacity: 0.6;
+}
+.disabled-tip h3 {
+  font-size: 20px;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+}
+.disabled-tip p {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
 </style>

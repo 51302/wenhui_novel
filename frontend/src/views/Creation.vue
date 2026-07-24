@@ -150,6 +150,11 @@
                 {{ generating ? '正在生成中...' : '一键AI生成' }}
               </button>
             </div>
+          <!-- AI生成中等待提示 -->
+          <div v-if="generating" class="generating-waiting-bar">
+            <span class="generating-waiting-spinner"></span>
+            <span>AI生成中，预计30-60秒，请稍候...</span>
+          </div>
           </div>
           <div class="existing-chapters">
             <h3>已有章节
@@ -583,7 +588,7 @@ export default {
       } catch { novelChapters.value = [] }
     }
 
-    const generateChapter = async () => {
+        const generateChapter = async () => {
       if (!chapterForm.chapter_name) return alert('请输入章节名称')
       if (chapterForm.word_count > 2000) {
         if (!confirm(`章节字数超过2000字上限（当前${chapterForm.word_count}字），将自动调整为2000字。是否继续？`)) return
@@ -603,14 +608,42 @@ export default {
             chapter_summary: chapterForm.chapter_summary
           }
         })
-        if (res.状态码 === 200) {
+        if (res.状态码 === 200 && res.数据 && res.数据.task_id) {
           // 刷新用户信息（更新免费次数）
           try { const mu = await api.get('/auth/me'); if (mu.状态码===200) { Object.assign(user, mu.数据); localStorage.setItem('novel_user', JSON.stringify(user)) } } catch {}
-          alert(res.消息)
-          tab.value = 'drafts'
-          fetchDrafts()
+          // 轮询任务状态，直到完成
+          const taskId = res.数据.task_id
+          const maxWait = 120000
+          const pollInterval = 3000
+          let waited = 0
+          let done = false
+          while (waited < maxWait) {
+            await new Promise(r => setTimeout(r, pollInterval))
+            waited += pollInterval
+            try {
+              const statusRes = await api.get('/chapters/tasks/' + taskId)
+              if (statusRes.状态码 === 200 && statusRes.数据) {
+                const taskStatus = statusRes.数据.status
+                if (taskStatus === 'done') {
+                  done = true
+                  break
+                } else if (taskStatus === 'failed') {
+                  alert(statusRes.数据.error || 'AI生成失败')
+                  return
+                }
+              }
+            } catch { /* ignore polling errors */ }
+          }
+          if (done) {
+            tab.value = 'drafts'
+            await fetchDrafts()
+          } else {
+            alert('AI生成超时，请稍后到草稿箱查看')
+            tab.value = 'drafts'
+            fetchDrafts()
+          }
         } else {
-          alert('生成失败: ' + res.消息)
+          alert('生成失败: ' + (res.消息 || '提交失败'))
         }
       } catch (e) {
         const msg = e.response ? (e.response.数据 || e.response.消息 || JSON.stringify(e.response.data)) : (e.message || '网络错误，请检查后端是否启动')
@@ -1255,4 +1288,32 @@ export default {
   0%, 100% { opacity: 0.5; }
   50% { opacity: 1; }
 }
-</style>
+
+/* 生成等待条 */
+.generating-waiting-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  margin-top: 12px;
+  background: linear-gradient(135deg, #1a1a2e, #16213e);
+  border: 1px solid #e94560;
+  border-radius: 8px;
+  color: #e94560;
+  font-size: 14px;
+  animation: pulse-border 1.5s ease-in-out infinite;
+}
+.generating-waiting-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(233, 69, 96, 0.3);
+  border-top-color: #e94560;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse-border {
+  0%, 100% { border-color: #e94560; }
+  50% { border-color: #ff6b81; }
+}</style>
