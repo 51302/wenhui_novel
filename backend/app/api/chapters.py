@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query, Body
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from app.models.base import get_db
 from app.models.chapter import Chapter
 from app.models.novel import Novel
@@ -36,50 +36,66 @@ def get_task_status(task_id: str):
 # 章节 CRUD
 # ============================================================
 
+class CreateChapterBody(BaseModel):
+    novel_unique_id: str
+    chapter_name: str
+    characters_involved: str = None
+    organizations: str = None
+    locations: str = None
+    skills: str = None
+    word_count: int = 0
+    chapter_summary: str = None
+    chapter_number: int = None
+
+
 @router.post("/create")
 def create_chapter(
-    novel_unique_id: str, chapter_name: str,
-    characters_involved: str = None, organizations: str = None,
-    locations: str = None, skills: str = None,
-    word_count: int = 0, chapter_summary: str = None,
-    chapter_number: int = None,
+    body: CreateChapterBody,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
     """创建空白章节草稿"""
     return ChapterService.create_chapter(
-        db, novel_unique_id, current_user["user_id"],
-        chapter_name, characters_involved, organizations,
-        locations, skills, word_count, chapter_summary,
-        current_user["username"], chapter_number
+        db, body.novel_unique_id, current_user["user_id"],
+        body.chapter_name, body.characters_involved, body.organizations,
+        body.locations, body.skills, body.word_count, body.chapter_summary,
+        current_user["username"], body.chapter_number
     )
+
+
+class GenerateChapterBody(BaseModel):
+    novel_unique_id: str
+    chapter_name: str
+    characters_involved: str = None
+    organizations: str = None
+    locations: str = None
+    skills: str = None
+    word_count: int = 2000
+    chapter_summary: str = None
 
 
 @router.post("/generate")
 def generate_chapter(
-    novel_unique_id: str, chapter_name: str,
-    characters_involved: str = None, organizations: str = None,
-    locations: str = None, skills: str = None,
-    word_count: int = 2000, chapter_summary: str = None,
+    body: GenerateChapterBody,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
     """调用AI生成章节正文内容（异步：提交队列后返回 task_id，前端轮询结果）"""
     task_id = TaskQueue.push("ai:generate", {
-        "novel_unique_id": novel_unique_id,
+        "novel_unique_id": body.novel_unique_id,
         "user_id": current_user["user_id"],
-        "chapter_name": chapter_name,
-        "characters_involved": characters_involved,
-        "organizations": organizations,
-        "locations": locations,
-        "skills": skills,
-        "word_count": word_count,
-        "chapter_summary": chapter_summary,
+        "chapter_name": body.chapter_name,
+        "characters_involved": body.characters_involved,
+        "organizations": body.organizations,
+        "locations": body.locations,
+        "skills": body.skills,
+        "word_count": body.word_count,
+        "chapter_summary": body.chapter_summary,
         "created_by": current_user["username"],
     }, ttl=1800)
     if not task_id:
         return fail("系统繁忙，请稍后重试", code=503)
-    system_logger.info(f"[队列] 提交AI生成任务: {chapter_name} → task_id={task_id}")
+    system_logger.info(f"[队列] 提交AI生成任务: {body.chapter_name} → task_id={task_id}")
     return success({
         "task_id": task_id,
         "queue_name": "ai:generate",
@@ -88,13 +104,13 @@ def generate_chapter(
 
 class RegenerateBody(BaseModel):
     chapter_summary: str = None
+    word_count: int = 2000
 
 
 @router.post("/regenerate/{chapter_unique_id}")
 async def regenerate_chapter(
     chapter_unique_id: str,
     body: RegenerateBody,
-    word_count: int = 2000,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
@@ -102,7 +118,7 @@ async def regenerate_chapter(
     from app.service.chapter_service import ChapterService
     result = await ChapterService.regenerate_with_ai(
         db, chapter_unique_id, current_user["user_id"],
-        word_count=word_count, chapter_summary=body.chapter_summary,
+        word_count=body.word_count, chapter_summary=body.chapter_summary,
     )
     if result.get("状态码") == 200:
         ch = result.get("数据", {})
@@ -115,7 +131,7 @@ async def regenerate_chapter(
 @router.post("/continue/{chapter_unique_id}")
 def continue_chapter(
     chapter_unique_id: str,
-    word_count: int = 800,
+    word_count: int = 2000,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
@@ -151,6 +167,7 @@ def get_drafts(
 class UpdateChapterBody(BaseModel):
     chapter_name: str = None
     chapter_summary: str = None
+    content: str = None
 
 
 @router.put("/update/{chapter_unique_id}")
@@ -160,9 +177,12 @@ def update_chapter(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """更新章节名称或概要"""
+    """更新章节名称、概要或正文"""
     return ChapterService.update_chapter(
-        db, chapter_unique_id, chapter_name=body.chapter_name, chapter_summary=body.chapter_summary
+        db, chapter_unique_id,
+        chapter_name=body.chapter_name,
+        chapter_summary=body.chapter_summary,
+        content=body.content,
     )
 
 
@@ -257,11 +277,14 @@ def today_published_count(
     用于前端显示「今日已发布 X/Y 章」
     """
     try:
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        beijing_tz = timezone(timedelta(hours=8))
+        now_beijing = datetime.now(timezone.utc).astimezone(beijing_tz)
+        today_start = now_beijing.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start_utc = today_start.astimezone(timezone.utc).replace(tzinfo=None)
         count = db.query(Chapter).filter(
             Chapter.user_id == current_user["user_id"],
             Chapter.is_published == True,
-            Chapter.created_at >= today_start,
+            Chapter.created_at >= today_start_utc,
         ).count()
         return success({"published_today": count}, "查询成功")
     except Exception as e:

@@ -127,7 +127,7 @@ services:
     volumes:
       - ./backend/app:/app/app
       - ./data/backend/novel_structure_data:/app/app/novel_structure_data
-      - ./data/backend/logs:/app/app/logs
+      - ./data/backend/logs:/app/logs
       - ./backend/app/conf/config.yaml:/app/app/conf/config.yaml
     depends_on:
       mysql:

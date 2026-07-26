@@ -171,6 +171,88 @@ class ChapterService:
         return "\n\n".join(parts) if parts else ""
 
     @staticmethod
+    def _extract_name_roster(novel_unique_id: str) -> str:
+        """从记忆体【人物】【组织势力】维度提取专有名词名册，用于约束AI生成时名字一致性。
+
+        记忆条目格式多样：
+          1. 姓名|身份|性格|当前状态  → 取第一个 | 之前
+          2. [第X章] 姓名，是身份，... → 取 ] 后第一个 ， 之前
+          3. 一行里多个角色用句号分隔：[第X章] A，是...。 B，是...。 → 逐句提取
+        返回可直接拼进 Prompt 的名册文本；无数据返回空串。
+        """
+        r = _redis()
+        if not r or not r.ping():
+            return ""
+        key = ChapterService._memory_key(novel_unique_id)
+        all_data = r.hgetall(key)
+        if not all_data:
+            return ""
+
+        names = []  # 保序去重
+        seen = set()
+
+        def _push(name: str):
+            name = name.strip().strip("，,。.、 ").strip()
+            if not name or len(name) > 8 or len(name) < 2:
+                return
+            # 过滤无效项和非名字串
+            if name in ("无", "未知", "无新增", "暂无", "主角", "姓名"):
+                return
+            # 过滤含描述性词汇的（不是专有名词）
+            bad_chars = "的（）()/、是"
+            if any(c in name for c in bad_chars):
+                return
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+
+        for cat in ("人物", "组织势力"):
+            text = all_data.get(cat, "")
+            if not text:
+                continue
+            for line in text.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                # 去掉行首章节标注 [第X章 ...]
+                m = re.match(r'\[第[^\]]*\]\s*(.+)', line)
+                rest = m.group(1) if m else line
+                # 一行可能含多个角色（用。分隔），逐句提取
+                for sentence in re.split(r'[。.]', rest):
+                    sentence = sentence.strip()
+                    if not sentence:
+                        continue
+                    if "|" in sentence:
+                        _push(sentence.split("|", 1)[0])
+                    elif "，" in sentence:
+                        _push(sentence.split("，", 1)[0])
+                    elif "," in sentence:
+                        _push(sentence.split(",", 1)[0])
+
+        if not names:
+            return ""
+        return "、".join(names)
+
+    @staticmethod
+    def _build_name_roster_constraint(novel_unique_id: str) -> str:
+        """构建人物/组织名册硬约束文本，拼到生成 Prompt 末尾。无数据时返回空串。"""
+        roster = ChapterService._extract_name_roster(novel_unique_id)
+        if not roster:
+            return ""
+        return (
+            "\n\n🔴 规则0（专有名词一致性 —— 违反即作废，最高优先级）：\n"
+            "下面是本作品已确定的人物、宗门、组织专有名词清单，写作时必须原样使用，"
+            "一个字都不能改、不能换、不能混用、不能创造相似名字！\n"
+            f"【名册】{roster}\n"
+            "禁止行为：\n"
+            " ❌ 把清单里的名字改成近义/近音字（如『玄青真人』写成『青云真人』『青玄真人』）\n"
+            " ❌ 给同一角色用两个不同名字\n"
+            " ❌ 凭空创造清单里没有的宗门/峰主/长老名字\n"
+            "如果本章需要出现新人物，可以用「称谓+特征」带过（如『那个白胡子老头』），"
+            "但不得给新人物取与清单中已有名字相似的全名。"
+        )
+
+    @staticmethod
     def _save_memory(novel_unique_id: str, memory_text: str):
         """按维度拆分保存记忆体到 Redis Hash（使用统一维度映射）"""
         r = _redis()
@@ -1673,6 +1755,8 @@ class ChapterService:
         min_words = max(word_count - 500, 800)
         prompt += f"\n\n🔴 字数硬性要求：本章必须写 {min_words}~{word_count} 字。每个事件至少展开200-500字的生动描写！开头第一句就是正文，结尾最后一句话写完立刻停笔。绝对禁止凑字数或水文字，但每个事件必须写饱写透！"
         prompt += f"\n章节标题：「{chapter_name}」"
+        # 人物/组织名册硬约束：防止 AI 把已有名字写串/改字
+        prompt += ChapterService._build_name_roster_constraint(novel_unique_id)
 
         # ============================================================
         # API 调用（带重试）
@@ -1952,6 +2036,8 @@ class ChapterService:
         min_words = max(word_count - 500, 800)
         prompt += f"\n\n🔴 字数硬性要求：本章必须写 {min_words}~{word_count} 字。每个事件至少展开200-500字的生动描写！开头第一句就是正文，结尾最后一句话写完立刻停笔。绝对禁止凑字数或水文字，但每个事件必须写饱写透！"
         prompt += f"\n章节标题：「{chapter_name}」"
+        # 人物/组织名册硬约束：防止 AI 把已有名字写串/改字
+        prompt += ChapterService._build_name_roster_constraint(novel_unique_id)
 
         system_prompt = GENERATE_SYSTEM_PROMPT
 
@@ -2084,6 +2170,8 @@ class ChapterService:
 七、内容丰富：每段都推进剧情或塑造人物，对话与叙述比例约 3:7
 
 只输出续写内容，不要重复已有文字，不要加标题。直接从续写的第一句开始。"""
+        # 人物/组织名册硬约束：防止 AI 把已有名字写串/改字
+        prompt += ChapterService._build_name_roster_constraint(chapter.novel_unique_id)
 
         async with httpx.AsyncClient(timeout=180) as client:
             try:
