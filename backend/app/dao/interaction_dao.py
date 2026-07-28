@@ -129,16 +129,19 @@ class InteractionDAO:
         ).first()
 
     @staticmethod
-    def get_feed(db: Session, page: int = 1, page_size: int = 20) -> tuple:
+    def get_feed(db: Session, page: int = 1, page_size: int = 20, exclude_exclusive: bool = True) -> tuple:
         """分页查询作品圈动态流（联动Novel表获取作品信息）
         :param db: 数据库会话
         :param page: 页码
         :param page_size: 每页数量
+        :param exclude_exclusive: 是否排除独家作品
         :return: (动态列表, 总数)
         """
         query = db.query(WorkInteraction, Novel).join(
             Novel, WorkInteraction.novel_unique_id == Novel.novel_unique_id
         )
+        if exclude_exclusive:
+            query = query.filter(Novel.sign_type != "exclusive")
         total = query.count()
         feed = query.order_by(desc(WorkInteraction.created_at)).offset(
             (page - 1) * page_size).limit(page_size).all()

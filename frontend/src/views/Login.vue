@@ -214,8 +214,8 @@ export default {
 
 .hero-badge {
   display: inline-block; padding: 6px 16px; border-radius: 20px;
-  background: rgba(6,182,212,0.1); border: 1px solid rgba(6,182,212,0.2);
-  color: #06b6d4; font-size: 12px; font-weight: 600; margin-bottom: 20px;
+  background: var(--accent-bg); border: 1px solid var(--accent-bg);
+  color: var(--accent-text); font-size: 12px; font-weight: 600; margin-bottom: 20px;
 }
 
 .hero-title {
@@ -236,7 +236,7 @@ export default {
 .feature-item { display: flex; gap: 14px; align-items: flex-start; }
 .feature-icon {
   font-size: 28px; width: 48px; height: 48px; border-radius: 14px;
-  background: rgba(15,15,40,0.8); border: 1px solid rgba(102,126,234,0.12);
+  background: rgba(15,15,40,0.8); border: 1px solid var(--border);
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
 .feature-item strong { display: block; font-size: 14px; color: #e0e0e0; margin-bottom: 3px; }
@@ -254,7 +254,7 @@ export default {
 }
 
 .login-card {
-  background: rgba(15,15,40,0.88); border: 1px solid rgba(102,126,234,0.12);
+  background: rgba(15,15,40,0.88); border: 1px solid var(--border);
   border-radius: 20px; padding: 40px 36px; width: 400px; max-width: 100%;
   backdrop-filter: blur(24px); box-shadow: 0 20px 60px rgba(0,0,0,0.4),
               0 0 80px rgba(6,182,212,0.04);
@@ -273,10 +273,10 @@ export default {
 .input-group {
   display: flex; align-items: center; gap: 10px;
   padding: 0 14px; margin-bottom: 12px; border-radius: 10px;
-  background: rgba(15,15,40,0.6); border: 1px solid rgba(102,126,234,0.15);
+  background: rgba(15,15,40,0.6); border: 1px solid var(--border);
   transition: all 0.3s;
 }
-.input-group:focus-within { border-color: rgba(6,182,212,0.5); box-shadow: 0 0 16px rgba(6,182,212,0.08); }
+.input-group:focus-within { border-color: var(--accent-bg); box-shadow: 0 0 16px rgba(6,182,212,0.08); }
 .input-icon { font-size: 16px; opacity: 0.5; }
 .input-group input { flex: 1; padding: 11px 0; background: none; border: none; color: #e0e0e0; font-size: 14px; outline: none; }
 .input-group input::placeholder { color: #4a5080; }
@@ -287,7 +287,7 @@ export default {
 
 .captcha-track {
   position: relative; height: 44px; border-radius: 22px;
-  background: rgba(15,15,40,0.9); border: 1px solid rgba(102,126,234,0.2);
+  background: rgba(15,15,40,0.9); border: 1px solid var(--border);
   overflow: hidden; user-select: none;
 }
 .track-fill {
@@ -299,7 +299,7 @@ export default {
   position: absolute; width: 100%; text-align: center; line-height: 44px;
   font-size: 13px; color: #5a6080; pointer-events: none;
 }
-.done-text { color: #34d399; font-weight: 600; }
+.done-text { color: var(--success-text); font-weight: 600; }
 
 .captcha-btn {
   position: absolute; top: 4px; width: 36px; height: 36px;
@@ -312,7 +312,7 @@ export default {
 .captcha-btn:active { cursor: grabbing; transform: scale(1.05); }
 .captcha-btn.done { background: linear-gradient(135deg, #22c55e, #16a34a); box-shadow: 0 2px 12px rgba(34,197,94,0.5); }
 
-.captcha-error { color: #f87171; font-size: 12px; margin-top: 3px; }
+.captcha-error { color: var(--error-text); font-size: 12px; margin-top: 3px; }
 
 .login-card > form > button {
   width: 100%; padding: 13px; background: linear-gradient(135deg, #06b6d4, #8b5cf6);
@@ -326,18 +326,18 @@ export default {
 .login-spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.error { color: #f87171; font-size: 13px; margin-bottom: 4px; text-align: center; }
+.error { color: var(--error-text); font-size: 13px; margin-bottom: 4px; text-align: center; }
 .tip { text-align: center; margin-top: 16px; font-size: 13px; color: #5a6080; }
-.tip a { color: #06b6d4; font-weight: 600; }
+.tip a { color: var(--accent-text); font-weight: 600; }
 
 /* ====== 背景装饰 ====== */
 .bg-decor { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
 .decor-circle {
-  position: absolute; border-radius: 50%; border: 1px solid rgba(102,126,234,0.06);
+  position: absolute; border-radius: 50%; border: 1px solid var(--border);
 }
 .c1 { width: 600px; height: 600px; top: -200px; right: -200px; }
-.c2 { width: 400px; height: 400px; bottom: -150px; left: -100px; border-color: rgba(6,182,212,0.04); }
-.c3 { width: 300px; height: 300px; top: 40%; left: 30%; border-color: rgba(139,92,246,0.04); }
+.c2 { width: 400px; height: 400px; bottom: -150px; left: -100px; border-color: var(--accent-bg); }
+.c3 { width: 300px; height: 300px; top: 40%; left: 30%; border-color: var(--accent-text); }
 
 .decor-line {
   position: absolute; width: 1px; height: 200px;

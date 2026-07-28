@@ -10,7 +10,18 @@ MYSQL_DATABASE = cfg_get("mysql.database")
 
 DATABASE_URL = f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}?charset=utf8mb4"
 
-engine = create_engine(DATABASE_URL, pool_size=30, max_overflow=50, pool_pre_ping=True, pool_recycle=3600)
+# 连接池参数从 config.yaml 读取，便于不重启代码调优
+MYSQL_POOL_SIZE = int(cfg_get("mysql.pool_size", 10))
+MYSQL_MAX_OVERFLOW = int(cfg_get("mysql.max_overflow", 20))
+MYSQL_POOL_RECYCLE = int(cfg_get("mysql.pool_recycle", 3600))
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_size=MYSQL_POOL_SIZE,
+    max_overflow=MYSQL_MAX_OVERFLOW,
+    pool_pre_ping=True,
+    pool_recycle=MYSQL_POOL_RECYCLE,
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 

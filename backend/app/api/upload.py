@@ -1,7 +1,8 @@
 import os
 import uuid
 import traceback
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Depends
+from app.api.deps import get_current_user as _get_current_user
 
 router = APIRouter(prefix="/api/upload", tags=["文件上传"])
 

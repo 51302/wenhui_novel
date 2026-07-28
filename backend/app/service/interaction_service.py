@@ -169,7 +169,7 @@ class InteractionService:
                 return success(cached)
 
         current_user_id = current_user.get("user_id") if current_user else None
-        feed, total = InteractionDAO.get_feed(db, page, page_size)
+        feed, total = InteractionDAO.get_feed(db, page, page_size, exclude_exclusive=True)
 
         # ====== 优化：批量获取所有涉及作品的章节（替代逐个N+1查询） ======
         novel_ids_in_feed = [i[1].novel_unique_id for i in feed if i[1]]

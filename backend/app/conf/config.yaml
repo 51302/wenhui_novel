@@ -1,115 +1,100 @@
+# ============================================================
+#  文辉小说 - 后端配置文件
+#  修改后需重启容器生效
+# ============================================================
+
 app:
-  name: "文辉小说"
-  version: "1.0.0"
-  debug: true
-  show_all_works: true   # true=首页展示所有作品  false=用户只能看到自己的作品
-  website_url: "https://wenhui.nat100.top"  # 网站域名（用于邮件链接等）
+  name: "文辉小说"              # 应用名称（显示在 API 文档标题等位置）
+  version: "1.0.0"             # 应用版本号
+  debug: true                  # 调试模式：true=详细日志/错误堆栈，false=生产环境精简日志
+  show_all_works: true         # 首页展示范围：true=所有人可见所有作品，false=用户只能看到自己的作品
+  website_url: "https://wenhui.nat100.top"  # 网站域名（用于邮件链接、支付宝回调等外部访问）
 
 mysql:
-  host: wenhui-mysql
-  port: 3306
-  user: wenhui
-  password: wenhui123
-  database: easy-novel
-  charset: utf8mb4
-  pool_size: 10
-  max_overflow: 20
+  host: wenhui-mysql           # MySQL 主机名（Docker 内部服务名或 IP）
+  port: 3306                   # MySQL 端口
+  user: wenhui                 # 数据库用户名
+  password: wenhui123          # 数据库密码
+  database: easy-novel         # 数据库名称
+  charset: utf8mb4             # 字符集（utf8mb4 支持 emoji）
+  pool_size: 50                # 连接池大小（支撑3000 VIP用户建议50-100）
+  max_overflow: 100            # 连接池溢出上限（峰值并发时临时创建的连接数）
+  pool_recycle: 3600           # 连接回收周期（秒），建议设为 MySQL wait_timeout 的一半
 
 redis:
-  host: wenhui-redis
-  port: 6379
-  password: ""
-  db: 0
-  cache_ttl: 3600
-  memory_extract_threads: 10
+  host: wenhui-redis           # Redis 主机名（Docker 内部服务名或 IP）
+  port: 6379                   # Redis 端口
+  password: ""                 # Redis 密码（无密码留空）
+  db: 0                        # Redis 数据库编号（0-15）
+  cache_ttl: 3600              # 默认缓存过期时间（秒），1小时
+  memory_extract_threads: 10   # 记忆体提取并发线程数（AI 章节分析时使用）
+
+task_queue:
+  max_concurrency: 10          # 全局 AI 并发上限，所有队列共享此限制（避免触发 DeepSeek 限流）
+  workers:
+    ai:extract: 3              # 提取信息队列 Worker 数（从章节中提取人物/组织/地点等）
+    ai:generate: 4             # 生成章节队列 Worker 数（最核心队列，分配最多线程）
+    ai:regenerate: 2           # 重新生成队列 Worker 数（用户对章节不满意时重新生成）
+    ai:continue: 4             # 续写章节队列 Worker 数（基于已有内容继续写作）
+    ai:reset-memory: 1         # 重置记忆体队列 Worker 数（低频操作，1个足够）
 
 elasticsearch:
-  host: http://localhost:9200
-  index_novels: novels
+  host: http://localhost:9200  # ES 集群地址（Docker 部署时注意网络连通性）
+  index_novels: novels         # 小说索引名称（全文搜索用）
 
 jwt:
-  secret_key: "wenhui-novel-jwt-secret-key-2024"
-  algorithm: "HS256"
-  expire_minutes: 1440
+  secret_key: "wenhui-novel-jwt-secret-key-2024"  # JWT 签名密钥，生产环境务必修改为强随机字符串
+  algorithm: "HS256"           # JWT 签名算法（固定 HS256）
+  expire_minutes: 1440         # Token 过期时间（分钟），1440=30天
 
 deepseek:
   api_key: "${DEEPSEEK_API_KEY}"
   base_url: "https://api.deepseek.com"
   model: "deepseek-v4-flash"
 
-# ========================================================================
-#  邮件
-# ========================================================================
+siliconflow:
+  api_key: "${SILICONFLOW_API_KEY}"
+  base_url: "https://api.siliconflow.cn/v1"
+  model: "Tongyi-MAI/Z-Image-Turbo"
+  image_size: "512x768"
+
 email:
   provider: "resend"
   from_name: "文辉小说"
   from_email: "noreply@wenhui.xyz"
   resend_api_key: "${RESEND_API_KEY}"
 
-# ========================================================================
-#  短信
-# ========================================================================
 sms:
-  provider: "zhenzi"                     # zhenzi / demo
-  # 榛子云配置 → 注册 http://smsow.zhenzikj.com → 应用管理 → 我的应用
-  app_id: ""                             # 填你的 AppId
-  app_secret: ""                         # 填你的 AppSecret
-  template_id: ""                        # 填模板ID
-  api_url: "https://sms_developer.zhenzikj.com"
-  sign_name: "文辉小说"
+  provider: "zhenzi"           # 短信服务商：zhenzi（榛子云）/ demo（演示模式，不发真实短信）
+  app_id: ""                   # 榛子云 AppId（注册 http://smsow.zhenzikj.com 获取）
+  app_secret: ""               # 榛子云 AppSecret
+  template_id: ""              # 短信模板 ID（需审核通过）
+  api_url: "https://sms_developer.zhenzikj.com"  # 榛子云 API 地址（固定）
+  sign_name: "文辉小说"         # 短信签名（需审核通过）
 
-# ========================================================================
-#  支付宝电脑网站支付配置
-#  对接支付宝真实验签时，填好 app_id / app_private_key / alipay_public_key 即可
-#  未配置时自动运行在 Demo 模式（本地模拟支付，用于开发调试）
-# ========================================================================
 alipay:
-  sandbox: false                         # true=沙箱环境 false=正式环境
-  # -- 核心密钥（填入后自动切换为真实验签模式） --
-  # 应用ID，正式环境 → 开放平台获取
-  
-  # 正式环境
-  app_id: "2021006169682344"   #正式上线的app_id
-  # 应用私钥：去掉PEM头尾、去掉换行，拼接成一行
+  sandbox: false               # true=沙箱环境（测试用），false=正式环境（生产用）
+  app_id: "2021006169682344"  # 支付宝应用 ID（在支付宝开放平台创建应用后获取）
+  # 应用私钥：去掉 PEM 头尾、去掉换行，拼接成一行（用于签名）
   app_private_key: "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCmk6Sgk1ivhZDiULiaJGvak5w5NRCdr3YSD7gTuxlgFl1q5Y8vGN62T9xHJHwpKKrjJ4/frIUt7o0r05Iz472Iw2+gBxyOq0+pDFDnh8E0r41CAnCmvkV3kVWsdBJHxYA2eTiNfrdKgFgFo9gJDgpn/HddmdWBBT/2hPTbOjGCN6BOVQM/yJfeYyPXWLEky6HhCYkKi4RbhUK9Jj7htZo9rZuOdO6FhjJlDKXjZQaKkF8zKdMCRriIKwWli1ELNGsNNoEkAbJtkO9Cf/E7ll5Z5OSnHoq8XDu9S+46Hhhh8V6vsRMroQCNQbaf/4X5lzw7Mwq72UjDGcaZF8oKnx4NAgMBAAECggEAZLXpF6heOyiO0zWolpEkoC8UicXaeOunf/3+9fbtvZln+4Q1EG2B4UnhTSXy51OOFe5KXxpIHuAWfAPbZgHwCqrWZzNFgcBzVip7E7CREFB/IASnpThueX7mBHDcyIXRIZ4iofGV0bZNAYPwznCtu/b5GB805V+OL3ZtL8o8OpR7QJ7oaqtT+hLYuyC797SNjXLlxFIzBcTviCfZJ4HhMoL2UWM4RnfNbG7ISFHzJdrFXidn/fUIcAZUNv2eDNTeW224WhR4doOLQu7gCzaHl2gc23GCu+sgQLwGUkDeKHjTEB+PP7CCV0W+PPZnETeAGG2Lvu4v2XwR2vmlqRDTZQKBgQDVgXSi+Z01+LfGGNFq5jhbAwO4g7j7K+CLwgjGUBkwMFdJHfFhAWuQgq6k0O67A2Z0a6Yl7p1x6EKfe0etNCUygUsjtle+/Bu5EansCmiU07v7CVMuOGO8zGmquVePrNigcSF5Ec859Twy+cwWziCkhf57NBiaZHUXO8kRTVQ61wKBgQDHuxAQTcuC8ShzSp+ZWsLE6bAsjDlTlIzIG7BBB1WwUyByG8noW7QckZKIeO/T8CdevW4sXEtgjUUHAcmtbNYf72JlOlvrUmtwE8l14ECg4QVyb2V1gosyINddIbB3p6h5pj9wciQ0IhwUMBJ/Fd4F5hqKoT3HRAFsKHD0LM+VuwKBgFGPCUo0hkyWvUUMN/tZBJAnv6UdlG1GXpmkvotbD7Qr0zwYFxwSWc+zTBmjwn5oFxxD/w0gcL6RldmsUz4j3E3FvDlhL3XCgqiYyctkUnz/wSBteHwAiIEXqQnRkVROF9Z6QOop1npyZtOmPsM7bJbMpODVjsxzsZL1gKJ+Yr2zAoGBAIoB86OQXaLox66CTa1FTXeKkbT2X1YlOvG6UBte2hKwHac7FFR9qQJkg//QsMadFlccRVhZnavlcWDaF2TB42LFohOYM5Nyq9IRmg7dGUsQsRbVaiG8Rjoo/ybW9Hx5WKxV91fXRrTPLN+2J9GwZm1lBcnsiCd8Eg+OEh5mKDmpAoGBALrqoIzHeQbDBV+Si0gnXaUvNU0e1CaoUOYUjwYRAn6srQ0Xn1Z3JbxuyavBOBME3rbHeJRiVFhmd3EOIaC6YaOnUdTcDwERXHolSy+pqPUV0lgfDek60uSqrGhhLxwnnjmsnGmTCSsBqtGVCXrvq/B7gj2j7wH9yFy2jvBSKpUS"
-  # 应用公钥： 该公钥只是记录一下
+  # 应用公钥：该公钥只是记录用途（实际使用时读取私钥签名）
   app_public_key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAppOkoJNYr4WQ4lC4miRr2pOcOTUQna92Eg+4E7sZYBZdauWPLxjetk/cRyR8KSiq4yeP36yFLe6NK9OSM+O9iMNvoAccjqtPqQxQ54fBNK+NQgJwpr5Fd5FVrHQSR8WANnk4jX63SoBYBaPYCQ4KZ/x3XZnVgQU/9oT02zoxgjegTlUDP8iX3mMj11ixJMuh4QmJCouEW4VCvSY+4bWaPa2bjnTuhYYyZQyl42UGipBfMynTAka4iCsFpYtRCzRrDTaBJAGybZDvQn/xO5ZeWeTkpx6KvFw7vUvuOh4YYfFer7ETK6EAjUG2n/+F+Zc8OzMKu9lIwxnGmRfKCp8eDQIDAQAB"
-  # 支付宝公钥：上传你的公钥后支付宝返回的密钥（填空则模拟验签）
+  # 支付宝公钥：上传应用公钥后支付宝返回的密钥（填空则使用模拟验签）
   alipay_public_key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1VPA1XyAoBfoofA0scPDeiHWWKKyb+TasiKEDv19zFjOCmVUBMOO+tF50ztbDD+bjlG9ILo9Vwg39sn3CUEA5apcERnKBofMubNylgWxOR7A7D2sPNN0fT6WCSeLTZ+CzYy9GC2z8R+TgLhIsbeVpby7b6G+CD6fDU6cf4FNqo8CGUyOT7Eb6DQK4dhY3rDga7nOrLbA0EoBd1K0fC/jyK53xDugitjuiT4rarE4bxdb5Oo2U5JMbHGT6IvetjEZZkMkvLy48ptWERxCJsleIXXGs2h60jdB2FyWbprmzQYRn6tDd+XG39BcCVAJIqMIoBZRlCHtcKodZhEg24sPlQIDAQAB"
-  seller_id: "2088422450482191"
-
-  # 砂箱环境（已注释）
-  # app_id: "9021000165634936"
-  # app_private_key: "MIIEowIBAAKCAQEA5pNfMhWYyoqIQMlBRAX3Ib9t4Fy07TJDNc61QcMDTmnhlptxS5Y3AoNtnynMXH1yjOJSSJQhaqB9Cpg9nVqNROJgir2SXpLv0kk+jE033ag2uP258EE0x7FBwMfvRGqGs67H5TozVyZcJtYVZCK0hHK2q3X23tqrwnypbM80PfyyTgvBNipRmDbqzqdWiAjA6wcQP1Jh6nv/kiJ5LgiewWq3Ho9aviKS96sKcMe8+y0+nCMEQKarTSCdYvtTqDtBma/zbB4odB0tn9yDE5XYpq3r7XOYyQuo+QMUIPKCfn/u9PVrps7TbS/y5aszKjSiyaANCyDjqRNYroK98JLyhwIDAQABAoIBAG9xs4VFov/iTVDi9USnjXcmSzkyFdC/hnSvYDRUyXhQ/NQKdYwPIq94TrerQDdD+uXVTef+kNg0kbtZMg6oAbfVosvsLJ7BbmC5Ph4aBHKCJ1DqccCKA7SxHBLNj/wFcO3QAJXut3nb9JZgyx4HGDEcMOZWsees0W/DSTBqRdnfKoC36z8hAyKlVWhjjZemjqdgTmpWAv5ngxovIke7bgF1SHs2M/iTafnwAzCLNEACfsoei4cq5fIBuYvYszbYgOSTeWy6dmgXcikSgBIFu91PL1qCZIZ2pAKMXJXM25Yp5Ta4C/u+uUfRaQ6eGhMxffHNlvx1BClnL77dSUpBLcECgYEA9UDsBZDz2BF6yr4vgdKzOuHc5PY0xK5FZtrAenuIe4vRMl87Ri6q2kUlGp6yh916Lv3tAZKG9elUDk48E+HsZPT2Lpek917qRIqAQAleh1LCjGrrJOwVHCCTSLdxoF7f4XlEumQMho8Q9brn8Fuhjt/oFsdDM2iiZltkR3g1k78CgYEA8K3Nr8Gw6YsQHHZKlsaQNhtn3hEOgbBgnCEbfDu/nUUnpWTa3AeiHUG3lRsO/oWDOe3zoRH2nI4eQO7n7KovgappjHMSdmd9Pr8jW0f6n8L4r8PR8LyT7o+yfiopnuQAbOiO9ASzdCg50EOhFdyLHba+ADSTO9JOq5u3wfVKMzkCgYEA8NSOsCyV9o+7l4lIl2Ay1dhjFIbcbGKBDi4zIlNaQ4+ZnrA7QYCkD3Akrk42HAqVZ7271XZwhtxXyTBz+EY63yxY7onE2ZDf1Ox4YemRZKsVFdQMEhat6A/o8VgKASQJDp0Jq0qBrkSgr9yY08L3E5i1jGChkcLm7kJCZ5gYbHsCgYBdWz12mE4UOPHV6HiERZ84raa7d6hF2/GNfjYYGWD5ExMOz7EpOfjDGnOobaeCSK2fMdKXvs0G6wWHMGRb46OryztH1Hbr4LavORrw1Fm90LYAD5gGpk9HcQvObnJYhJ45oHea5ZvqSZQrWaBJR5PawcCvebVGtgv3+t3raUcP2QKBgCJgfSNHpt+dGr0/1ntCWMTREptLYOxbBpVkUkBd1R7HzZfJJer2Kd9QEfqxZj4bF2ruqncE5qFg10IYc61jMxlu+73eeu+EntDF58luePTAyfA4ywD9UClnk3SJopBnD1ytlRB57V64vHIHaKhoevk4wkmUpBMIETTtM2UxBY9T"
-  # app_public_key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5pNfMhWYyoqIQMlBRAX3Ib9t4Fy07TJDNc61QcMDTmnhlptxS5Y3AoNtnynMXH1yjOJSSJQhaqB9Cpg9nVqNROJgir2SXpLv0kk+jE033ag2uP258EE0x7FBwMfvRGqGs67H5TozVyZcJtYVZCK0hHK2q3X23tqrwnypbM80PfyyTgvBNipRmDbqzqdWiAjA6wcQP1Jh6nv/kiJ5LgiewWq3Ho9aviKS96sKcMe8+y0+nCMEQKarTSCdYvtTqDtBma/zbB4odB0tn9yDE5XYpq3r7XOYyQuo+QMUIPKCfn/u9PVrps7TbS/y5aszKjSiyaANCyDjqRNYroK98JLyhwIDAQAB"
-  # alipay_public_key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsjov2ok0KGtd4GAtxwkjAtf6HD0OZLBJ9Xf9PmjM8NnxbRvdm4Ri5V+9UY0kY0ZhNIa8t7fAIQ+wbzI6/mXViOrLL7UKUuYkLwPL34R/XaUnWZ4hkMZF/ExzOT5WgIyaGFxQ25cxnII3LZo7iGkRBe/mufZxaQkhF8J30upKxC9OQQLumLCOpf64BlRuBk2jGFPIhu5yK9Su6UDd9+YFTYdkdJfDczLMVhzs4ydiy4WZYCEf8DZmby6pHIxOQS7e+tJoeZH52Jobcpp0Hz8GZX4s/C6aX62SeEBwcOPfwWqsOMvrPG1QCFPIOUrse91tJmj3uoWSyiIo6JPi4zdedwIDAQAB"
-  
-  # -- 收款校验 --
-  # 收款商户PID，支付后校验seller_id是否为你的账户，防止打到别人那
-
-  # -- 回调地址 --
-  # 异步通知地址：支付宝POST通知你支付结果（通过域名访问后端）
-  notify_url: "https://wenhui.nat100.top/api/vip/notify"
-
-  # 支付完成后浏览器跳转到前端 VIP 页面
-  return_url: "https://wenhui.nat100.top/vip"
-
-
-  # -- 行为参数 --
-  order_timeout: "15m"               # 订单超时时间（m=分钟 h=小时 d=天）
-  order_prefix: "VIP"                # 订单号前缀
-  default_plan: "vip_monthly"        # 默认套餐
-
-  # -- VIP/SVIP 套餐配置 --
-  # vip_level: 1=VIP(10章/天), 2=SVIP(50章/天)
+  seller_id: "2088422450482191"  # 收款商户 PID，支付后校验是否为你的账户
+  notify_url: "https://wenhui.nat100.top/api/vip/notify"  # 异步通知地址（支付宝主动 POST 通知支付结果）
+  return_url: "https://wenhui.nat100.top/vip"             # 同步返回地址（支付成功后浏览器跳转）
+  order_timeout: "15m"         # 订单超时时间（m=分钟, h=小时, d=天）
+  order_prefix: "VIP"          # 订单号前缀（便于区分订单类型）
+  default_plan: "vip_monthly"  # 默认推荐套餐（对应 plans 下的键名）
   plans:
-    # VIP 套餐（10章/天）
+    # ====== VIP 套餐（10章/天）======
     vip_monthly:
-      name: "VIP月度会员"
-      price: "59.00"
-      days: 30
-      desc: "1个月VIP · 10章/天"
-      vip_level: 1
+      name: "VIP月度会员"       # 套餐显示名称
+      price: "59.00"           # 套餐价格（元）
+      days: 30                 # 有效期（天）
+      desc: "1个月VIP · 10章/天"  # 套餐描述（显示给用户）
+      vip_level: 1             # 会员等级（1=VIP，对应每日 10 章配额）
     vip_quarterly:
       name: "VIP季度会员"
       price: "149.00"
@@ -122,13 +107,13 @@ alipay:
       days: 365
       desc: "12个月VIP · 10章/天 · 省¥209"
       vip_level: 1
-    # SVIP 套餐（50章/天）：¥79/月, 季度¥199(省¥38), 年度¥699(省¥249)
+    # ====== SVIP 套餐（50章/天）======
     svip_monthly:
-       name: "SVIP月度会员"
-       price: "79.00"
-       days: 30
-       desc: "1个月SVIP · 50章/天"
-       vip_level: 2
+      name: "SVIP月度会员"
+      price: "79.00"
+      days: 30
+      desc: "1个月SVIP · 50章/天"
+      vip_level: 2             # 会员等级（2=SVIP，对应每日 50 章配额）
     svip_quarterly:
       name: "SVIP季度会员"
       price: "199.00"

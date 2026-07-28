@@ -15,6 +15,7 @@ def create_novel(
     world_setting: str = "", realm_setting: str = None,
     characters: str = None, genre: str = None,
     cover_image: str = None, plot_development: str = None,
+    sign_type: str = Query("non_exclusive", description="签约类型：exclusive(独家)/non_exclusive(非独家)"),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
     _perm=Depends(check_creation_access),
@@ -25,7 +26,8 @@ def create_novel(
         db, current_user["user_id"], current_user["username"],
         title, target_reader, description, story_background,
         world_setting, realm_setting, characters, genre, cover_image,
-        plot_development=plot_development, created_by=current_user["username"]
+        plot_development=plot_development, created_by=current_user["username"],
+        sign_type=sign_type
     )
     if result.get("状态码") == 200:
         novel_id = result.get("数据", {}).get("novel_unique_id", "")
@@ -41,6 +43,7 @@ def list_novels(
     genre: str = Query(None, description="题材"),
     page: int = Query(1, ge=1),
     page_size: int = Query(12, ge=1, le=50),
+    exclude_exclusive: bool = Query(True, description="是否排除独家作品（首页/作品圈展示时使用）"),
     db: Session = Depends(get_db),
     current_user: Optional[dict] = Depends(get_optional_current_user),
 ):
@@ -53,9 +56,10 @@ def list_novels(
             raise HTTPException(status_code=401, detail="请先登录")
         return NovelService.list_novels(
             db, target_reader, genre, page, page_size,
-            author_user_id=current_user["user_id"]
+            author_user_id=current_user["user_id"],
+            exclude_exclusive=False
         )
-    return NovelService.list_novels(db, target_reader, genre, page, page_size)
+    return NovelService.list_novels(db, target_reader, genre, page, page_size, exclude_exclusive=exclude_exclusive)
 
 
 @router.get("/search")
@@ -63,10 +67,11 @@ def search_novels(
     keyword: str = Query(..., description="搜索关键词"),
     page: int = Query(1, ge=1),
     page_size: int = Query(12, ge=1, le=50),
+    exclude_exclusive: bool = Query(True, description="是否排除独家作品"),
     db: Session = Depends(get_db)
 ):
     """按关键词搜索小说作品"""
-    return NovelService.search_novels(db, keyword, page, page_size)
+    return NovelService.search_novels(db, keyword, page, page_size, exclude_exclusive=exclude_exclusive)
 
 
 @router.get("/detail/{novel_unique_id}")
@@ -106,6 +111,7 @@ def update_novel(
     world_setting: str = None, realm_setting: str = None,
     characters: str = None, genre: str = None,
     cover_image: str = None, plot_development: str = None,
+    sign_type: str = Query(None, description="签约类型：exclusive(独家)/non_exclusive(非独家)"),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
     _vip=Depends(check_creation_access),
@@ -115,7 +121,7 @@ def update_novel(
     result = NovelService.update_novel(
         db, novel_unique_id, title, target_reader, description,
         story_background, world_setting, realm_setting, characters,
-        genre, cover_image, plot_development
+        genre, cover_image, plot_development, sign_type=sign_type
     )
     if result.get("状态码") == 200:
         system_logger.info(f"小说更新成功: ID={novel_unique_id}, 用户={current_user['username']}")

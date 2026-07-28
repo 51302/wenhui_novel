@@ -174,7 +174,7 @@ export default {
 .login-card button[type="submit"]:hover:not(:disabled) { box-shadow: 0 4px 35px var(--accent-glow-strong); transform: translateY(-1px); }
 .login-card button[type="submit"]:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
 
-.error { color: #f87171; font-size: 13px; margin-bottom: 6px; text-align: center; }
+.error { color: var(--error-text); font-size: 13px; margin-bottom: 6px; text-align: center; }
 .tip-info { color: var(--success); font-size: 13px; margin-bottom: 6px; text-align: center; }
 
 .tip { text-align: center; margin-top: 20px; font-size: 13px; color: var(--text-muted); }

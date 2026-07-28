@@ -17,8 +17,11 @@ from app.prompts.chapter_prompts import (
     MEMORY_DIMENSION_DEFS, MEMORY_EXTRACT_PROMPT, MEMORY_INCREMENTAL_PROMPT,
     get_memory_category_names, get_frontend_to_chroma_map,
     match_ai_label_to_chroma, get_chroma_dedup_map,
-    EMOTIONAL_WRITING_GUIDE,
+    EMOTIONAL_WRITING_GUIDE, COMBAT_WRITING_GUIDE, MEME_STYLE_GUIDE,
     GENERATE_SYSTEM_PROMPT, GENERATE_CREATIVE_DIRECTION,
+)
+from app.prompts.screenplay_prompts import (
+    SCREENPLAY_SYSTEM_PROMPT, GENERATE_SCREENPLAY_DIRECTION,
 )
 
 NOVEL_DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "novel_structure_data")
@@ -1666,6 +1669,8 @@ class ChapterService:
             summary_narrative=summary_narrative or "根据前文自然推进剧情",
         )
         prompt += "\n\n" + EMOTIONAL_WRITING_GUIDE
+        prompt += "\n\n" + COMBAT_WRITING_GUIDE
+        prompt += "\n\n" + MEME_STYLE_GUIDE
 
         system_prompt = GENERATE_SYSTEM_PROMPT
 
@@ -2744,6 +2749,221 @@ class ChapterService:
             return {"success": False, "error": str(e)}
         finally:
             db.close()
+
+    @staticmethod
+    def _worker_generate_screenplay(task_id: str, task_data: dict) -> dict:
+        """Worker handler：将小说章节转换为剧本格式"""
+        from app.models.base import SessionLocal
+        db = SessionLocal()
+        try:
+            result = run_async(
+                ChapterService.generate_screenplay,
+                db,
+                novel_unique_id=task_data["novel_unique_id"],
+                chapter_ids=task_data["chapter_ids"],
+            )
+            if result.get("状态码") == 200:
+                return {"success": True, "data": result.get("数据")}
+            return {"success": False, "error": result.get("消息", "生成失败")}
+        except Exception as e:
+            system_logger.error(f"[Worker-screenplay] 异常: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+        finally:
+            db.close()
+
+    @staticmethod
+    async def generate_screenplay(
+        db: Session,
+        novel_unique_id: str,
+        chapter_ids: list,
+    ) -> dict:
+        """将选定的小说章节内容转换为剧本格式"""
+        import traceback
+
+        # 1. 获取作品信息
+        novel = NovelDAO.get_by_unique_id(db, novel_unique_id)
+        if not novel:
+            return fail("作品不存在", code=404)
+
+        novel_title = novel.title or "未知作品"
+        novel_settings = ""
+        try:
+            settings_path = os.path.join(NOVEL_DATA_PATH, novel_unique_id, "作品设定.txt")
+            if os.path.exists(settings_path):
+                with open(settings_path, "r", encoding="utf-8") as f:
+                    novel_settings = f.read()[:2000]  # 最多取2000字
+        except Exception as e:
+            system_logger.warning(f"[剧本] 读取作品设定失败: {e}")
+            novel_settings = "无"
+
+        # 2. 获取章节内容
+        all_chapters = ChapterDAO.get_by_novel_id(db, novel_unique_id)
+        chapter_map = {c.chapter_unique_id: c for c in all_chapters}
+        # 按 chapter_number 排序
+        ordered_chapters = []
+        for cid in chapter_ids:
+            ch = chapter_map.get(cid)
+            if ch:
+                ordered_chapters.append(ch)
+        ordered_chapters.sort(key=lambda c: c.chapter_number or 0)
+
+        if not ordered_chapters:
+            return fail("未找到任何章节内容", code=404)
+
+        # 3. 拼接章节内容
+        chapters_content_parts = []
+        for ch in ordered_chapters:
+            # 尝试从 TXT 文件读取（使用标准文件名格式）
+            content = ""
+            txt_path = os.path.join(NOVEL_DATA_PATH, novel_unique_id, f"{ch.chapter_name}_{ch.chapter_unique_id}.txt")
+            if os.path.exists(txt_path):
+                try:
+                    with open(txt_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                except Exception:
+                    pass
+
+            if content:
+                chapters_content_parts.append(
+                    f"【{ch.chapter_name}】\n{content[:3000]}"
+                )
+
+        if not chapters_content_parts:
+            return fail("所选章节暂无正文内容", code=404)
+
+        full_chapters_content = "\n\n---\n\n".join(chapters_content_parts)
+
+        # 4. 构建章节范围说明
+        first_num = ordered_chapters[0].chapter_number or 1
+        last_num = ordered_chapters[-1].chapter_number or len(ordered_chapters)
+        chapter_range = f"{_to_chinese(first_num)}-{_to_chinese(last_num)}章"
+
+        # 5. 构建 Prompt
+        prompt = GENERATE_SCREENPLAY_DIRECTION.format(
+            novel_settings=novel_settings or "未设定",
+            chapters_content=full_chapters_content,
+            novel_title=novel_title,
+        )
+        chapter_range_prompt = f"\n\n## 章节范围\n选择的章节：{chapter_range}"
+        prompt += chapter_range_prompt
+
+        system_prompt = SCREENPLAY_SYSTEM_PROMPT
+
+        # 6. 调用 AI
+        MAX_RETRIES = 2
+        generated_text = ""
+
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=300) as client:
+                    response = await client.post(
+                        f"{deepseek_base_url()}/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {deepseek_api_key()}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": deepseek_model(),
+                            "messages": [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": prompt}
+                            ],
+                            "max_tokens": 8192,
+                            "temperature": 0.7,
+                            "top_p": 0.9,
+                        }
+                    )
+
+                    data = response.json()
+                    if "choices" not in data or not data["choices"]:
+                        err_msg = str(data.get("error", {}).get("message", "未知错误"))
+                        system_logger.error(f"[剧本] AI 调用失败: {err_msg}")
+                        if attempt < MAX_RETRIES:
+                            continue
+                        return fail("剧本生成失败: " + err_msg, code=500)
+
+                    generated_text = data["choices"][0]["message"]["content"]
+
+                    if generated_text and len(generated_text) > 100:
+                        system_logger.info(f"[剧本] 生成成功 ({len(generated_text)}字)")
+                        break
+                    else:
+                        if attempt < MAX_RETRIES:
+                            system_logger.warning(f"[剧本] 重试 {attempt+1}: 内容过短")
+                            continue
+                        return fail("生成内容过短，请重试", code=500)
+
+            except httpx.TimeoutException:
+                system_logger.error("[剧本] AI 调用超时")
+                if attempt < MAX_RETRIES:
+                    continue
+                return fail("AI接口调用超时，请重试", code=500)
+            except Exception as e:
+                system_logger.error(f"[剧本] AI 调用异常: {e}")
+                traceback.print_exc()
+                if attempt < MAX_RETRIES:
+                    continue
+                return fail(f"AI调用异常: {str(e)}", code=500)
+
+        # 7. 返回结果
+        return success({
+            "novel_title": novel_title,
+            "chapter_range": chapter_range,
+            "content": generated_text,
+            "word_count": len(generated_text),
+        }, "剧本生成成功")
+
+
+# ============================================================
+# 独立函数：中文数字转换
+# ============================================================
+_num_map = list("零一二三四五六七八九十")
+
+def _to_chinese(n: int) -> str:
+    """将阿拉伯数字转为中文数字（1→一, 12→十二, 123→一百二十三）"""
+    if n <= 10:
+        return _num_map[n] if n > 0 else "一"
+    elif n < 100:
+        s = ""
+        if n >= 20:
+            s += _num_map[n // 10]
+        s += "十"
+        if n % 10 != 0:
+            s += _num_map[n % 10]
+        return s
+    elif n < 1000:
+        s = _num_map[n // 100] + "百"
+        n = n % 100
+        if n == 0:
+            return s
+        if n < 10:
+            s += "零" + _num_map[n]
+        else:
+            s += _num_map[n // 10] + "十"
+            if n % 10 != 0:
+                s += _num_map[n % 10]
+        return s
+    else:
+        s = _num_map[n // 1000] + "千"
+        n = n % 1000
+        if n == 0:
+            return s
+        if n < 100:
+            s += "零"
+        if n >= 100:
+            s += _num_map[n // 100] + "百"
+        n = n % 100
+        if n == 0:
+            return s
+        if n < 10:
+            s += "零" + _num_map[n]
+        else:
+            s += _num_map[n // 10] + "十"
+            if n % 10 != 0:
+                s += _num_map[n % 10]
+        return s
 
 
 # ============================================================

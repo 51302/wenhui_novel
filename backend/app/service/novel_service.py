@@ -37,7 +37,8 @@ class NovelService:
                      story_background: str = "", world_setting: str = "",
                      realm_setting: str = None, characters: str = None,
                      genre: str = None, cover_image: str = None,
-                     plot_development: str = None, created_by: str = None) -> dict:
+                     plot_development: str = None, created_by: str = None,
+                     sign_type: str = "non_exclusive") -> dict:
         """创建新作品，保存设定文件并同步到ES索引
         :param db: 数据库会话
         :param author_user_id: 作者用户ID
@@ -72,7 +73,8 @@ class NovelService:
             genre=genre,
             cover_image=cover_image,
             plot_development=plot_development,
-            created_by=created_by
+            created_by=created_by,
+            sign_type=sign_type
         )
         novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
         os.makedirs(novel_dir, exist_ok=True)
@@ -107,7 +109,7 @@ class NovelService:
     @staticmethod
     def list_novels(db: Session, target_reader: str = None, genre: str = None,
                     page: int = 1, page_size: int = 12,
-                    author_user_id: int = None) -> dict:
+                    author_user_id: int = None, exclude_exclusive: bool = False) -> dict:
         """分页查询作品列表，支持按受众和题材筛选，带Redis缓存
         :param db: 数据库会话
         :param target_reader: 受众筛选（男频/女频）
@@ -117,7 +119,7 @@ class NovelService:
         :param author_user_id: 按作者ID筛选，可选
         :return: 分页作品列表
         """
-        cache_key = f"novels:list:tr={target_reader}:g={genre}:p={page}:ps={page_size}:uid={author_user_id}"
+        cache_key = f"novels:list:tr={target_reader}:g={genre}:p={page}:ps={page_size}:uid={author_user_id}:ex={exclude_exclusive}"
         # 按用户筛选时不走缓存（每人数据不同，且可能频繁变化）
         r = _redis() if not author_user_id else None
         if r:
@@ -134,7 +136,7 @@ class NovelService:
                 if cached:
                     return success(cached)
 
-            novels, total = NovelDAO.list_novels(db, target_reader, genre, page, page_size, author_user_id=author_user_id)
+            novels, total = NovelDAO.list_novels(db, target_reader, genre, page, page_size, author_user_id=author_user_id, exclude_exclusive=exclude_exclusive)
             result = {
                 "items": [{
                 "novel_unique_id": n.novel_unique_id,
@@ -155,7 +157,7 @@ class NovelService:
         return success(result)
 
     @staticmethod
-    def search_novels(db: Session, keyword: str, page: int = 1, page_size: int = 12) -> dict:
+    def search_novels(db: Session, keyword: str, page: int = 1, page_size: int = 12, exclude_exclusive: bool = False) -> dict:
         """按关键词搜索作品，优先走ES搜索引擎，兜底数据库模糊查询
         :param db: 数据库会话
         :param keyword: 搜索关键词
@@ -163,7 +165,7 @@ class NovelService:
         :param page_size: 每页数量
         :return: 搜索结果列表
         """
-        cache_key = f"novels:search:kw={keyword}:p={page}:ps={page_size}"
+        cache_key = f"novels:search:kw={keyword}:p={page}:ps={page_size}:ex={exclude_exclusive}"
         r = _redis()
         if r:
             cached = r.get(cache_key)
@@ -194,7 +196,7 @@ class NovelService:
                     })
                 result = {"items": items, "total": es_results["hits"]["total"]["value"], "page": page, "page_size": page_size}
             else:
-                novels, total = NovelDAO.search_novels(db, keyword, page, page_size)
+                novels, total = NovelDAO.search_novels(db, keyword, page, page_size, exclude_exclusive=exclude_exclusive)
                 result = {
                     "items": [{
                         "novel_unique_id": n.novel_unique_id,
@@ -242,6 +244,7 @@ class NovelService:
             "characters": novel.characters,
             "plot_development": novel.plot_development,
             "cover_image": novel.cover_image,
+            "sign_type": novel.sign_type,
             "created_at": novel.created_at.isoformat() if novel.created_at else None
         }
         if r:
@@ -319,7 +322,7 @@ class NovelService:
                      story_background: str = None, world_setting: str = None,
                      realm_setting: str = None, characters: str = None,
                      genre: str = None, cover_image: str = None,
-                     plot_development: str = None) -> dict:
+                     plot_development: str = None, sign_type: str = None) -> dict:
         """局部更新作品信息，只更新提供的字段并刷新ES索引
         :param db: 数据库会话
         :param novel_unique_id: 作品唯一ID
@@ -360,6 +363,8 @@ class NovelService:
             novel.characters = characters
         if plot_development is not None:
             novel.plot_development = plot_development
+        if sign_type is not None:
+            novel.sign_type = sign_type
 
         db.commit()
 

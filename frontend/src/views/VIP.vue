@@ -209,44 +209,44 @@ export default {
 .hero-sub { color: var(--text-secondary); font-size: 14px }
 .plan-section { margin-bottom: 48px }
 .section-title { text-align: center; font-size: 20px; color: var(--text-primary); margin-bottom: 20px; font-weight: 700 }
-.svip-title { color: #f59e0b }
+.svip-title { color: var(--gold) }
 .loading { display: flex; gap: 10px; align-items: center; justify-content: center; padding: 80px 0; color: var(--text-secondary) }
-.spinner { width: 20px; height: 20px; border: 2px solid rgba(6,182,212,0.2); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block }
+.spinner { width: 20px; height: 20px; border: 2px solid var(--accent-bg); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block }
 @keyframes spin { to { transform: rotate(360deg) } }
 .vip-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 18px; padding: 40px 48px; backdrop-filter: blur(20px); box-shadow: var(--card-shadow) }
 .already-vip { text-align: center; padding: 60px 48px; margin-bottom: 36px }
 .already-vip h2 { color: var(--accent); font-size: 22px; margin-bottom: 8px }
 .already-vip p { color: var(--text-secondary); font-size: 14px; margin-bottom: 4px }
 .already-vip p b { color: #e0e0e0 }
-.svip-card-bg { border-color: rgba(245,158,11,0.3); background: linear-gradient(180deg, rgba(245,158,11,0.05), var(--bg-card)) }
+.svip-card-bg { border-color: var(--gold); background: linear-gradient(180deg, rgba(245,158,11,0.05), var(--bg-card)) }
 .vip-badge { display: inline-block; padding: 6px 20px; border-radius: 20px; background: linear-gradient(135deg, rgba(6,182,212,0.2), rgba(139,92,246,0.2)); color: var(--accent); font-size: 13px; font-weight: 600; margin-bottom: 16px; border: 1px solid var(--accent-glow) }
-.svip-badge { background: linear-gradient(135deg, rgba(245,158,11,0.2), rgba(239,68,68,0.2)); color: #f59e0b; border: 1px solid rgba(245,158,11,0.3) }
+.svip-badge { background: linear-gradient(135deg, rgba(245,158,11,0.2), rgba(239,68,68,0.2)); color: var(--gold); border: 1px solid var(--gold) }
 
 .vip-cards { display: flex; gap: 20px; justify-content: center; align-items: stretch; flex-wrap: wrap }
 .price-card { flex: 1; min-width: 280px; max-width: 340px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 18px; padding: 28px 22px; backdrop-filter: blur(20px); text-align: center; position: relative; overflow: hidden; cursor: pointer; box-shadow: var(--card-shadow); transition: all 0.3s; display: flex; flex-direction: column }
 .price-card:hover { border-color: var(--border-hover); transform: translateY(-4px); box-shadow: var(--card-shadow-hover) }
 .price-card.highlight { border-color: var(--border-focus); box-shadow: var(--card-shadow), 0 0 50px var(--accent-glow); transform: scale(1.03) }
 .price-card.highlight:hover { transform: scale(1.03) translateY(-4px) }
-.svip-card { border-color: rgba(245,158,11,0.25); background: linear-gradient(180deg, rgba(245,158,11,0.04), var(--bg-card)) }
-.svip-card:hover { border-color: rgba(245,158,11,0.5); box-shadow: 0 0 40px rgba(245,158,11,0.15) }
-.highlight-svip { border-color: rgba(245,158,11,0.5); box-shadow: var(--card-shadow), 0 0 60px rgba(245,158,11,0.2); transform: scale(1.03); background: linear-gradient(180deg, rgba(245,158,11,0.08), var(--bg-card)) }
+.svip-card { border-color: var(--gold); background: linear-gradient(180deg, rgba(245,158,11,0.04), var(--bg-card)) }
+.svip-card:hover { border-color: var(--gold); box-shadow: 0 0 40px rgba(245,158,11,0.15) }
+.highlight-svip { border-color: var(--gold); box-shadow: var(--card-shadow), 0 0 60px rgba(245,158,11,0.2); transform: scale(1.03); background: linear-gradient(180deg, rgba(245,158,11,0.08), var(--bg-card)) }
 .highlight-svip:hover { transform: scale(1.03) translateY(-4px); box-shadow: 0 0 70px rgba(245,158,11,0.3) }
 .card-ribbon { position: absolute; top: 12px; right: -28px; transform: rotate(45deg); background: var(--gold-gradient); color: #fff; padding: 3px 36px; font-size: 10px; font-weight: 700 }
 .ribbon-svip { background: linear-gradient(135deg, #f59e0b, #ef4444) }
 .price-card h3 { font-size: 15px; color: var(--text-primary); margin: 0 0 10px; font-weight: 600 }
 .price { margin-bottom: 6px }
 .symbol { font-size: 18px; color: var(--accent); vertical-align: top; font-weight: 600 }
-.svip-card .symbol { color: #f59e0b }
+.svip-card .symbol { color: var(--gold) }
 .amount { font-size: 40px; color: var(--text-primary); font-weight: 800; line-height: 1 }
 .period { font-size: 13px; color: var(--text-muted) }
-.save-tag { font-size: 11px; color: var(--gold); background: rgba(245,158,11,0.1); padding: 2px 10px; border-radius: 10px; display: inline-block; margin-bottom: 14px }
+.save-tag { font-size: 11px; color: var(--gold); background: var(--warning-bg); padding: 2px 10px; border-radius: 10px; display: inline-block; margin-bottom: 14px }
 .features { list-style: none; padding: 0; margin: 0 0 20px; text-align: left; flex: 1 }
 .features li { padding: 5px 0; color: var(--text-secondary); font-size: 12px }
 .btn-pay { width: 100%; padding: 10px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 700; color: var(--btn-text); background: var(--btn-bg); border: 1px solid var(--btn-border); transition: all 0.3s; display: flex; align-items: center; justify-content: center; gap: 8px }
-.btn-pay:hover:not(:disabled) { background: rgba(6,182,212,0.15) }
+.btn-pay:hover:not(:disabled) { background: var(--accent-bg) }
 .btn-highlight { background: var(--brand-gradient); color: #fff; border: none; box-shadow: 0 4px 24px var(--accent-glow) }
 .btn-pay:disabled { opacity: 0.6; cursor: not-allowed }
-.btn-svip { background: linear-gradient(135deg, rgba(245,158,11,0.15), rgba(239,68,68,0.1)); border: 1px solid rgba(245,158,11,0.35); color: #f59e0b }
+.btn-svip { background: linear-gradient(135deg, rgba(245,158,11,0.15), rgba(239,68,68,0.1)); border: 1px solid var(--gold); color: var(--gold) }
 .btn-svip:hover:not(:disabled) { background: linear-gradient(135deg, rgba(245,158,11,0.25), rgba(239,68,68,0.2)) }
 .btn-svip-highlight { background: linear-gradient(135deg, #f59e0b, #ef4444); color: #fff; border: none; box-shadow: 0 4px 24px rgba(245,158,11,0.4) }
 .btn-svip-highlight:hover:not(:disabled) { box-shadow: 0 4px 30px rgba(245,158,11,0.5) }

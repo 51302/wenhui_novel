@@ -309,7 +309,7 @@ export default {
 .spinner { width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block; }
 .spinner-small { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block; }
 @keyframes spin { to { transform: rotate(360deg) } }
-.error { color: #f87171; text-align: center; padding: 40px; }
+.error { color: var(--error-text); text-align: center; padding: 40px; }
 .empty { text-align: center; color: var(--text-muted); padding: 40px; }
 
 .feed-card {
@@ -331,7 +331,7 @@ export default {
 .time { font-size: 12px; color: var(--text-muted); }
 
 .feed-work { display: flex; gap: 12px; align-items: center; padding: 12px; background: var(--bg-card-hover); border-radius: 10px; margin-bottom: 10px; cursor: pointer; transition: background 0.3s; }
-.feed-work:hover { background: rgba(6,182,212,0.06); }
+.feed-work:hover { background: var(--accent-bg) }
 .work-cover { width: 48px; height: 64px; border-radius: 6px; object-fit: cover; flex-shrink: 0; }
 .work-cover.placeholder { display: flex; align-items: center; justify-content: center; background: var(--btn-bg); font-size: 24px; }
 .work-title { color: var(--text-primary); font-size: 15px; display: block; }
@@ -406,14 +406,14 @@ export default {
 /* VIP 提示弹窗 */
 .vip-toast {
   position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(20px);
-  background: rgba(15,15,40,0.95); border: 1px solid rgba(245,158,11,0.4);
+  background: rgba(15,15,40,0.95); border: 1px solid var(--gold);
   padding: 12px 24px; border-radius: 12px; font-size: 13px; color: #fbbf24;
   z-index: 9999; opacity: 0; pointer-events: none; transition: all 0.35s ease;
   box-shadow: 0 8px 30px rgba(0,0,0,0.5), 0 0 20px rgba(245,158,11,0.1);
   backdrop-filter: blur(12px); white-space: nowrap; max-width: 90vw;
 }
 .vip-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
-.toast-vip-link { color: #f59e0b; font-weight: 700; text-decoration: underline; margin: 0 2px; }
+.toast-vip-link { color: var(--gold); font-weight: 700; text-decoration: underline; margin: 0 2px; }
 
 /* 页面置灰效果 */
 .page-disabled {

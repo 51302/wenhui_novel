@@ -40,7 +40,7 @@ class NovelDAO:
     @staticmethod
     def list_novels(db: Session, target_reader: str = None, genre: str = None,
                     page: int = 1, page_size: int = 12, fast_total: bool = True,
-                    author_user_id: int = None) -> tuple:
+                    author_user_id: int = None, exclude_exclusive: bool = False) -> tuple:
         """分页查询作品列表，支持按频道/题材/作者筛选
         :param db: 数据库会话
         :param target_reader: 目标读者频道（男频/女频），可选
@@ -49,6 +49,7 @@ class NovelDAO:
         :param page_size: 每页数量
         :param fast_total: 是否用information_schema快速估算总数
         :param author_user_id: 按作者ID筛选（仅看自己的作品），可选
+        :param exclude_exclusive: 是否排除独家作品（首页/作品圈展示时使用）
         :return: (作品列表, 总数)
         """
         query = db.query(Novel)
@@ -58,6 +59,8 @@ class NovelDAO:
             query = query.filter(Novel.genre == genre)
         if author_user_id:
             query = query.filter(Novel.author_user_id == author_user_id)
+        if exclude_exclusive:
+            query = query.filter(Novel.sign_type != "exclusive")
         # 优化: 用 information_schema 估算行数(毫秒级) 替代 COUNT(*)(全表扫描)
         # 加了作者筛选后走精确 count
         if author_user_id or not fast_total:
@@ -69,17 +72,20 @@ class NovelDAO:
         return novels, int(total)
 
     @staticmethod
-    def search_novels(db: Session, keyword: str, page: int = 1, page_size: int = 12) -> tuple:
+    def search_novels(db: Session, keyword: str, page: int = 1, page_size: int = 12, exclude_exclusive: bool = False) -> tuple:
         """按关键词搜索作品（匹配标题或作者名）
         :param db: 数据库会话
         :param keyword: 搜索关键词
         :param page: 页码
         :param page_size: 每页数量
+        :param exclude_exclusive: 是否排除独家作品
         :return: (作品列表, 总数)
         """
         query = db.query(Novel).filter(
             (Novel.title.like(f"%{keyword}%")) | (Novel.author_name.like(f"%{keyword}%"))
         )
+        if exclude_exclusive:
+            query = query.filter(Novel.sign_type != "exclusive")
         total = query.count()
         novels = query.order_by(desc(Novel.created_at)).offset(
             (page - 1) * page_size).limit(page_size).all()

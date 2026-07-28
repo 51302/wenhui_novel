@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS `novels` (
   `characters` LONGTEXT COMMENT '角色设定(JSON)',
   `cover_image` VARCHAR(512) DEFAULT NULL COMMENT '封面图片',
   `plot_development` TEXT COMMENT '剧情发展路线',
+  `sign_type` VARCHAR(16) DEFAULT 'non_exclusive' COMMENT '签约类型: exclusive=独家, non_exclusive=非独家',
   `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `created_by` VARCHAR(64) DEFAULT NULL COMMENT '创建人',
   `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',

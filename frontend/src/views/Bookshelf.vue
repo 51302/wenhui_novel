@@ -121,7 +121,7 @@ export default {
 .book-genre { color: var(--text-muted); font-size: 11px; background: var(--btn-bg); padding: 2px 8px; border-radius: 4px; display: inline-block; width: fit-content; }
 .book-desc { color: var(--text-secondary); font-size: 12px; line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; margin-top: 4px; }
 
-.progress-bar { margin-top: 8px; padding: 6px 10px; border-radius: 6px; background: rgba(6,182,212,0.08); border: 1px solid rgba(6,182,212,0.15); display: flex; justify-content: space-between; align-items: center; }
+.progress-bar { margin-top: 8px; padding: 6px 10px; border-radius: 6px; background: var(--accent-bg); border: 1px solid var(--accent-bg); display: flex; justify-content: space-between; align-items: center; }
 .progress-bar.new { background: rgba(148,163,184,0.06); border-color: rgba(148,163,184,0.1); }
 .progress-label { font-size: 11px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .progress-bar.new .progress-label { color: var(--text-muted); }
@@ -130,7 +130,7 @@ export default {
 .btn-remove {
   position: absolute; top: 10px; right: 10px; padding: 4px 10px;
   border-radius: 6px; border: none; cursor: pointer;
-  background: rgba(239,68,68,0.15); color: #f87171; font-size: 12px;
+  background: rgba(239,68,68,0.15); color: var(--error-text); font-size: 12px;
   transition: all 0.3s;
 }
 .btn-remove:hover { background: rgba(239,68,68,0.3); }

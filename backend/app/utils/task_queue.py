@@ -13,6 +13,7 @@ import time
 import threading
 import asyncio
 import app.utils.redis_cache as redis_mod
+from app.config import get as cfg_get
 
 TASK_PREFIX = "task:"
 TASK_QUEUE_PREFIX = "task:queue:"
@@ -39,8 +40,9 @@ def _redis():
 
 class TaskQueue:
 
-    # 并发控制：同时只能有 max_concurrent 个任务在处理
-    _semaphore = threading.Semaphore(3)  # 最多3个并发AI任务
+    # 并发控制上限从 config.yaml → task_queue.max_concurrency 读取（默认 3）
+    _max_concurrency = int(cfg_get("task_queue.max_concurrency", 3))
+    _semaphore = threading.Semaphore(_max_concurrency)
     _worker_started = False
     _worker_threads = []
 

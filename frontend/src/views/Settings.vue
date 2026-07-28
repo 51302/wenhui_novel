@@ -304,13 +304,37 @@ export default {
   background: linear-gradient(135deg, #0a0a1a, #1a1040);
 }
 .preview-purple .preview-bar { background: linear-gradient(135deg, #06b6d4, #8b5cf6); }
-.preview-purple .preview-block { background: rgba(6,182,212,0.15); }
+.preview-purple .preview-block { background: var(--accent-bg) }
 
 .preview-blue {
   background: linear-gradient(135deg, #060a18, #101830);
 }
 .preview-blue .preview-bar { background: linear-gradient(135deg, #3b82f6, #60a5fa); }
 .preview-blue .preview-block { background: rgba(59,130,246,0.15); }
+
+.preview-light {
+  background: linear-gradient(135deg, #f0f4fa, #ffffff);
+}
+.preview-light .preview-bar { background: linear-gradient(135deg, #2563eb, #3b82f6); }
+.preview-light .preview-block { background: rgba(37,99,235,0.1); }
+
+.preview-warm {
+  background: linear-gradient(135deg, #fff7ed, #ffffff);
+}
+.preview-warm .preview-bar { background: linear-gradient(135deg, #ea580c, #f97316); }
+.preview-warm .preview-block { background: rgba(234,88,12,0.1); }
+
+.preview-mint {
+  background: linear-gradient(135deg, #ecfdf5, #ffffff);
+}
+.preview-mint .preview-bar { background: linear-gradient(135deg, #059669, #10b981); }
+.preview-mint .preview-block { background: rgba(5,150,105,0.1); }
+
+.preview-sakura {
+  background: linear-gradient(135deg, #fdf2f8, #ffffff);
+}
+.preview-sakura .preview-bar { background: linear-gradient(135deg, #db2777, #ec4899); }
+.preview-sakura .preview-block { background: rgba(219,39,119,0.1); }
 
 .preview-green {
   background: linear-gradient(135deg, #050f14, #08181c);
@@ -322,7 +346,7 @@ export default {
   background: linear-gradient(135deg, #0d0b08, #1a1206);
 }
 .preview-gold .preview-bar { background: linear-gradient(135deg, #f59e0b, #d97706); }
-.preview-gold .preview-block { background: rgba(245,158,11,0.15); }
+.preview-gold .preview-block { background: var(--warning-bg) }
 
 .preview-pink {
   background: linear-gradient(135deg, #0f0518, #1a0830);
@@ -411,12 +435,12 @@ export default {
 }
 .vip-info-card.vip-svip {
   background: linear-gradient(135deg, rgba(245,158,11,0.12), rgba(217,119,6,0.08));
-  border-color: rgba(245,158,11,0.3);
+  border-color: var(--gold);
   box-shadow: 0 0 30px rgba(245,158,11,0.1);
 }
 .vip-info-card.vip-vip {
   background: linear-gradient(135deg, rgba(6,182,212,0.1), rgba(139,92,246,0.08));
-  border-color: rgba(6,182,212,0.25);
+  border-color: var(--accent-bg);
 }
 .vip-info-card.vip-free {
   background: var(--bg-card-hover);
@@ -443,14 +467,14 @@ export default {
   font-size: 13px; color: var(--text-secondary);
 }
 .vip-expire-value.expired {
-  color: #f87171;
+  color: var(--error-text);
 }
 .vip-remaining {
   font-size: 14px; font-weight: 600;
   color: var(--gold);
 }
 .vip-remaining.expired {
-  color: #f87171;
+  color: var(--error-text);
 }
 .btn-upgrade {
   display: inline-block; margin-top: 6px;

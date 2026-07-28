@@ -25,6 +25,7 @@ class Novel(Base):
     characters = Column(Text, comment="角色设定(JSON)")
     plot_development = Column(Text, comment="剧情发展路线")
     cover_image = Column(String(512), nullable=True, comment="封面图片")
+    sign_type = Column(String(16), default="non_exclusive", comment="签约类型：exclusive(独家)/non_exclusive(非独家)")
     created_at = Column(DateTime, default=func.now(), comment="创建时间")
     created_by = Column(String(64), nullable=True, comment="创建人")
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), comment="更新时间")

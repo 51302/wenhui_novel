@@ -1,57 +1,103 @@
-﻿<template>
+<template>
   <div id="app-root">
     <!-- 星空背景 -->
     <div class="stars-layer"></div>
     <!-- 科技网格背景 -->
     <div class="tech-grid"></div>
 
-    <header class="app-header">
-      <div class="header-left">
+    <!-- ===== Dashboard 侧边栏 ===== -->
+    <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
+      <div class="sidebar-header">
         <router-link to="/" class="logo">
           <span class="logo-icon">✦</span>
-          <span class="logo-text">文辉小说</span>
+          <span v-if="!sidebarCollapsed" class="logo-text">文辉小说</span>
         </router-link>
-        <nav class="nav-links">
-          <router-link v-if="user" to="/"><span class="nav-icon">🏠</span> 首页</router-link>
-          <router-link v-if="user" to="/circle" :class="{ 'nav-disabled': !showAllWorks }">
-            <span class="nav-icon">🌐</span> 作品圈
-            <span v-if="!showAllWorks" class="disabled-badge">内测中</span>
-          </router-link>
-          <router-link v-if="user" to="/bookshelf"><span class="nav-icon">📚</span> 书架</router-link>
-          <router-link v-if="user" to="/vip"><span class="nav-icon">💎</span> 开通会员</router-link>
-          <router-link v-if="user" to="/creation"><span class="nav-icon">✏️</span> 创作中心</router-link>
-        </nav>
+        <button class="sidebar-toggle" @click="sidebarCollapsed = !sidebarCollapsed">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="3" y1="12" x2="21" y2="12"/>
+            <line x1="3" y1="6" x2="21" y2="6"/>
+            <line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+        </button>
       </div>
-      <div class="header-right">
-        <!-- 正在验证登录状态，不显示任何按钮避免闪烁 -->
-        <template v-if="authChecking">
-        </template>
-        <template v-else-if="user">
-          <span class="user-info">
-            <span class="user-avatar">{{ user.username[0] }}</span>
-            {{ user.username }}
-            <span v-if="user.vip_level >= 2" class="vip-tag svip-tag" :title="'到期: ' + (user.vip_expire_at || '未知')">· SVIP</span>
-            <span v-else-if="user.vip_level >= 1" class="vip-tag" :title="'到期: ' + (user.vip_expire_at || '未知')">· VIP</span>
-          </span>
-          <router-link v-if="!user.vip_level || user.vip_level < 2" to="/vip" class="btn-vip pulse-glow">💎 {{ user.vip_level >= 1 ? '升级SVIP' : '开通会员' }}</router-link>
-          <router-link to="/my" class="btn-my">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-          </router-link>
-          <router-link to="/settings" class="btn-settings" title="设置">
+
+      <nav class="sidebar-nav">
+        <router-link v-if="user" to="/" class="nav-item">
+          <span class="nav-icon">🏠</span>
+          <span v-if="!sidebarCollapsed" class="nav-label">首页</span>
+        </router-link>
+        <router-link v-if="user" to="/circle" class="nav-item" :class="{ 'nav-disabled': !showAllWorks }">
+          <span class="nav-icon">🌐</span>
+          <span v-if="!sidebarCollapsed" class="nav-label">作品圈</span>
+          <span v-if="!sidebarCollapsed && !showAllWorks" class="disabled-badge">内测</span>
+        </router-link>
+        <router-link v-if="user" to="/bookshelf" class="nav-item">
+          <span class="nav-icon">📚</span>
+          <span v-if="!sidebarCollapsed" class="nav-label">书架</span>
+        </router-link>
+        <router-link v-if="user" to="/creation" class="nav-item">
+          <span class="nav-icon">✏️</span>
+          <span v-if="!sidebarCollapsed" class="nav-label">创作中心</span>
+        </router-link>
+        <router-link v-if="user" to="/vip" class="nav-item">
+          <span class="nav-icon">💎</span>
+          <span v-if="!sidebarCollapsed" class="nav-label">开通会员</span>
+        </router-link>
+      </nav>
+
+      <!-- 侧边栏底部：用户信息 -->
+      <div v-if="user && !sidebarCollapsed" class="sidebar-footer">
+        <router-link to="/my" class="user-card">
+          <span class="user-avatar">{{ user.username[0] }}</span>
+          <div class="user-detail">
+            <span class="user-name">{{ user.username }}</span>
+            <span v-if="user.vip_level >= 2" class="vip-tag svip-tag">SVIP</span>
+            <span v-else-if="user.vip_level >= 1" class="vip-tag">VIP</span>
+          </div>
+        </router-link>
+        <div class="footer-actions">
+          <router-link to="/settings" class="icon-btn" title="设置">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </router-link>
-          <button class="btn-logout" @click="logout">退出</button>
-        </template>
-        <template v-else>
-          <router-link to="/login" class="btn-login">登 录</router-link>
-          <router-link to="/register" class="btn-register">注 册</router-link>
-        </template>
+          <button class="icon-btn" @click="logout" title="退出">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          </button>
+        </div>
       </div>
-    </header>
 
-    <main class="app-main">
-      <router-view @login-success="onLoginSuccess" />
-    </main>
+      <!-- 折叠时的迷你用户头像 -->
+      <div v-if="user && sidebarCollapsed" class="sidebar-footer collapsed-footer">
+        <router-link to="/my" class="user-avatar-mini">{{ user.username[0] }}</router-link>
+      </div>
+    </aside>
+
+    <!-- ===== 主内容区 ===== -->
+    <div class="main-area" :class="{ expanded: sidebarCollapsed }">
+      <!-- 顶部状态栏 -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <button class="mobile-menu-btn" @click="sidebarCollapsed = !sidebarCollapsed">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="topbar-right">
+          <template v-if="authChecking">
+          </template>
+          <template v-else-if="user">
+            <router-link v-if="!user.vip_level || user.vip_level < 2" to="/vip" class="btn-vip pulse-glow">💎 {{ user.vip_level >= 1 ? '升级SVIP' : '开通会员' }}</router-link>
+          </template>
+          <template v-else>
+            <router-link to="/login" class="btn-login">登 录</router-link>
+            <router-link to="/register" class="btn-register">注 册</router-link>
+          </template>
+        </div>
+      </header>
+
+      <!-- 页面内容 -->
+      <main class="app-main">
+        <router-view @login-success="onLoginSuccess" />
+      </main>
+    </div>
 
     <!-- 底部科技装饰线 -->
     <div class="bottom-line"></div>
@@ -70,6 +116,7 @@ export default {
     const user = ref(null)
     const authChecking = ref(true)
     const showAllWorks = ref(true)
+    const sidebarCollapsed = ref(false)
 
     const fetchConfig = async () => {
       try {
@@ -117,7 +164,7 @@ export default {
       router.push('/')
     }
 
-    return { user, authChecking, showAllWorks, onLoginSuccess, logout }
+    return { user, authChecking, showAllWorks, sidebarCollapsed, onLoginSuccess, logout }
   }
 }
 </script>
@@ -165,38 +212,56 @@ input, textarea, select, button { font-family: inherit; }
   50% { opacity: 0.5; }
 }
 
-/* ===== 顶部导航 ===== */
-.app-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0 32px; height: 64px;
+/* ===== Dashboard 侧边栏 ===== */
+.sidebar {
+  position: fixed; top: 0; left: 0; bottom: 0; width: 240px; z-index: 100;
   background: var(--bg-nav);
   backdrop-filter: blur(20px);
-  border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; z-index: 100;
-  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 4px 0 30px rgba(0, 0, 0, 0.15);
 }
-.header-left { display: flex; align-items: center; gap: 40px; }
+.sidebar.collapsed { width: 72px; }
+
+.sidebar-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 20px 20px 16px; min-height: 64px;
+}
 .logo { 
-  display: flex; align-items: center; gap: 8px; 
-  font-size: 22px; font-weight: 800;
+  display: flex; align-items: center; gap: 10px; 
+  font-size: 20px; font-weight: 800;
   background: var(--brand-gradient);
   -webkit-background-clip: text; -webkit-text-fill-color: transparent;
 }
-.logo-icon { font-size: 26px; -webkit-text-fill-color: var(--accent); filter: drop-shadow(0 0 8px var(--accent-glow)); }
-.logo-text { font-size: 22px; }
+.logo-icon { font-size: 24px; -webkit-text-fill-color: var(--accent); filter: drop-shadow(0 0 8px var(--accent-glow)); }
+.logo-text { font-size: 20px; white-space: nowrap; }
 
-.nav-links { display: flex; gap: 8px; }
-.nav-links a { 
-  color: var(--text-secondary); font-size: 14px; padding: 8px 16px; border-radius: 8px;
-  transition: all 0.3s; position: relative; font-weight: 500;
+.sidebar-toggle {
+  background: transparent; border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px; cursor: pointer; color: var(--text-secondary);
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.3s;
 }
-.nav-links a:hover { color: var(--accent); background: rgba(6, 182, 212, 0.08); }
-.nav-links .router-link-active { 
-  color: var(--accent); 
-  background: rgba(6, 182, 212, 0.1);
+.sidebar-toggle:hover { color: var(--accent); border-color: var(--border-hover); background: var(--btn-bg); }
+
+.sidebar-nav {
+  flex: 1; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px;
+}
+.nav-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; border-radius: 10px;
+  color: var(--text-secondary); font-size: 14px; font-weight: 500;
+  transition: all 0.3s; position: relative;
+}
+.nav-item:hover { color: var(--accent); background: var(--btn-bg); }
+.nav-item.router-link-active {
+  color: var(--accent);
+  background: var(--btn-bg);
   box-shadow: 0 0 20px var(--accent-glow);
 }
-.nav-icon { margin-right: 4px; }
+.nav-icon { font-size: 18px; flex-shrink: 0; width: 24px; text-align: center; }
+.nav-label { white-space: nowrap; }
 
 .nav-disabled {
   opacity: 0.5 !important;
@@ -206,63 +271,117 @@ input, textarea, select, button { font-family: inherit; }
 }
 .disabled-badge {
   display: inline-block;
-  margin-left: 6px;
+  margin-left: auto;
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
-  color: #f59e0b;
-  background: rgba(245, 158, 11, 0.15);
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: var(--gold);
+  background: var(--warning-bg);
+  border: 1px solid var(--border-hover);
   border-radius: 10px;
 }
 
-.header-right { display: flex; align-items: center; gap: 14px; }
-.user-info { 
-  display: flex; align-items: center; gap: 8px;
-  font-size: 14px; color: var(--secondary); 
+/* 侧边栏底部用户信息 */
+.sidebar-footer {
+  padding: 16px 12px; border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 12px;
 }
+.user-card {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: 10px; transition: all 0.3s;
+}
+.user-card:hover { background: var(--btn-bg); }
 .user-avatar {
-  width: 32px; height: 32px; border-radius: 50%;
+  width: 36px; height: 36px; border-radius: 50%;
+  background: var(--brand-gradient);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700; color: #fff; flex-shrink: 0;
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+.user-detail { display: flex; flex-direction: column; gap: 2px; }
+.user-name { font-size: 13px; color: var(--text-primary); font-weight: 600; }
+.vip-tag {
+  color: var(--gold); font-weight: 700; font-size: 11px;
+  text-shadow: 0 0 6px var(--accent-glow);
+}
+.svip-tag { color: var(--gold); }
+
+.footer-actions { display: flex; gap: 8px; }
+.icon-btn {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  padding: 8px; border-radius: 8px; border: 1px solid var(--border);
+  background: transparent; color: var(--text-secondary); cursor: pointer;
+  transition: all 0.3s;
+}
+.icon-btn:hover { color: var(--accent); border-color: var(--border-hover); background: var(--btn-bg); }
+
+/* 折叠时的迷你头像 */
+.collapsed-footer { padding: 16px 0; border-top: 1px solid var(--border); display: flex; justify-content: center; }
+.user-avatar-mini {
+  width: 36px; height: 36px; border-radius: 50%;
   background: var(--brand-gradient);
   display: flex; align-items: center; justify-content: center;
   font-size: 14px; font-weight: 700; color: #fff;
   box-shadow: 0 0 12px var(--accent-glow);
 }
-.vip-tag {
-  color: var(--gold); font-weight: 700; cursor: help;
-  text-shadow: 0 0 6px rgba(245,158,11,0.4);
+
+/* ===== 主内容区 ===== */
+.main-area {
+  margin-left: 240px; min-height: 100vh;
+  transition: margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex; flex-direction: column;
+}
+.main-area.expanded { margin-left: 72px; }
+
+/* 顶部状态栏 */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 24px; height: 56px; min-height: 56px;
+  background: var(--bg-nav);
+  backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 90;
+}
+.topbar-left { display: flex; align-items: center; gap: 12px; }
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+
+.mobile-menu-btn {
+  display: none; background: transparent; border: none; cursor: pointer;
+  color: var(--text-secondary); padding: 6px;
 }
 
-.btn-login, .btn-register, .btn-logout, .btn-vip, .btn-settings {
+/* 按钮 */
+.btn-login, .btn-register, .btn-vip {
   padding: 8px 20px; border-radius: 8px; font-size: 13px; cursor: pointer; border: none;
   font-weight: 600; transition: all 0.3s;
 }
 .btn-vip {
   background: var(--gold-gradient); color: #fff;
-  box-shadow: 0 4px 16px rgba(245,158,11,0.3); font-size: 12px;
+  box-shadow: 0 4px 16px var(--accent-glow); font-size: 12px;
 }
 .btn-vip:hover { transform: translateY(-1px); }
-.btn-settings {
-  background: transparent; color: var(--text-secondary); border: 1px solid var(--border);
-  padding: 6px 10px; display: flex; align-items: center; justify-content: center;
-}
-.btn-settings:hover { color: var(--accent); border-color: var(--border-hover); box-shadow: 0 0 12px var(--accent-glow); }
 .btn-login { 
   background: transparent; color: var(--accent); border: 1px solid var(--border-hover); 
 }
-.btn-login:hover { background: rgba(6, 182, 212, 0.1); box-shadow: 0 0 15px var(--accent-glow); }
+.btn-login:hover { background: var(--btn-bg); box-shadow: 0 0 15px var(--accent-glow); }
 .btn-register { 
   background: var(--brand-gradient); color: #fff;
   box-shadow: 0 4px 20px var(--accent-glow);
 }
 .btn-register:hover { box-shadow: 0 4px 30px var(--accent-glow-strong); transform: translateY(-1px); }
-.btn-logout { 
-  background: transparent; color: var(--text-secondary); border: 1px solid var(--border);
-}
-.btn-logout:hover { color: #f87171; border-color: rgba(248, 113, 113, 0.4); }
 
 .app-main { 
-  min-height: calc(100vh - 64px); padding: 32px; max-width: 1280px; margin: 0 auto; 
+  flex: 1; padding: 24px; max-width: 1400px; margin: 0 auto; width: 100%;
   position: relative; z-index: 1;
+}
+
+/* ===== 响应式：移动端侧边栏变浮层 ===== */
+@media (max-width: 768px) {
+  .sidebar { width: 72px; }
+  .sidebar .nav-label, .sidebar .logo-text, .sidebar .sidebar-footer:not(.collapsed-footer) { display: none; }
+  .main-area { margin-left: 72px; }
+  .main-area.expanded { margin-left: 72px; }
+  .mobile-menu-btn { display: flex; }
+  .app-main { padding: 16px; }
 }
 </style>

@@ -21,6 +21,7 @@ from app.api.upload import router as upload_router
 from app.api.vip import router as vip_router
 from app.api.bookshelf import router as bookshelf_router
 from app.api.config import router as config_router
+from app.api.screenplay import router as screenplay_router
 from app.utils.redis_cache import RedisCache, redis_client as global_redis
 from app.utils.logger import system_logger
 from app.utils.task_queue import TaskQueue
@@ -56,14 +57,23 @@ async def lifespan(application: FastAPI):
         system_logger.warning(f"服务启动完成(部分服务不可用): {e}")
 
     # ====== 启动后台 Worker 线程（消费 Redis 任务队列） ======
+    # 各队列并发数从 config.yaml → task_queue.workers.* 读取
     try:
         from app.service.chapter_service import ChapterService
-        TaskQueue.start_worker("ai:extract", ChapterService._worker_extract_info, concurrency=2)
-        TaskQueue.start_worker("ai:generate", ChapterService._worker_generate, concurrency=2)
-        TaskQueue.start_worker("ai:regenerate", ChapterService._worker_regenerate, concurrency=2)
-        TaskQueue.start_worker("ai:continue", ChapterService._worker_continue, concurrency=2)
-        TaskQueue.start_worker("ai:reset-memory", ChapterService._worker_reset_memory, concurrency=1)
-        system_logger.info("后台Worker线程启动完成 (ai:extract/generate/regenerate/continue/reset-memory)")
+        def _worker_concurrency(queue_name: str, default: int) -> int:
+            return int(cfg_get(f"task_queue.workers.{queue_name}", default))
+
+        TaskQueue.start_worker("ai:extract",      ChapterService._worker_extract_info,  concurrency=_worker_concurrency("ai:extract", 2))
+        TaskQueue.start_worker("ai:generate",     ChapterService._worker_generate,      concurrency=_worker_concurrency("ai:generate", 2))
+        TaskQueue.start_worker("ai:regenerate",   ChapterService._worker_regenerate,    concurrency=_worker_concurrency("ai:regenerate", 2))
+        TaskQueue.start_worker("ai:continue",     ChapterService._worker_continue,      concurrency=_worker_concurrency("ai:continue", 2))
+        TaskQueue.start_worker("ai:reset-memory", ChapterService._worker_reset_memory,  concurrency=_worker_concurrency("ai:reset-memory", 1))
+        TaskQueue.start_worker("ai:screenplay",   ChapterService._worker_generate_screenplay, concurrency=_worker_concurrency("ai:screenplay", 1))
+        system_logger.info(
+            f"后台Worker线程启动完成 "
+            f"(max_concurrency={TaskQueue._max_concurrency}, "
+            f"workers={ {q: _worker_concurrency(q, 0) for q in ['ai:extract','ai:generate','ai:regenerate','ai:continue','ai:reset-memory','ai:screenplay']} })"
+        )
     except Exception as e:
         system_logger.error(f"启动Worker线程失败: {e}")
 
@@ -98,6 +108,7 @@ app.include_router(upload_router)
 app.include_router(vip_router)
 app.include_router(bookshelf_router)
 app.include_router(config_router)
+app.include_router(screenplay_router)
 
 # ====== 请求日志中间件 ======
 @app.middleware("http")
