@@ -93,10 +93,10 @@ services:
       retries: 5
 
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    # image: crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com/wenhui_novel/wenhui_novel-backend:v1.1.0
+    # build:
+      # context: ./backend
+      # dockerfile: Dockerfile
+    image: crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com/wenhui_novel/wenhui_novel-backend:v1.1.0-20260226
     container_name: wenhui-backend
     restart: unless-stopped
     ports:
@@ -127,7 +127,7 @@ services:
     volumes:
       - ./backend/app:/app/app
       - ./data/backend/novel_structure_data:/app/app/novel_structure_data
-      - ./data/backend/logs:/app/app/logs
+      - ./data/backend/logs:/app/logs
       - ./backend/app/conf/config.yaml:/app/app/conf/config.yaml
     depends_on:
       mysql:
@@ -140,10 +140,10 @@ services:
         condition: service_healthy        # ✅ 等待 SeaweedFS Filer 健康检查通过
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    # image: crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com/wenhui_novel/wenhui_novel-frontend:v1.1.0
+    # build:
+      # context: ./frontend
+      # dockerfile: Dockerfile
+    image: crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com/wenhui_novel/wenhui_novel-frontend:v1.1.0-20260226
     container_name: wenhui-frontend
     restart: unless-stopped
     ports:

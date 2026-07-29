@@ -124,7 +124,8 @@ https://cr.console.aliyun.com/cn-hangzhou/instance/repositories
 
 ### 登录命令
 ```bash
-docker login --username=你的阿里云用户名 crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com
+docker login --username=aliyun8562152228 crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com
+密码： lwp123.com
 ```
 
 ### 推送命令
@@ -134,6 +135,11 @@ docker tag wenhui_novel-frontend crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.a
 
 docker push crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com/wenhui_novel/wenhui_novel-backend:v1.1.0
 docker push crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com/wenhui_novel/wenhui_novel-frontend:v1.1.0
+```
+
+### 修改权限
+```bash
+docker exec wenhui-mysql mysql -uwenhui -pwenhui123 easy-novel -e "UPDATE users SET vip_level=2, vip_expire_at=DATE_ADD(NOW(), INTERVAL 365 DAY) WHERE username='normaluser';"
 ```
 
 ---

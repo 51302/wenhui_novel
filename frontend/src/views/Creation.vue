@@ -596,17 +596,15 @@ export default {
       }
       generating.value = true
       try {
-        const res = await api.post('/chapters/generate', null, {
-          params: {
-            novel_unique_id: chapterNovel.value.novel_unique_id,
-            chapter_name: chapterForm.chapter_name,
-            characters_involved: chapterForm.characters_involved,
-            organizations: chapterForm.organizations,
-            locations: chapterForm.locations,
-            skills: chapterForm.skills,
-            word_count: chapterForm.word_count,
-            chapter_summary: chapterForm.chapter_summary
-          }
+        const res = await api.post('/chapters/generate', {
+          novel_unique_id: chapterNovel.value.novel_unique_id,
+          chapter_name: chapterForm.chapter_name,
+          characters_involved: chapterForm.characters_involved,
+          organizations: chapterForm.organizations,
+          locations: chapterForm.locations,
+          skills: chapterForm.skills,
+          word_count: chapterForm.word_count,
+          chapter_summary: chapterForm.chapter_summary
         })
         if (res.状态码 === 200 && res.数据 && res.数据.task_id) {
           // 刷新用户信息（更新免费次数）
@@ -819,9 +817,8 @@ export default {
       regenerating.value = true
       try {
         const res = await api.post(`/chapters/regenerate/${editingChapterId.value}`, {
-          chapter_summary: editChapterForm.chapter_summary
-        }, {
-          params: { word_count: 2000 }
+          chapter_summary: editChapterForm.chapter_summary,
+          word_count: 2000
         })
         if (res.状态码 === 200) {
           const newContent = res.数据?.content

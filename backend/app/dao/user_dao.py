@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from app.models.user import User
 from typing import Optional
@@ -11,6 +11,13 @@ DAILY_QUOTA_MAP = {
     2: 50,  # SVIP: 50章/天
 }
 
+_BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def _beijing_now() -> datetime:
+    """获取当前北京时间（东八区）"""
+    return datetime.now(timezone.utc).astimezone(_BEIJING_TZ)
+
 
 class UserDAO:
 
@@ -20,10 +27,10 @@ class UserDAO:
         如果 quota_date 不是今天（按北京时间），则重置为对应等级的每日配额
         :param user: 用户对象（会直接修改属性，外部需要 commit）
         """
-        now = datetime.now()  # 服务器本地时间（北京时间 GMT+8）
+        now_bj = _beijing_now()
         quota_today = user.quota_date if user.quota_date else None
-        if quota_today != now.date():
-            user.quota_date = now.date()
+        if quota_today != now_bj.date():
+            user.quota_date = now_bj.date()
             user.free_generate_quota = DAILY_QUOTA_MAP.get(user.vip_level, 3)
 
     @staticmethod
