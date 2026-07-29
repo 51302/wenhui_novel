@@ -5,7 +5,7 @@ from app.models.base import get_db
 from app.models.chapter import Chapter
 from app.models.novel import Novel
 from app.service.chapter_service import ChapterService
-from app.api.deps import get_current_user, check_generate_permission
+from app.api.deps import get_current_user, check_generate_permission, require_svip
 from fastapi.responses import StreamingResponse
 from app.utils.response import fail, success
 from app.utils.logger import system_logger
@@ -78,9 +78,16 @@ class GenerateChapterBody(BaseModel):
 def generate_chapter(
     body: GenerateChapterBody,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(check_generate_permission),
 ):
     """调用AI生成章节正文内容（异步：提交队列后返回 task_id，前端轮询结果）"""
+    # 草稿箱检测：生成新章节前必须保证草稿箱为空
+    from app.dao.chapter_dao import ChapterDAO
+    drafts = ChapterDAO.get_drafts(db, current_user["user_id"])
+    if drafts:
+        draft_names = "、".join(d.chapter_name for d in drafts[:5])
+        return fail(f"草稿箱未删除，请先删除草稿箱中的内容（草稿：{draft_names}）后再生成新章节", code=400)
+
     task_id = TaskQueue.push("ai:generate", {
         "novel_unique_id": body.novel_unique_id,
         "user_id": current_user["user_id"],
@@ -112,7 +119,8 @@ async def regenerate_chapter(
     chapter_unique_id: str,
     body: RegenerateBody,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(check_generate_permission),
+    _svip: dict = Depends(require_svip),
 ):
     """重新生成指定章节（同步：直接调用 AI 并返回内容，前端不需要轮询）"""
     from app.service.chapter_service import ChapterService
@@ -133,7 +141,7 @@ def continue_chapter(
     chapter_unique_id: str,
     word_count: int = 2000,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(check_generate_permission),
 ):
     """AI续写指定章节（异步：提交队列后返回 task_id，前端轮询结果）"""
     task_id = TaskQueue.push("ai:continue", {
@@ -298,6 +306,7 @@ def today_published_count(
 def reset_novel_memory(
     novel_unique_id: str,
     current_user: dict = Depends(get_current_user),
+    _svip: dict = Depends(require_svip),
     db: Session = Depends(get_db),
 ):
     """重置指定作品的全部 Redis 记忆体（异步队列）"""

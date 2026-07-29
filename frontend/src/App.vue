@@ -6,7 +6,7 @@
     <div class="tech-grid"></div>
 
     <!-- ===== Dashboard 侧边栏 ===== -->
-    <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
+    <aside v-if="!hideSidebar" class="sidebar" :class="{ collapsed: sidebarCollapsed }">
       <div class="sidebar-header">
         <router-link to="/" class="logo">
           <span class="logo-icon">✦</span>
@@ -72,7 +72,7 @@
     </aside>
 
     <!-- ===== 主内容区 ===== -->
-    <div class="main-area" :class="{ expanded: sidebarCollapsed }">
+    <div class="main-area" :class="{ expanded: sidebarCollapsed, 'no-sidebar': hideSidebar }">
       <!-- 顶部状态栏 -->
       <header class="topbar">
         <div class="topbar-left">
@@ -105,18 +105,20 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import api from './api'
 
 export default {
   name: 'App',
   setup() {
     const router = useRouter()
+    const route = useRoute()
     const user = ref(null)
     const authChecking = ref(true)
     const showAllWorks = ref(true)
     const sidebarCollapsed = ref(false)
+    const hideSidebar = computed(() => ['/login', '/register'].includes(route.path))
 
     const fetchConfig = async () => {
       try {
@@ -164,7 +166,7 @@ export default {
       router.push('/')
     }
 
-    return { user, authChecking, showAllWorks, sidebarCollapsed, onLoginSuccess, logout }
+    return { user, authChecking, showAllWorks, sidebarCollapsed, hideSidebar, onLoginSuccess, logout }
   }
 }
 </script>
@@ -332,6 +334,7 @@ input, textarea, select, button { font-family: inherit; }
   display: flex; flex-direction: column;
 }
 .main-area.expanded { margin-left: 72px; }
+.main-area.no-sidebar { margin-left: 0; }
 
 /* 顶部状态栏 */
 .topbar {

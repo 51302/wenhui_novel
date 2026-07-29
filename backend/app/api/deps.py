@@ -124,12 +124,23 @@ def require_vip(current_user: dict = Depends(get_current_user)):
     return current_user
 
 
+def require_svip(current_user: dict = Depends(get_current_user)):
+    """要求当前用户必须是SVIP，否则返回403
+    :param current_user: 当前登录用户信息
+    :return: 当前用户信息
+    :raises HTTPException: 非SVIP用户抛出403
+    """
+    if current_user.get("vip_level", 0) < 2:
+        raise HTTPException(status_code=403, detail="仅 SVIP 用户可操作，请升级至SVIP")
+    return current_user
+
+
 def check_creation_access(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """创作权限检查：检查各等级每日配额是否用完（不扣减，仅检查）
-    VIP=10章/天, SVIP=50章/天, 免费=6章/天
+    免费=共6次(用完即止), VIP=10章/天, SVIP=50章/天
     """
     user = UserDAO.get_by_id(db, current_user["user_id"])
     if not user:
@@ -148,7 +159,9 @@ def check_creation_access(
     if quota <= 0:
         max_quota = DAILY_QUOTA_MAP.get(vip_level, 6)
         level_name = "SVIP" if vip_level >= 2 else ("VIP" if vip_level >= 1 else "免费")
-        raise HTTPException(status_code=403, detail=f"今日{level_name}发布次数已用完({max_quota}次)，请明天再试")
+        if vip_level == 0:
+            raise HTTPException(status_code=403, detail="免费生成次数已用完(共6次)，请开通VIP继续使用")
+        raise HTTPException(status_code=403, detail=f"今日{level_name}生成次数已用完({max_quota}次)，请开通VIP")
     current_user["free_generate_quota"] = quota
     return current_user
 
@@ -157,8 +170,8 @@ def check_generate_permission(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """发布权限检查：检查各等级每日发布配额并扣减1次
-    VIP=10章/天, SVIP=50章/天, 免费=6章/天
+    """发布权限检查：检查各等级配额并扣减1次
+    免费=共6次(用完即止), VIP=10章/天, SVIP=50章/天
     """
     user = UserDAO.get_by_id(db, current_user["user_id"])
     if not user:
@@ -171,7 +184,9 @@ def check_generate_permission(
         vip_level = user.vip_level
         max_quota = DAILY_QUOTA_MAP.get(vip_level, 6)
         level_name = "SVIP" if vip_level >= 2 else ("VIP" if vip_level >= 1 else "免费")
-        raise HTTPException(status_code=403, detail=f"今日{level_name}发布次数已用完({max_quota}次)，请明天再试")
+        if vip_level == 0:
+            raise HTTPException(status_code=403, detail="免费生成次数已用完(共6次)，请开通VIP继续使用")
+        raise HTTPException(status_code=403, detail=f"今日{level_name}生成次数已用完({max_quota}次)，请开通VIP")
     # 更新 current_user 中的信息
     current_user["free_generate_quota"] = remaining
     current_user["vip_level"] = user.vip_level

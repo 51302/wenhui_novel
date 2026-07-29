@@ -4,11 +4,11 @@ from app.models.user import User
 from typing import Optional
 
 
-# 各会员等级每日 AI 生成配额上限
+# 各等级 AI 生成配额（免费用户总共6次，不重置；VIP/SVIP每日重置）
 DAILY_QUOTA_MAP = {
-    0: 6,   # 免费用户: 6章/天（免费体验）
-    1: 10,  # VIP: 10章/天
-    2: 50,  # SVIP: 50章/天
+    0: 6,   # 免费用户: 共6次（用完即止）
+    1: 10,  # VIP: 10次/天
+    2: 50,  # SVIP: 50次/天
 }
 
 _BEIJING_TZ = timezone(timedelta(hours=8))
@@ -25,8 +25,11 @@ class UserDAO:
     def _reset_daily_quota(user: User):
         """
         如果 quota_date 不是今天（按北京时间），则重置为对应等级的每日配额
+        免费用户(vip_level=0)不重置，总共只有6次，用完即止
         :param user: 用户对象（会直接修改属性，外部需要 commit）
         """
+        if user.vip_level == 0:
+            return  # 免费用户不重置，一共只有6次
         now_bj = _beijing_now()
         quota_today = user.quota_date if user.quota_date else None
         if quota_today != now_bj.date():
@@ -121,7 +124,7 @@ class UserDAO:
             if datetime.utcnow() > user.vip_expire_at:
                 user.vip_level = 0
                 user.vip_expire_at = None
-                user.free_generate_quota = 3  # 降级后重置为免费配额
+                user.free_generate_quota = 0  # 降级后不再有免费次数，需重新开通VIP
                 db.commit()
                 return True
         return False
@@ -129,8 +132,8 @@ class UserDAO:
     @staticmethod
     def decrement_generate_quota(db: Session, user_id: int) -> int:
         """
-        扣减1次 AI 生成次数（含每日自动重置）
-        免费=3次/天, VIP=10次/天, SVIP=50次/天
+        扣减1次 AI 生成次数（VIP/SVIP含每日自动重置）
+        免费=总共6次(用完即止), VIP=10次/天, SVIP=50次/天
         :param db: 数据库会话
         :param user_id: 用户ID
         :return: 剩余次数；-1表示配额不足

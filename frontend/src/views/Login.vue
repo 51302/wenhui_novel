@@ -4,43 +4,45 @@
     <div class="hero-panel">
       <div class="hero-glow"></div>
       <div class="hero-content">
-        <div class="hero-badge">✨ AI 赋能创作</div>
+        <div class="hero-badge">💡 所想即所写</div>
         <h1 class="hero-title">
-          让创作<span class="highlight">更简单</span>
+          你有故事，<br/>AI 帮你<span class="highlight">写出来</span>
         </h1>
         <p class="hero-desc">
-          输入你的灵感，AI 帮你完成故事。从世界观搭建到章节续写，<br/>每一步都有智能助手相伴。
+          脑海里有一个精彩的故事，却不知如何下笔？<br/>
+          文辉小说用 AI 将你的灵感变成引人入胜的篇章——<br/>
+          你只管构思，剩下的交给 AI。
         </p>
 
         <!-- 三大卖点 -->
         <div class="feature-list">
           <div class="feature-item">
-            <span class="feature-icon">🤖</span>
+            <span class="feature-icon">🎯</span>
             <div>
-              <strong>AI 智能续写</strong>
-              <p>基于你的故事设定，一键生成后续章节，灵感永不枯竭</p>
+              <strong>零门槛创作</strong>
+              <p>不需要文笔基础，不需要写作经验，只要你有想法，AI 就能把它变成精彩小说</p>
+            </div>
+          </div>
+          <div class="feature-item">
+            <span class="feature-icon">⚡</span>
+            <div>
+              <strong>灵感秒变故事</strong>
+              <p>输入几句话的想法，AI 自动构建世界观、设定角色、生成章节，灵感即刻落地</p>
             </div>
           </div>
           <div class="feature-item">
             <span class="feature-icon">📖</span>
             <div>
-              <strong>全部免费阅读</strong>
-              <p>所有创作者的作品对读者完全免费，让好故事被更多人看到</p>
-            </div>
-          </div>
-          <div class="feature-item">
-            <span class="feature-icon">🌟</span>
-            <div>
-              <strong>作品圈互动</strong>
-              <p>点赞、评论、关注你喜爱的作者，创作路上不再孤单</p>
+              <strong>专业级叙事品质</strong>
+              <p>生动的场景描写、细腻的人物刻画、层层递进的情节推进，不输专业作者</p>
             </div>
           </div>
         </div>
 
         <div class="hero-stats">
-          <div class="stat"><strong>AI 驱动</strong><span>智能创作引擎</span></div>
-          <div class="stat"><strong>免费阅读</strong><span>所有作品开放</span></div>
-          <div class="stat"><strong>即时发布</strong><span>写即所享</span></div>
+          <div class="stat"><strong>无文笔</strong><span>也能写小说</span></div>
+          <div class="stat"><strong>有灵感</strong><span>就能出大作</span></div>
+          <div class="stat"><strong>零门槛</strong><span>所想即所写</span></div>
         </div>
       </div>
     </div>
@@ -51,7 +53,7 @@
         <div class="card-header">
           <div class="card-icon">✦</div>
           <h2>登录文辉小说</h2>
-          <p class="card-sub">开启你的 AI 创作之旅</p>
+          <p class="card-sub">有想法就够了，AI 替你写</p>
         </div>
 
         <form @submit.prevent="handleLogin">

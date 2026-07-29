@@ -21,8 +21,20 @@
       </div>
       <h2 :style="vipLevel >= 2 ? 'color:#f59e0b' : ''">{{ statusTitle }}</h2>
       <p v-if="vipExpireAt">到期时间：{{ vipExpireAt }}</p>
-      <p v-if="vipLevel >= 2">每日可生成 <b>50</b> 章，畅享极致创作体验</p>
-      <p v-else>每日可生成 <b>10</b> 章，享受 AI 创作特权</p>
+      <div class="vip-permissions">
+        <div class="perm-group">
+          <h4>已解锁权限</h4>
+          <ul>
+            <li v-if="vipLevel >= 2"><b>每日 50 章</b> AI 生成（每天刷新）</li>
+            <li v-else><b>每日 10 章</b> AI 生成（每天刷新）</li>
+            <li>📋 章节复制权限</li>
+            <li>📚 创建并发布作品</li>
+            <li>🌐 作品圈互动</li>
+            <li v-if="vipLevel >= 2">🎬 <b>剧本制作</b>（SVIP专属）</li>
+            <li v-if="vipLevel >= 2">🤖 <b>AI视频制作</b>（即将上线）</li>
+          </ul>
+        </div>
+      </div>
     </div>
 
     <!-- ============================================ -->
@@ -76,12 +88,12 @@ import api from '../api'
 
 // 所有套餐定义
 const ALL_PLANS = {
-  vip_monthly:   { key: 'vip_monthly',   name: 'VIP 月度', price: '59.00',  priceNum: 59,  period: '/月', save: '',                 features: ['✨ 10章/天 AI生成','📚 创建并发布作品','🌐 作品圈互动','🎨 高级排版','⚡ 优先队列'] },
-  vip_quarterly: { key: 'vip_quarterly', name: 'VIP 季度', price: '149.00', priceNum: 149, period: '/季', save: '省 ¥28 · 约 ¥49.67/月', features: ['✨ 月度全部特权','📚 无限制发布','🌐 优先曝光','🎨 高级排版','⚡ 极速队列'] },
-  vip_yearly:    { key: 'vip_yearly',    name: 'VIP 年度', price: '499.00', priceNum: 499, period: '/年', save: '省 ¥209 · 约 ¥41.58/月', features: ['✨ 全年全部特权','📚 无限创作','🌐 首页推荐','🎨 年度徽章','⚡ 超优先级'] },
-  svip_monthly:   { key: 'svip_monthly',   name: 'SVIP 月度', price: '79.00',  priceNum: 79,  period: '/月', save: '',                 features: ['👑 50章/天 AI生成','📚 无限创作发布','🌐 首页推荐','🎨 专属徽章','⚡ 极速队列'] },
-  svip_quarterly: { key: 'svip_quarterly', name: 'SVIP 季度', price: '199.00', priceNum: 199, period: '/季', save: '省 ¥38 · 约 ¥66.33/月', features: ['👑 月度全特权','📚 无限制创作','🌐 优先推荐','🎨 专属徽章','⚡ 闪电队列'] },
-  svip_yearly:    { key: 'svip_yearly',    name: 'SVIP 年度', price: '699.00', priceNum: 699, period: '/年', save: '省 ¥249 · 约 ¥58.25/月', features: ['👑 全年全特权','📚 无限创作','🌐 首页推荐','🎨 年度专属徽章','⚡ 至尊队列'] },
+  vip_monthly:   { key: 'vip_monthly',   name: 'VIP 月度', price: '59.00',  priceNum: 59,  period: '/月', save: '',                 features: ['📝 每日10章AI生成（每天刷新）','📋 章节复制权限','📚 创建并发布作品','🌐 作品圈互动','⚡ 优先队列'] },
+  vip_quarterly: { key: 'vip_quarterly', name: 'VIP 季度', price: '149.00', priceNum: 149, period: '/季', save: '省 ¥28 · 约 ¥49.67/月', features: ['📝 每日10章AI生成（每天刷新）','📋 章节复制权限','📚 创建并发布作品','🌐 作品圈互动','⚡ 极速队列'] },
+  vip_yearly:    { key: 'vip_yearly',    name: 'VIP 年度', price: '499.00', priceNum: 499, period: '/年', save: '省 ¥209 · 约 ¥41.58/月', features: ['📝 每日10章AI生成（每天刷新）','📋 章节复制权限','📚 创建并发布作品','🌐 作品圈互动','⚡ 超优先级'] },
+  svip_monthly:   { key: 'svip_monthly',   name: 'SVIP 月度', price: '79.00',  priceNum: 79,  period: '/月', save: '',                 features: ['👑 每日50章AI生成（每天刷新）','📋 章节复制权限','🎬 剧本制作（SVIP专属）','🤖 AI视频制作（即将上线）','⚡ 极速队列'] },
+  svip_quarterly: { key: 'svip_quarterly', name: 'SVIP 季度', price: '199.00', priceNum: 199, period: '/季', save: '省 ¥38 · 约 ¥66.33/月', features: ['👑 每日50章AI生成（每天刷新）','📋 章节复制权限','🎬 剧本制作（SVIP专属）','🤖 AI视频制作（即将上线）','⚡ 闪电队列'] },
+  svip_yearly:    { key: 'svip_yearly',    name: 'SVIP 年度', price: '699.00', priceNum: 699, period: '/年', save: '省 ¥249 · 约 ¥58.25/月', features: ['👑 每日50章AI生成（每天刷新）','📋 章节复制权限','🎬 剧本制作（SVIP专属）','🤖 AI视频制作（即将上线）','⚡ 至尊队列'] },
 }
 
 // 套餐排序 rank
@@ -250,4 +262,13 @@ export default {
 .btn-svip:hover:not(:disabled) { background: linear-gradient(135deg, rgba(245,158,11,0.25), rgba(239,68,68,0.2)) }
 .btn-svip-highlight { background: linear-gradient(135deg, #f59e0b, #ef4444); color: #fff; border: none; box-shadow: 0 4px 24px rgba(245,158,11,0.4) }
 .btn-svip-highlight:hover:not(:disabled) { box-shadow: 0 4px 30px rgba(245,158,11,0.5) }
+
+.vip-permissions { margin-top: 20px; text-align: left; display: inline-block }
+.perm-group { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 24px }
+.perm-group h4 { font-size: 13px; color: var(--text-secondary); margin: 0 0 10px; font-weight: 600 }
+.perm-group ul { list-style: none; padding: 0; margin: 0 }
+.perm-group ul li { padding: 4px 0; color: var(--text-secondary); font-size: 13px }
+.perm-group ul li b { color: var(--text-primary) }
+.svip-card-bg .perm-group { border-color: rgba(245,158,11,0.2) }
+.svip-card-bg .perm-group ul li b { color: var(--gold) }
 </style>

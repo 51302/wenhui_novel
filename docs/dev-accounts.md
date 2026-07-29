@@ -139,7 +139,23 @@ docker push crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com/wenhui_no
 
 ### 修改权限
 ```bash
-docker exec wenhui-mysql mysql -uwenhui -pwenhui123 easy-novel -e "UPDATE users SET vip_level=2, vip_expire_at=DATE_ADD(NOW(), INTERVAL 365 DAY) WHERE username='normaluser';"
+# VIP - 1个月
+docker exec wenhui-mysql mysql -uwenhui -pwenhui123 easy-novel -e "UPDATE users SET vip_level=1, vip_expire_at=DATE_ADD(NOW(), INTERVAL 1 MONTH) WHERE username='momomo';"
+
+# VIP - 1个季度（3个月）
+docker exec wenhui-mysql mysql -uwenhui -pwenhui123 easy-novel -e "UPDATE users SET vip_level=1, vip_expire_at=DATE_ADD(NOW(), INTERVAL 3 MONTH) WHERE username='momomo';"
+
+# VIP - 1年
+docker exec wenhui-mysql mysql -uwenhui -pwenhui123 easy-novel -e "UPDATE users SET vip_level=1, vip_expire_at=DATE_ADD(NOW(), INTERVAL 1 YEAR) WHERE username='momomo';"
+
+# SVIP - 1个月
+docker exec wenhui-mysql mysql -uwenhui -pwenhui123 easy-novel -e "UPDATE users SET vip_level=2, vip_expire_at=DATE_ADD(NOW(), INTERVAL 1 MONTH) WHERE username='momomo';"
+
+# SVIP - 1个季度（3个月）
+docker exec wenhui-mysql mysql -uwenhui -pwenhui123 easy-novel -e "UPDATE users SET vip_level=2, vip_expire_at=DATE_ADD(NOW(), INTERVAL 3 MONTH) WHERE username='momomo';"
+
+# SVIP - 1年
+docker exec wenhui-mysql mysql -uwenhui -pwenhui123 easy-novel -e "UPDATE users SET vip_level=2, vip_expire_at=DATE_ADD(NOW(), INTERVAL 1 YEAR) WHERE username='momomo';"
 ```
 
 ---

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from app.models.base import get_db
 from app.models.novel import Novel
 from app.models.chapter import Chapter
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, require_svip
 from app.utils.response import fail, success
 from app.utils.task_queue import TaskQueue
 from app.utils.logger import system_logger
@@ -25,6 +25,7 @@ def generate_screenplay(
     body: GenerateScreenplayBody,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
+    _svip: dict = Depends(require_svip),
 ):
     """生成剧本（异步：提交队列后返回 task_id，前端轮询结果）
     从选定章节的小说内容转换为剧本格式

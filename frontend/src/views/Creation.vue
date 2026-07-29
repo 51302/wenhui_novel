@@ -200,7 +200,7 @@
           </div>
           <div class="existing-chapters">
             <h3>已有章节
-              <button class="btn-clear-memory" @click="resetMemory" :disabled="resettingMemory" title="清除并重建该作品的全部记忆体数据（人物/事件/地点/伏笔等）">
+              <button class="btn-clear-memory" :class="{ 'btn-svip-only': !isSvip }" @click="isSvip ? resetMemory() : null" :disabled="resettingMemory || !isSvip" :title="isSvip ? '清除并重建该作品的全部记忆体数据（人物/事件/地点/伏笔等）' : '仅SVIP可使用此功能'">
                 <span v-if="resettingMemory" class="spinner"></span>
                 {{ resettingMemory ? '正在重置记忆...' : '🔄 重置记忆' }}
               </button>
@@ -228,7 +228,7 @@
             <textarea v-model="editChapterForm.content" rows="16" placeholder="章节正文内容"></textarea></div>
           <div class="edit-actions">
             <button class="btn-save" @click="saveChapterEdit" :disabled="saving">💾 {{ saving ? '保存中...' : '保存修改' }}</button>
-            <button class="btn-regenerate" @click="regenerateChapter" :disabled="regenerating">🔄 {{ regenerating ? '重新生成中...' : 'AI重新生成' }}</button>
+            <button class="btn-regenerate" :class="{ 'btn-svip-only': !isSvip }" @click="isSvip ? regenerateChapter() : null" :disabled="regenerating || !isSvip" :title="isSvip ? 'AI重新生成本章节内容' : '仅SVIP可使用此功能'">🔄 {{ regenerating ? '重新生成中...' : 'AI重新生成' }}</button>
             <button class="btn-cancel" @click="showChapterEditModal = false">取消</button>
           </div>
         </div>
@@ -1464,6 +1464,7 @@ export default {
 }
 .btn-clear-memory:hover { background: rgba(239, 68, 68, 0.25); border-color: #ef4444; color: #fca5a5; }
 .btn-regenerate:disabled { opacity: 0.5; cursor: not-allowed }
+.btn-svip-only { opacity: 0.4; cursor: not-allowed; filter: grayscale(0.8); pointer-events: none; }
 .btn-cancel {
   background: transparent; color: var(--text-secondary); border: 1px solid var(--border);
   cursor: pointer; font-size: 13px; font-weight: 600;
