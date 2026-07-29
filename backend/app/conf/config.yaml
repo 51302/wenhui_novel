@@ -33,7 +33,7 @@ jwt:
   expire_minutes: 1440
 
 deepseek:
-  api_key: "sk-9279e57cd0964604a110e9a51f6251ec"
+  api_key: "${DEEPSEEK_API_KEY}"
   base_url: "https://api.deepseek.com"
   model: "deepseek-v4-flash"
 
@@ -41,11 +41,10 @@ deepseek:
 #  邮件
 # ========================================================================
 email:
-  provider: "resend"                     # resend / smtp
+  provider: "resend"
   from_name: "文辉小说"
   from_email: "noreply@wenhui.xyz"
-  # Resend API Key（免费 100封/天）
-  resend_api_key: "re_SX3ts5UT_PeyPGXNyQLcqVZuHTG8KRAbR"
+  resend_api_key: "${RESEND_API_KEY}"
 
 # ========================================================================
 #  短信
