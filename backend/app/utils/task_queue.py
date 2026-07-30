@@ -113,9 +113,20 @@ class TaskQueue:
             r.set(f"{TASK_RESULT_PREFIX}{task_id}", json.dumps(result_data))
 
     @staticmethod
+    def set_progress(task_id: str, current: int, total: int, message: str = ""):
+        """更新任务进度"""
+        r = _redis()
+        if r:
+            from app.utils.logger import system_logger
+            progress_data = {"current": current, "total": total, "message": message}
+            r.set(f"{TASK_STATUS_PREFIX}{task_id}", json.dumps("processing"))
+            r.set(f"{TASK_RESULT_PREFIX}{task_id}:progress", json.dumps(progress_data))
+            system_logger.info(f"[进度] task={task_id} {current}/{total} - {message}")
+
+    @staticmethod
     def get_status(task_id: str) -> dict:
         """查询任务状态和结果
-        :return: {"status": "pending|processing|done|failed", "result": {...}, "error": "..."}
+        :return: {"status": "pending|processing|done|failed", "result": {...}, "error": "...", "progress": {...}}
         """
         r = _redis()
         if not r:
@@ -134,6 +145,11 @@ class TaskQueue:
             result_data = r.get(f"{TASK_RESULT_PREFIX}{task_id}")
             if isinstance(result_data, dict):
                 result["error"] = result_data.get("error", "未知错误")
+
+        # 获取进度（RedisCache.get() 已自动 json.loads，返回 dict）
+        progress_data = r.get(f"{TASK_RESULT_PREFIX}{task_id}:progress")
+        if isinstance(progress_data, dict):
+            result["progress"] = progress_data
 
         return result
 
