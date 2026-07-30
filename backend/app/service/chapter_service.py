@@ -86,67 +86,7 @@ class ChapterService:
             return fail(f"清空失败: {str(e)}", code=500)
 
     @staticmethod
-    def reset_and_rebuild_memory(novel_unique_id: str, db) -> dict:
-        """清空 Redis 记忆体 + 后台逐章 AI 提取重建
-
-        1. 删除 Redis Hash key
-        2. 统计已发布章节数
-        3. 启动后台线程：逐章读 TXT → AI 提取 → 写入 Redis
-        4. 立即返回章节数（不等待重建完成）
-        """
-        r = _redis()
-        if not r or not r.ping():
-            return fail("Redis 不可用", code=500)
-
-        # 清空
-        key = ChapterService._memory_key(novel_unique_id)
-        try:
-            r.delete(key)
-            system_logger.info(f"[记忆体重置] 已清空 {novel_unique_id} 的 Redis 记忆体")
-        except Exception as e:
-            system_logger.error(f"[记忆体重置] 清空失败: {e}")
-            return fail(f"清空失败: {str(e)}", code=500)
-
-        # 统计章节数
-        from app.dao.chapter_dao import ChapterDAO
-        all_ch = ChapterDAO.get_by_novel_id(db, novel_unique_id)
-        published = [c for c in all_ch if c.is_published]
-
-        chapter_count = len(published)
-        if chapter_count == 0:
-            system_logger.info(f"[记忆体重置] {novel_unique_id} 无已发布章节，无需重建")
-            return success({"章节数": 0, "消息": "记忆体已清除，暂无已发布章节"}, "重置完成")
-
-        # 后台线程：逐章 AI 提取写入 Redis
-        import threading
-        _nid = novel_unique_id
-        _db_factory = None
-        try:
-            from app.models.base import SessionLocal as _s
-            _db_factory = _s
-        except Exception:
-            pass
-
-        def _rebuild_async():
-            import asyncio
-            async def _work():
-                system_logger.info(f"[记忆体重置] 开始后台重建 {chapter_count} 章的记忆体...")
-                try:
-                    await ChapterService._rebuild_memory_from_files(_nid, db=None)
-                    system_logger.info(f"[记忆体重置] 后台重建完成: {_nid}")
-                except Exception as e:
-                    system_logger.error(f"[记忆体重置] 后台重建失败: {e}")
-            try:
-                asyncio.run(_work())
-            except Exception as e:
-                system_logger.error(f"[记忆体重置] 后台线程异常: {e}")
-
-        threading.Thread(target=_rebuild_async, daemon=True, name=f"memory-rebuild-{novel_unique_id[:8]}").start()
-
-        msg = f"记忆体已清除，正在后台重建 {chapter_count} 章记忆数据（章节越多越慢，请耐心等待）"
-        system_logger.info(f"[记忆体重置] {novel_unique_id}: {msg}")
-        return success({"章节数": chapter_count, "消息": msg}, "重置已启动，后台重建中...")
-
+    @staticmethod
     @staticmethod
     def _ensure_memory_store():
         """检查 Redis 是否可用"""
@@ -937,7 +877,7 @@ class ChapterService:
         # 逐章提取关键信息（asyncio 并发，线程数从 config.yaml 读取）
         import asyncio
         from app.config import get as cfg
-        concurrency = cfg("chromadb.memory_extract_threads", 10)
+        concurrency = cfg("redis.memory_extract_threads", 10)
 
         async def extract_one(idx: int, fname: str, sem: asyncio.Semaphore):
             """并发提取单个章节的关键信息，返回 (idx, summary_str)"""
@@ -996,6 +936,107 @@ class ChapterService:
 
         ChapterService._save_memory(novel_unique_id, memory)
         return memory
+
+    @staticmethod
+    async def _rebuild_memory_from_files_with_progress(novel_unique_id: str, db, task_id: str, total_chapters: int) -> str:
+        """并发提取+逐章入库：20并发同时提取，每完成一章立即增量保存到 Redis 并上报进度"""
+        from app.utils.task_queue import TaskQueue
+        import os
+        import asyncio
+
+        novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
+        if not os.path.isdir(novel_dir):
+            system_logger.warning(f"[记忆体] 目录不存在: {novel_dir}")
+            return ""
+
+        txt_files = sorted([f for f in os.listdir(novel_dir) if f.endswith(".txt") and not f.startswith("settings") and "作品设定" not in f])
+        if not txt_files:
+            system_logger.warning(f"[记忆体] {novel_dir} 下无 txt 文件")
+            return ""
+
+        settings_text = ""
+        settings_path = os.path.join(novel_dir, "settings.txt")
+        if os.path.exists(settings_path):
+            with open(settings_path, "r", encoding="utf-8") as f:
+                settings_text = f.read()
+
+        effective_total = len(txt_files)
+        from app.config import get as cfg
+        concurrency = int(cfg("redis.memory_extract_threads", 10))
+        system_logger.info(f"[记忆体] 开始并发提取，共 {effective_total} 章，并发数={concurrency}")
+
+        chapter_results = {}  # idx → (chapter_name, result_text)
+        completed_count = 0
+        lock = asyncio.Lock()
+
+        async def extract_one(idx: int, fname: str, sem: asyncio.Semaphore):
+            nonlocal completed_count
+            async with sem:
+                fpath = os.path.join(novel_dir, fname)
+                chapter_name = fname.rsplit("_", 1)[0] if "_" in fname else fname.replace(".txt", "")
+
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        full_text = f.read()
+                except Exception:
+                    async with lock:
+                        completed_count += 1
+                        if task_id:
+                            TaskQueue.set_progress(task_id, completed_count, effective_total, f"第 {completed_count}/{effective_total} 章（跳过）")
+                    return
+
+                if full_text.strip().startswith("{"):
+                    async with lock:
+                        completed_count += 1
+                        if task_id:
+                            TaskQueue.set_progress(task_id, completed_count, effective_total, f"第 {completed_count}/{effective_total} 章（跳过）")
+                    return
+
+                info = await ChapterService.extract_chapter_info_local(full_text, chapter_name)
+
+                if info.get("success") and info.get("data"):
+                    data = info["data"]
+                    lines = [f"=== 第{idx+1}章 {chapter_name} ==="]
+                    # 日志输出每一章的提取结果明细
+                    log_lines = [f"[记忆体] >> 第{idx+1}章 {chapter_name} 提取明细:"]
+                    for field in ["人物", "组织", "功法技能", "关键事件", "地点", "时间", "关键物品", "实力变化", "伏笔"]:
+                        val = data.get(field, "")
+                        if val and val != "无":
+                            lines.append(f"  {field}: {val}")
+                            log_lines.append(f"[记忆体] >>   {field}: {val}")
+                    for l in log_lines:
+                        system_logger.info(l)
+                    result_text = "\n".join(lines)
+                    system_logger.info(f"[记忆体] 第{idx+1}章 {chapter_name} 本地提取完成 ({len(result_text)}字)")
+                else:
+                    snippet = full_text[:300].replace("\n", " ")
+                    system_logger.error(f"[记忆体] 第{idx+1}章 {chapter_name} 本地提取失败，兜底")
+                    result_text = f"=== 第{idx+1}章 {chapter_name} ===\n  (提取失败，概要): {snippet}"
+
+                async with lock:
+                    chapter_results[idx] = chapter_name, result_text
+                    completed_count += 1
+
+                    # 按索引排序，用已完成的章节增量聚合后保存到 Redis
+                    sorted_indices = sorted(chapter_results.keys())
+                    current_summaries = [chapter_results[i][1] for i in sorted_indices]
+                    incremental_memory = ChapterService._aggregate_memory_by_code(settings_text, current_summaries)
+                    ChapterService._save_memory(novel_unique_id, incremental_memory)
+
+                    if task_id:
+                        TaskQueue.set_progress(task_id, completed_count, effective_total, f"第 {completed_count}/{effective_total} 章：{chapter_name} 已记录")
+
+        sem = asyncio.Semaphore(concurrency)
+        tasks = [extract_one(i, fname, sem) for i, fname in enumerate(txt_files)]
+        await asyncio.gather(*tasks)
+
+        sorted_indices = sorted(chapter_results.keys())
+        chapter_summaries = [chapter_results[i][1] for i in sorted_indices]
+        system_logger.info(f"[记忆体] 逐章提取完成，共{len(chapter_summaries)}章")
+
+        final_memory = ChapterService._aggregate_memory_by_code(settings_text, chapter_summaries)
+        ChapterService._save_memory(novel_unique_id, final_memory)
+        return final_memory
 
     @staticmethod
     async def _ensure_memory_chain(novel_unique_id: str, db: Session = None, current_chapter_num: int = 1) -> str:
@@ -1085,7 +1126,7 @@ class ChapterService:
         if repair_candidates:
             import asyncio
             from app.config import get as cfg
-            max_concurrency = cfg("chromadb.memory_extract_threads", 10)
+            max_concurrency = cfg("redis.memory_extract_threads", 10)
             sem = asyncio.Semaphore(max_concurrency)
 
             async def _extract_only(chapter_name: str, content: str, summary: str) -> tuple:
@@ -1165,102 +1206,290 @@ class ChapterService:
             await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
 
     @staticmethod
-    async def extract_chapter_info(content: str, chapter_name: str = "") -> dict:
+    async def extract_chapter_info_local(content: str, chapter_name: str = "") -> dict:
         """
-        从章节内容中 AI 提取关键信息（轻量级，不存记忆体）
-        返回结构化 dict 供前端展示
-        使用内容哈希缓存避免重复调用DeepSeek
+        HanLP NER + Jieba + 规则增强 提取章节关键信息（不调AI），速度极快
+        返回与 extract_chapter_info 相同格式: {"success": True, "data": {...}}
         """
         if not content or len(content) < 50:
-            return {"success": True, "data": {"人物": "", "组织": "", "功法技能": "",
-                     "关键事件": "", "地点": "", "时间": "",
-                     "关键物品": "", "实力变化": "", "伏笔": ""}}
+            return {"success": True, "data": {f: "" for f in ("人物","组织","功法技能","关键事件","地点","时间","关键物品","实力变化","伏笔")}}
 
-        # 内容哈希缓存：相同内容直接返回缓存结果
-        import hashlib
-        content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
-        cache_key = f"extract:info:{content_hash}"
-        r = _redis()
-        if r:
-            cached = r.get(cache_key)
-            if cached:
-                system_logger.info(f"[提取缓存] 命中内容哈希缓存: {chapter_name} hash={content_hash[:12]}")
-                return cached
+        import asyncio
+        import re
 
-        # 截取内容：短章节全取，超长取前5000+后3000（覆盖开头和结尾关键事件）
-        content_len = len(content)
-        if content_len <= 8000:
-            snippet = content
-        else:
-            snippet = content[:5000] + "\n...\n" + content[-3000:]
+        # ==================== 通用停用词（任何分类提取到这些词都应被过滤） ====================
+        COMMON_STOP_WORDS = {
+            # 时间/方位
+            "后面","前面","上面","下面","里面","外面","旁边","之上","之下","之中","之间","之后","之前",
+            "身上","眼前","脚下","手里","怀中","背后","面前","身边","头顶",
+            # 数量/程度
+            "一声","一下","一人","一丝","一眼","一步","一道","一股","一身","一把","一片",
+            "一个","两个","三个","几个","多个","每次","每天",
+            "一点","一些","一点","一刻","一瞬",
+            # 状态
+            "浑身","全身","整个","片刻","瞬间",
+            "突然","忽然","猛然","顿时","刹那",
+            "此刻","此时","这时","那时","同时",
+            "仿佛","好像","似乎","犹如","如同",
+            "正好","正是","就是","只是","可是","但是",
+            "因为","所以","如果","虽然","然而","不过",
+            "于是","然后","还是","或者","不然",
+            "可以","能够","应该","必须","需要","值得",
+            "可能","也许","大概","恐怕","难道",
+            "已经","刚刚","正在","将要","就要",
+            # 动作/心理
+            "不知","不见","不分","不敢","不能","不会","不肯",
+            "起来","出来","进来","过来","回来","上来","下来",
+            "出去","进去","过去","回去","上去","下去",
+            "抬头","低头","回头","点头","摇头","转身","开口","闭嘴",
+            "伸手","抬手","挥手","摆手","握手","松手","放手",
+            "抬脚","迈步","踏步","脚步","步伐","步子",
+            "睁眼","闭眼","瞪眼","眨眼","眯眼","抬眼",
+            "呼吸","喘气","叹气","吸气","呼气","喘着",
+            "咬牙","皱眉","握拳","攥拳","捏拳",
+            "心道","暗道","心想","暗想","寻思","思忖",
+            "只听","但见","只见","便见","就见","却见",
+            "看着","望着","盯着","瞪着","瞅着",
+            "听到","听见","闻到","嗅到","感到","觉得",
+            "忍住","忍着","忍不住","禁不住","不由得",
+            # 感官/性质
+            "味道","滋味","气味","气息",
+            "脸上","眼中","嘴角","心头","心底","心中","胸中",
+            "越来越","渐渐地","慢慢地","缓缓地","轻轻地",
+            "狠狠地","猛地",
+            "果然","当然","自然","仍然","依然",
+            "时间","时候","时辰","时刻",
+            "结果","然后","后来","最后","最终",
+            # 指代/疑问
+            "这个","那个","哪个","这些","那些",
+            "什么","怎么","怎样","这么","那么","多么",
+            "没有","不是","还是",
+            "这里","那里","哪里","这边","那边",
+            # 特殊
+            "东西","地方","方向",
+            "年纪","年龄","年岁","样子","模样","身形",
+            "名字","称呼","绰号","外号","字号",
+        }
 
-        prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", snippet)
+        # 人名过滤：以这些字结尾的大概率不是人名
+        NAME_BAD_END = set("的了着过吧吗啊呢呀哦哈嗯哇呗嘛哟呐哩也")
 
-        result = {}
+        # 人名过滤：以这些字开头的肯定不是人名（介词/助词/代词/副词/连词）
+        NAME_BAD_START = set("的了在从到往向被把让给对与和同随用以由朝顺沿靠经这那哪我你他她它您是都有没不要也还就很再又将正在会可能应该能够可以已经刚刚将要快要须得")
+
+        # 组织地点后缀的通用过滤前缀（匹配前面是"的""了"等介词/助词的，不算组织）
+        ORG_LOC_PREFIX_BLACKLIST = {"的", "了", "在", "从", "到", "往", "向", "被", "把", "让", "给", "对", "与", "和", "同", "随", "用", "以", "由", "朝", "顺", "沿", "靠", "经"}
+
+        # ==================== 后缀定义 ====================
+        # 组织后缀（去掉了最通用的单字"门""院""山""谷""峰""城""镇""村""洞""林""关""桥"等以避免误匹配，
+        # 这些放到地点后缀中更合适。组织后缀保留明确表示组织机构的）
+        ORG_SUFFIX = ["宗", "派", "阁", "殿", "教", "盟", "帮", "会", "宫", "楼", "堂", "庄", "轩", "斋", "观", "府", "陵", "窟", "堡", "门"]
+
+        # 功法后缀（去掉过于通用的"法""术""指""腿""拳""掌"等单字，保留多字复合后缀和明确含义的单字）
+        SKILL_SUFFIX = ["剑法", "刀法", "枪法", "棍法", "心法", "神通", "奥义", "神功", "秘术", "禁术", "仙术", "阵法", "丹术", "符术", "炼体", "锻体", "天功",
+                       "功", "诀", "拳法", "掌法", "腿法", "指法", "剑诀", "刀诀", "拳诀", "掌诀", "法诀"]
+
+        # 地点后缀
+        LOC_SUFFIX = ["山", "谷", "峰", "城", "镇", "村", "洞", "穴", "窟", "岛", "河", "湖", "海", "林", "森", "原", "岭", "崖", "渊", "墟", "漠", "泽", "关", "桥", "亭", "殿", "阁", "塔", "台", "宫", "院"]
+
+        # 地点提取中要排除的通用词（看似是地点但实际是日常用语的）
+        LOC_STOP_WORDS = {"后面","前面","上面","下面","外面","旁边","里面","里面","之外","之内","之前","之后",
+                         "头上","脚下","眼前","身上","背后","面前","手里","怀中","心里","心中",
+                         "身上","脸上","眼中","嘴角","心头","胸中","背上","腿上","手上",
+                         "河边","海边","路边","门前","窗外","屋外","门外","村口","镇口","洞口",
+                         "墙上","地上","树上","床上","桌上","路上","街上","道上","田里","村里"}
+
+        # 实力变化关键词（扩展修为等级体系）
+        POWER_KEYWORDS = ["突破", "晋级", "进阶", "渡劫", "悟道", "顿悟", "突破到", "达到", "踏入",
+                         "修为提升", "实力大增", "境界突破", "修为突破", "修为达到",
+                         "修为跌落", "修为倒退", "实力大减", "境界跌落",
+                         "练气", "筑基", "金丹", "元婴", "化神", "炼虚", "合体", "大乘", "渡劫",
+                         "真仙", "金仙", "大罗", "圣人", "大帝", "尊者", "王者", "皇者",
+                         "仙帝", "仙王", "仙君", "仙尊", "魔神", "剑仙", "大能"]
+
+        # 事件关键词（丰富各类场景模式）
+        EVENT_KW = [
+            # 战斗/冲突类
+            r"与.*(?:一战|交手|对决|激战|厮杀|大战|切磋|比试|争斗|相斗|拼杀|搏杀|死战|血战)",
+            r"(?:追杀|追击|围剿|围攻|伏击|偷袭|暗算).*",
+            r"(?:被打伤|被重伤|被击杀|被追杀|被围攻|被伏击|被偷袭|被暗算)",
+            # 发现/相遇类
+            r"(?:发现|找到|遇见|遇到|碰到|结识|认识|重逢|偶遇|撞见).*",
+            # 移动/到达类
+            r"(?:前往|来到|到达|进入|离开|返回|逃离|潜入|闯入|登上|抵达|降临).*",
+            # 获取/失去类
+            r"(?:获得|得到|拿到|夺取|抢走|继承|捡到|找到|寻得|夺得|赢得).*",
+            r"(?:丢失|遗失|掉落|失去|被夺|被抢|被偷).*",
+            # 信息类
+            r"(?:得知|获悉|听闻|听说|收到|收到消息|收到传讯|看到|看到).*",
+            # 状态变化类
+            r"(?:变成|化作|化为|成为|沦为|晋升|突破|觉醒|苏醒|昏迷|醒来).*",
+            # 恩怨情感类
+            r"(?:报仇|复仇|报恩|感谢|感激|怨恨|仇恨|原谅|宽恕|承诺|发誓|立誓).*",
+            # 帮助/救援类
+            r"(?:出手|出手相助|出手相救|挺身而出|相助|救援|解救|搭救|营救).*",
+            # 信息传递类
+            r"(?:说出|告诉|透露|说明|坦言|讲述|交代|坦白|供出|举报).*",
+            # 决策/计划类
+            r"(?:决定|打算|准备|计划|筹谋|谋划|商议|商量|约定|约好).*",
+            # 生死类
+            r"(?:被杀|被杀|被杀死|被斩杀|被击杀|被杀|身亡|陨落|战死|牺牲|赴死).*",
+        ]
+
+        # 时间模式
+        TIME_PATTERNS = [
+            r"(?:翌日|次日|第二天|第二日|数日后|几日后|三天后|五天后|七天后|十天后|半月后|一个月后|一年后|多年后)",
+            r"(?:片刻后|不多时|不一会儿|很快|马上|立刻|当即|瞬间|转瞬|眨眼间|一炷香后)",
+            r"(?:清晨|黎明|拂晓|早上|上午|中午|下午|傍晚|黄昏|入夜|深夜|午夜|子时|午时)",
+            r"(?:春|夏|秋|冬)(?:日|季|天)",
+            r"(?:三|五|七|九|十|数|百|千)年前",
+        ]
+
+        # 物品后缀
+        ITEM_SUFFIX = ["剑", "刀", "枪", "戟", "斧", "锤", "弓", "箭", "鞭", "棍", "杖", "铲", "环", "鼎", "炉", "钟", "塔", "珠", "玉", "石", "镜", "盘", "印", "符", "丹", "药", "草", "果", "花", "叶", "绳", "索", "链", "甲", "袍", "衣", "鞋", "冠", "戒", "令", "牌", "册", "卷", "图", "琴", "箫", "笛", "扇"]
+
+        # ==================== 辅助过滤函数 ====================
+        def _is_likely_name(word: str) -> bool:
+            """判断一个2-4字词是否可能是人名"""
+            if word in COMMON_STOP_WORDS:
+                return False
+            if len(word) < 2 or len(word) > 4:
+                return False
+            # 不以NAME_BAD_END中的字结尾
+            if word[-1] in NAME_BAD_END:
+                return False
+            # 不以NAME_BAD_START中的字开头
+            if word[0] in NAME_BAD_START:
+                return False
+            # 包含动词性字眼的首字（二字词）
+            verb_chars = set("吃喝跑跳走站坐卧躺趴跪爬拉推搬扛挑打抽踢踩踏撞碰摔跌飞翻滚转穿脱戴挂贴插投扔抛甩掷接")
+            if len(word) == 2 and word[0] in verb_chars:
+                return False
+            # 词中所有字都不应全是副词/助词
+            bad_all = set("的不了是都在有这人上中大他她它这那和与就也还但而从或以被把对为于向到说没很去出过又给进回拿之下后中里前外间时上内旁东西南北侧面头尾端末处里地边之乎者也可矣焉耳")
+            if all(ch in bad_all for ch in word):
+                return False
+            # 排除所有字都是同一个字
+            if len(set(word)) == 1:
+                return False
+            return True
+
+        def _is_valid_org(org_name: str) -> bool:
+            """判断一个组织名是否有效"""
+            if len(org_name) < 2:
+                return False
+            if org_name in COMMON_STOP_WORDS:
+                return False
+            # 组织名不能太短（如"宗门"是有效的，但"门"本身不算）
+            if org_name[1:] in ORG_SUFFIX and len(org_name) == 2:
+                # 两个字，第二个是后缀，检查第一个字
+                first = org_name[0]
+                if first in ORG_LOC_PREFIX_BLACKLIST:
+                    return False
+                # 排除"宗门"、"门派"这些泛指词
+                if org_name in ("宗门", "门派", "门中", "院内", "山中", "谷中", "阵中"):
+                    return False
+            return True
+
+        def _is_valid_location(loc_name: str) -> bool:
+            """判断一个地点名是否有效"""
+            if len(loc_name) < 2:
+                return False
+            if loc_name in LOC_STOP_WORDS:
+                return False
+            if loc_name in COMMON_STOP_WORDS:
+                return False
+            # 排除"的X"模式（如"的山"、"的门"）
+            if loc_name[0] == "的":
+                return False
+            # 排除"在X"、"到X"等模式（"在湖边"这类不算专有地名）
+            if loc_name[0] in ORG_LOC_PREFIX_BLACKLIST:
+                return False
+            # 排除泛指词
+            if loc_name in ("前面", "后面", "上面", "下面", "外面", "旁边", "里面", "里面", "之前", "之后"):
+                return False
+            return True
+
+        # ==================== 提取逻辑 ====================
+        result = {f: "" for f in ("人物","组织","功法技能","关键事件","地点","时间","关键物品","实力变化","伏笔")}
+        sentences = re.split(r'[。！？；\n]', content)
+
+        # ==================== HTTP 调用 qwen-service 提取所有维度 ====================
+        qwen_service_url = "http://qwen-service:8001"
+        qwen_result = {f: "" for f in ("人物","组织","功法技能","关键事件","地点","时间","关键物品","实力变化","伏笔")}
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                response = await client.post(
-                    f"{deepseek_base_url()}/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {deepseek_api_key()}",
-                        "Content-Type": "application/json"
-                    },
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                resp = await client.post(
+                    f"{qwen_service_url}/extract",
                     json={
-                        "model": deepseek_model(),
-                        "messages": [
-                            {"role": "system", "content": "你是一位小说编辑，请尽可能详细地提取关键信息，尤其是关键事件不要遗漏。"},
-                            {"role": "user", "content": prompt}
-                        ],
-                        "max_tokens": 3072,
-                        "temperature": 0.2
+                        "text": content,
+                        "chapter_name": chapter_name
                     }
                 )
-                data = response.json()
-                if "choices" in data and data["choices"]:
-                    ai_output = data["choices"][0]["message"]["content"]
-                    system_logger.info(f"[提取信息] AI返回长度={len(ai_output)}, 前200字: {ai_output[:200]}")
-
-                    # 解析 ---标签--- / 【标签】 / **标签** 等多种格式
-                    current_key = ""
-                    for line in ai_output.split("\n"):
-                        line = line.strip()
-                        if not line:
-                            continue
-                        # 匹配多种标签格式：---人 物--- / 【人物】 / **人物** / 人物：
-                        m = re.match(r'^[-—]{1,3}\s*(.+?)\s*[-—]{0,3}$', line)
-                        if not m:
-                            m = re.match(r'^【(.+?)】$', line)
-                        if not m:
-                            m = re.match(r'^\*\*(.+?)\*\*$', line)
-                        if not m:
-                            m = re.match(r'^([^\|]+)：$', line)  # e.g. "人物："
-                        if m:
-                            current_key = m.group(1).strip()
-                            if current_key not in result:
-                                result[current_key] = []
-                        elif current_key:
-                            if line not in ("无", "无新增", "无新"):
-                                result[current_key].append(line)
-                else:
-                    return {"success": False, "error": "AI提取失败: " + str(data.get("error", {}).get("message", "未知错误"))}
-
-            # list → string
-            for key in list(result.keys()):
-                result[key] = "\n".join(result[key])
-
-            # 确保所有字段存在
-            for field in ["人物", "组织", "功法技能", "关键事件", "地点", "时间", "关键物品", "实力变化", "伏笔"]:
-                if field not in result:
-                    result[field] = ""
-
-            final_result = {"success": True, "data": result}
-            # 写入缓存（TTL 1小时）
-            if r:
-                r.set(cache_key, final_result, ttl=3600)
-            return final_result
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("success"):
+                        qwen_result = data["data"]
         except Exception as e:
-            system_logger.error(f"[提取信息] 异常: {e}")
-            return {"success": False, "error": str(e)}
+            system_logger.error(f"[记忆体] qwen-service 调用失败: {e}")
+            raise RuntimeError(f"Qwen服务调用失败: {str(e)}。请检查qwen-service是否运行正常。") from e
+
+        result = qwen_result.copy()
+
+        # ========== 输出 Qwen 提取结果到日志 ==========
+        system_logger.info(f"[记忆体] {chapter_name} Qwen提取明细:")
+        for dim_name in ("人物","组织","功法技能","关键事件","地点","时间","关键物品","实力变化","伏笔"):
+            dim_val = result.get(dim_name, "")
+            system_logger.info(f"[记忆体] >>   {dim_name}: {dim_val}")
+
+        # ========== 补充提取 ==========
+
+        # 1. 人物补充：述宾结构 "XXX说道"
+        if not result.get("人物"):
+            name_candidates = set()
+            speech_verbs = r'(?:说道|问道|答道|喊道|叫道|笑着说|哭着说|怒道|笑道|冷笑道|苦笑道|正色道|低声道|大声道|沉声道|开口道|轻声道|叹道|骂道|惊道|解释道|提醒道|吩咐道|补充道|喝道|断喝道|传音道|喃喃道|自语道|催促道|追问道|呵斥道|训斥道|反驳道|争辩道|嘀咕道|念叨道|感慨道|感叹道|安慰道|安抚道|劝说道|提议道|叮嘱道|嘱咐道|告诫道|警告道|恐吓道)'
+            for n in re.findall(rf'(?<![\u4e00-\u9fff])([\u4e00-\u9fff]{{2}}){speech_verbs}', content):
+                if _is_likely_name(n):
+                    name_candidates.add(n)
+            for n in re.findall(rf'(?<![\u4e00-\u9fff])([\u4e00-\u9fff]{{3}}){speech_verbs}', content):
+                if _is_likely_name(n) and n[-1] not in '\u7684\u4e86\u7740\u8fc7\u5427\u5417\u554a\u5462\u54af\u5594\u54c8\u55ef\u545c\u5457\u561b\u54df\u5450\u54a9\u4e5f':
+                    name_candidates.add(n)
+            if name_candidates:
+                result["人物"] = "、".join(sorted(name_candidates, key=lambda x: -len(x))[:10])
+
+        # 2. 组织补充："加入/背叛/脱离+组织" 模式
+        if not result.get("组织"):
+            orgs = set()
+            generic_orgs = {"大殿","前殿","后殿","侧殿","正殿","偏殿","大厅","大堂","正厅","后院","前院","中院","东院","西院","南院","北院","内院","外院"}
+            org_action_verbs = r'(?:加入|背叛|脱离|离开|进入|创立|创建|建立|执掌|统领|掌管|管理|坐镇|镇守|守护)'
+            for m in re.finditer(rf'{org_action_verbs}([\u4e00-\u9fff]{{2,6}})', content):
+                org_name = m.group(1)
+                if 2 <= len(org_name) <= 10 and org_name not in COMMON_STOP_WORDS:
+                    if org_name not in generic_orgs and _is_valid_org(org_name):
+                        orgs.add(org_name)
+            orgs = orgs - generic_orgs
+            if orgs:
+                result["组织"] = "、".join(sorted(orgs)[:10])
+
+        # 3. 功法技能补充：正则规则
+        if not result.get("功法技能"):
+            skills = set()
+            for suffix in SKILL_SUFFIX:
+                for m in re.finditer(rf'([\u4e00-\u9fff]{{1,5}}{re.escape(suffix)})', content):
+                    skill_name = m.group(1)
+                    if skill_name not in COMMON_STOP_WORDS and len(skill_name) >= 2:
+                        common_verbs = set("\u4e86\u662f\u628a\u88ab\u8ba9\u5728\u4ece\u5230\u5bf9\u7ed9")
+                        if skill_name[-1] not in common_verbs:
+                            skills.add(skill_name)
+            skill_action_verbs = r'(?:施展|催动|运转|运行|运起|运功|催动|使出|使出|祭出|打出|轰出|斩出|劈出|刺出|拍出|推出)'
+            for m in re.finditer(rf'{skill_action_verbs}([\u4e00-\u9fff]{{2,6}})', content):
+                skill_name = m.group(1)
+                if skill_name not in COMMON_STOP_WORDS and len(skill_name) >= 2:
+                    skills.add(skill_name)
+            if skills:
+                result["功法技能"] = "、".join(sorted(skills)[:10])
+
+        return {"success": True, "data": result}
 
     @staticmethod
     def refresh_memory_sync(novel_unique_id: str, db: Session = None):
@@ -2735,21 +2964,6 @@ class ChapterService:
             db.close()
 
     @staticmethod
-    def _worker_reset_memory(task_id: str, task_data: dict) -> dict:
-        """Worker handler：重置作品 Redis 记忆体"""
-        from app.models.base import SessionLocal
-        db = SessionLocal()
-        try:
-            result = ChapterService.reset_and_rebuild_memory(
-                task_data["novel_unique_id"], db
-            )
-            return result
-        except Exception as e:
-            system_logger.error(f"[Worker-reset-memory] 异常: {e}")
-            return {"success": False, "error": str(e)}
-        finally:
-            db.close()
-
     @staticmethod
     def _worker_generate_screenplay(task_id: str, task_data: dict) -> dict:
         """Worker handler：将小说章节转换为剧本格式"""
@@ -2870,7 +3084,7 @@ class ChapterService:
                                 {"role": "system", "content": system_prompt},
                                 {"role": "user", "content": prompt}
                             ],
-                            "max_tokens": 8192,
+                            "max_tokens": 16384,
                             "temperature": 0.7,
                             "top_p": 0.9,
                         }

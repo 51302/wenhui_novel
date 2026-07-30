@@ -27,7 +27,7 @@ redis:
   password: ""                 # Redis 密码（无密码留空）
   db: 0                        # Redis 数据库编号（0-15）
   cache_ttl: 3600              # 默认缓存过期时间（秒），1小时
-  memory_extract_threads: 10   # 记忆体提取并发线程数（AI 章节分析时使用）
+  memory_extract_threads: 2   # 记忆体提取并发线程数（AI 章节分析时使用）
 
 task_queue:
   max_concurrency: 10          # 全局 AI 并发上限，所有队列共享此限制（避免触发 DeepSeek 限流）
@@ -36,7 +36,6 @@ task_queue:
     ai:generate: 4             # 生成章节队列 Worker 数（最核心队列，分配最多线程）
     ai:regenerate: 2           # 重新生成队列 Worker 数（用户对章节不满意时重新生成）
     ai:continue: 4             # 续写章节队列 Worker 数（基于已有内容继续写作）
-    ai:reset-memory: 1         # 重置记忆体队列 Worker 数（低频操作，1个足够）
 
 elasticsearch:
   host: http://localhost:9200  # ES 集群地址（Docker 部署时注意网络连通性）
@@ -48,21 +47,15 @@ jwt:
   expire_minutes: 1440         # Token 过期时间（分钟），1440=30天
 
 deepseek:
-  api_key: "${DEEPSEEK_API_KEY}"
+  api_key: "sk-9279e57cd0964604a110e9a51f6251ec"
   base_url: "https://api.deepseek.com"
   model: "deepseek-v4-flash"
-
-siliconflow:
-  api_key: "${SILICONFLOW_API_KEY}"
-  base_url: "https://api.siliconflow.cn/v1"
-  model: "Tongyi-MAI/Z-Image-Turbo"
-  image_size: "512x768"
 
 email:
   provider: "resend"
   from_name: "文辉小说"
   from_email: "noreply@wenhui.xyz"
-  resend_api_key: "${RESEND_API_KEY}"
+  resend_api_key: "re_jhua77Mw_9eLeQ7HgGLaYfSxryw72NDDE"
 
 sms:
   provider: "zhenzi"           # 短信服务商：zhenzi（榛子云）/ demo（演示模式，不发真实短信）

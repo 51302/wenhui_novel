@@ -200,10 +200,6 @@
           </div>
           <div class="existing-chapters">
             <h3>已有章节
-              <button class="btn-clear-memory" :class="{ 'btn-svip-only': !isSvip }" @click="isSvip ? resetMemory() : null" :disabled="resettingMemory || !isSvip" :title="isSvip ? '清除并重建该作品的全部记忆体数据（人物/事件/地点/伏笔等）' : '仅SVIP可使用此功能'">
-                <span v-if="resettingMemory" class="spinner"></span>
-                {{ resettingMemory ? '正在重置记忆...' : '🔄 重置记忆' }}
-              </button>
             </h3>
             <div v-if="novelChapters.length === 0" class="empty">暂无章节</div>
             <div v-for="(ch, idx) in novelChapters" :key="ch.chapter_unique_id" class="chapter-item">
@@ -418,6 +414,8 @@
         <p class="publish-hint">请耐心等候，数据正在录入中…</p>
       </div>
     </div>
+
+
   </div>
 </template>
 
@@ -1019,24 +1017,6 @@ export default {
       } catch (e) { alert('删除失败') }
     }
 
-    const resettingMemory = ref(false)
-    const resetMemory = async () => {
-      if (!chapterNovel.value) return
-      const pubCount = novelChapters.value.filter(c => c.is_published).length
-      const msg = pubCount > 0
-        ? `确定重置作品「${chapterNovel.value.title}」的记忆体？\n\n将删除全部记忆数据，然后逐章 AI 提取重建。当前有 ${pubCount} 章需要处理，章节越多越慢，请耐心等待。`
-        : `确定重置作品「${chapterNovel.value.title}」的记忆体？\n\n当前无已发布章节，仅清除记忆数据。`
-      if (!confirm(msg)) return
-      resettingMemory.value = true
-      try {
-        const res = await api.post(`/chapters/reset-memory/${chapterNovel.value.novel_unique_id}`)
-        if (res.状态码 === 200) {
-          alert(res.消息 || '记忆重置已启动，后台重建中...')
-        } else alert(res.消息)
-      } catch (e) { alert('重置失败') }
-      finally { resettingMemory.value = false }
-    }
-
     // ============================================================
     // 剧本创作
     // ============================================================
@@ -1190,7 +1170,7 @@ export default {
       myNovels, fetchMyNovels,
       showChapterModal, chapterNovel, novelChapters, chapterForm, generating,
       openChapterModal, generateChapter,
-      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, editChapter, saveChapterEdit, regenerateChapter, continueChapter, continuing, deleteNovel, resetMemory, resettingMemory, downloadNovel, formatTime, saving, regenerating, showChapterEditModal, editChapterForm,
+      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, editChapter, saveChapterEdit, regenerateChapter, continueChapter, continuing, deleteNovel, downloadNovel, formatTime, saving, regenerating, showChapterEditModal, editChapterForm,
       extracting, extractDraftInfo, publishing, publishOverlay,
       genreOptions, selectedGenres, toggleGenre, handleCoverUpload,
       showEditModal, editForm, editSelectedGenres, editError, editSuccess,
@@ -1457,12 +1437,7 @@ export default {
   padding: 8px 20px; border-radius: 8px; transition: all 0.2s;
 }
 .btn-regenerate:hover { background: rgba(249, 115, 22, 0.25); border-color: #f97316; color: #fdba74; }
-.btn-clear-memory {
-  background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.3);
-  color: var(--error-text); cursor: pointer; font-size: 12px; font-weight: 600;
-  padding: 4px 12px; border-radius: 6px; transition: all 0.2s; margin-left: 12px; vertical-align: middle;
-}
-.btn-clear-memory:hover { background: rgba(239, 68, 68, 0.25); border-color: #ef4444; color: #fca5a5; }
+
 .btn-regenerate:disabled { opacity: 0.5; cursor: not-allowed }
 .btn-svip-only { opacity: 0.4; cursor: not-allowed; filter: grayscale(0.8); pointer-events: none; }
 .btn-cancel {
@@ -1798,4 +1773,6 @@ export default {
 }
 .sp-modal-body::-webkit-scrollbar { width: 6px; }
 .sp-modal-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+
 </style>

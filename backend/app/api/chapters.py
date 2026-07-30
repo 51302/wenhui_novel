@@ -302,32 +302,6 @@ def today_published_count(
         return fail(f"统计今日发布数量失败: {str(e)}", code=500)
 
 
-@router.post("/reset-memory/{novel_unique_id}")
-def reset_novel_memory(
-    novel_unique_id: str,
-    current_user: dict = Depends(get_current_user),
-    _svip: dict = Depends(require_svip),
-    db: Session = Depends(get_db),
-):
-    """重置指定作品的全部 Redis 记忆体（异步队列）"""
-    novel = db.query(Novel).filter(
-        Novel.novel_unique_id == novel_unique_id,
-        Novel.author_user_id == current_user["user_id"],
-    ).first()
-    if not novel:
-        return fail("无权限操作该作品", code=403)
-    task_id = TaskQueue.push("ai:reset-memory", {
-        "novel_unique_id": novel_unique_id,
-    }, ttl=3600)
-    if not task_id:
-        return fail("系统繁忙，请稍后重试", code=503)
-    system_logger.info(f"用户 {current_user['username']} 提交重置作品 {novel.title} 记忆体任务 → task_id={task_id}")
-    return success({
-        "task_id": task_id,
-        "queue_name": "ai:reset-memory",
-    }, "记忆体重置任务已提交，请稍后查询结果")
-
-
 @router.get("/download/{novel_unique_id}")
 def download_novel(
     novel_unique_id: str,
