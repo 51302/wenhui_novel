@@ -51,6 +51,10 @@ deepseek:
   base_url: "https://api.deepseek.com"
   model: "deepseek-v4-flash"
 
+# AI 生成 Mock 开关（压测用）：true 时 AI 生成接口不调用真实 DeepSeek，返回固定文本
+ai:
+  mock_generate: false
+
 email:
   provider: "resend"
   from_name: "文辉小说"

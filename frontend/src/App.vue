@@ -163,7 +163,7 @@ export default {
       try { await api.post('/auth/logout') } catch (e) { /* ignore */ }
       user.value = null
       localStorage.removeItem('novel_user')
-      router.push('/')
+      router.push('/login')
     }
 
     return { user, authChecking, showAllWorks, sidebarCollapsed, hideSidebar, onLoginSuccess, logout }

@@ -22,6 +22,7 @@
     <div class="tabs">
       <span :class="{ active: tab === 'create' }" @click="tab = 'create'">新建作品</span>
       <span :class="{ active: tab === 'my' }" @click="fetchMyNovels(); tab = 'my'">我的作品</span>
+      <span :class="{ active: tab === 'outline' }" @click="tab = 'outline'">章节概要</span>
       <span :class="{ active: tab === 'drafts' }" @click="fetchDrafts(); tab = 'drafts'">草稿列表</span>
       <span :class="{ active: tab === 'screenplay' }" @click="initScreenplay(); tab = 'screenplay'">剧本创作</span>
     </div>
@@ -185,6 +186,16 @@
             <input v-model="chapterForm.locations" placeholder="涉及地点" />
             <input v-model="chapterForm.skills" placeholder="涉及技能" />
             <input v-model.number="chapterForm.word_count" type="number" placeholder="章节字数" />
+            <select v-model="chapterForm.author_style" class="author-style-select">
+              <option value="">默认（不指定作家风格）</option>
+              <option v-for="s in authorStyles" :key="s.id" :value="s.id">{{ s.name }} - {{ s.brief }}</option>
+            </select>
+            <select v-model="chapterForm.chapter_template" class="author-style-select">
+              <option value="">默认（不指定章节模板）</option>
+              <optgroup v-for="g in chapterTemplateGroups" :key="g.category" :label="g.category">
+                <option v-for="t in g.items" :key="t.id" :value="t.id">{{ t.name }}</option>
+              </optgroup>
+            </select>
             <textarea v-model="chapterForm.chapter_summary" class="wide-textarea" style="width: 580px; height: 71px;" placeholder="剧情发展路线(如：主角偷袭天道教宗→夺取镇教之宝→被追杀→坠崖获机缘)" rows="4"></textarea>
             <div class="chapter-btns">
               <button class="btn-ai" @click="generateChapter" :disabled="generating">
@@ -200,13 +211,22 @@
           </div>
           <div class="existing-chapters">
             <h3>已有章节
+              <span class="chapter-count-hint">共 {{ novelChapters.length }} 章</span>
             </h3>
             <div v-if="novelChapters.length === 0" class="empty">暂无章节</div>
-            <div v-for="(ch, idx) in novelChapters" :key="ch.chapter_unique_id" class="chapter-item">
-              <span>第{{ idx + 1 }}章 - {{ ch.chapter_name }} ({{ ch.word_count }}字)</span>
+            <div v-for="ch in chapterPaged" :key="ch.chapter_unique_id" class="chapter-item">
+              <span>第{{ ch.chapter_number || (novelChapters.indexOf(ch) + 1) }}章 - {{ ch.chapter_name }} ({{ ch.word_count }}字)</span>
               <span class="chapter-status">{{ ch.is_published ? '✓ 已发布' : '草稿' }}</span>
               <button class="btn-edit-chapter" @click="editChapter(ch)" title="编辑章节">✎ 编辑</button>
               <button class="btn-delete-chapter" @click="deleteChapter(ch)" title="删除章节">✕ 删除</button>
+            </div>
+            <div v-if="chapterPageCount > 1" class="pagination">
+              <button class="page-btn" :disabled="chapterPage <= 1" @click="chapterPage--">上一页</button>
+              <template v-for="(p, i) in chapterPageNums" :key="'cp-' + i">
+                <span v-if="p === '...'" class="page-ellipsis">…</span>
+                <button v-else class="page-btn" :class="{ active: p === chapterPage }" @click="chapterPage = p">{{ p }}</button>
+              </template>
+              <button class="page-btn" :disabled="chapterPage >= chapterPageCount" @click="chapterPage++">下一页</button>
             </div>
           </div>
         </div>
@@ -220,6 +240,18 @@
           <div class="edit-row"><label>章节名称</label><input v-model="editChapterForm.chapter_name" /></div>
           <div class="edit-row"><label>剧情发展路线</label>
             <textarea v-model="editChapterForm.chapter_summary" class="wide-textarea" rows="4" style="width: 580px; height: 71px;" placeholder="剧情发展路线(如：主角偷袭天道教宗→夺取镇教之宝→被追杀→坠崖获机缘)"></textarea></div>
+          <div class="edit-row"><label>作家风格</label>
+            <select v-model="editChapterForm.author_style" class="author-style-select">
+              <option value="">默认（不指定作家风格）</option>
+              <option v-for="s in authorStyles" :key="s.id" :value="s.id">{{ s.name }} - {{ s.brief }}</option>
+            </select></div>
+          <div class="edit-row"><label>章节模板</label>
+            <select v-model="editChapterForm.chapter_template" class="author-style-select">
+              <option value="">默认（不指定章节模板）</option>
+              <optgroup v-for="g in chapterTemplateGroups" :key="g.category" :label="g.category">
+                <option v-for="t in g.items" :key="t.id" :value="t.id">{{ t.name }}</option>
+              </optgroup>
+            </select></div>
           <div class="edit-row"><label>章节正文</label><button class="btn-copy-content" @click="copyChapterContent" title="复制正文内容">📋</button>
             <textarea v-model="editChapterForm.content" rows="16" placeholder="章节正文内容"></textarea></div>
           <div class="edit-actions">
@@ -392,6 +424,102 @@
       </div>
     </div>
 
+    <!-- ==================== 章节概要规划 ==================== -->
+    <div v-if="tab === 'outline'" class="tab-content">
+      <div class="screenplay-section">
+        <div class="form-row">
+          <label>选择作品</label>
+          <select v-model="outlineNovelId" class="sp-novel-select" @change="onOutlineNovelChange">
+            <option value="">-- 请选择作品 --</option>
+            <option v-for="n in myNovels" :key="n.novel_unique_id" :value="n.novel_unique_id">
+              {{ n.title }}
+            </option>
+          </select>
+        </div>
+
+        <div v-if="outlineNovelId" class="sp-chapter-list">
+          <div class="sp-chapter-header">
+            <label class="sp-check-all">后续剧情大框</label>
+            <span class="sp-selected-count">概要缓存 24 小时，点「生成正文」随章节落库</span>
+            <button class="btn-generate" @click="outlineGenerate" :disabled="outlineGenerating || !outlineDirection.trim()">
+              <span v-if="outlineGenerating" class="spinner"></span>
+              {{ outlineGenerating ? '生成中...' : '📝 生成章节概要' }}
+            </button>
+          </div>
+
+          <div class="form-row">
+            <textarea v-model="outlineDirection" class="wide-textarea" rows="4"
+              style="width: 100%; height: 90px;"
+              placeholder="描述后续剧情的整体走向，例如：主角被逐出宗门后流落落空城，意外结识青姨，逐步觉醒血脉之力，同时躲避天道教宗的追杀，为三年后的宗门大比埋下伏笔……"></textarea>
+          </div>
+
+          <div class="form-row">
+            <label>生成章数</label>
+            <input v-model.number="outlineCount" type="number" min="1" max="15" style="width: 120px;" />
+            <span class="outline-hint">建议 5-15 章，最多 15 章</span>
+          </div>
+
+          <div v-if="outlineGenerating" class="empty">⏳ AI 正在根据已有章节概要规划后续剧情，请稍候…（约 30-90 秒）</div>
+
+          <!-- 概要列表：只展示 Redis 缓存概要（MySQL 章节概要仅作为生成输入，不在此展示） -->
+          <div class="outline-result">
+            <div class="outline-result-title">
+              📖 章节概要列表
+              <span v-if="outlineLoading" class="outline-loading">加载中…</span>
+            </div>
+
+            <!-- 临时缓存概要（Redis，24h，不落库） -->
+            <template v-if="outlineResult.length">
+              <div class="outline-group-title">🕐 章节概要（24小时内有效，共 {{ outlineResult.length }} 章）</div>
+              <div v-for="(o, i) in outlineResult" :key="'preview-' + i" class="outline-item">
+                <div class="outline-item-head">
+                  <span class="outline-item-num">第{{ o.chapter_number }}章</span>
+                  <span class="outline-item-name">{{ outlineEditNum === o.chapter_number ? outlineEditName : o.chapter_name }}</span>
+                  <span class="outline-tag pending">临时缓存</span>
+                </div>
+                <!-- 编辑态 -->
+                <template v-if="outlineEditNum === o.chapter_number">
+                  <div class="form-row">
+                    <label>章节名</label>
+                    <input v-model="outlineEditName" class="outline-edit-input" placeholder="请输入章节名" />
+                  </div>
+                  <div class="form-row">
+                    <label>概要内容</label>
+                    <textarea v-model="outlineEditSummary" class="outline-edit-textarea" rows="4"></textarea>
+                  </div>
+                  <div class="outline-item-actions">
+                    <button class="btn-outline-save" @click="outlineUpdateOne(o)" :disabled="outlineSaving">
+                      {{ outlineSaving ? '保存中...' : '✅ 保存修改' }}
+                    </button>
+                    <button class="btn-outline-cancel" @click="cancelOutlineEditOne">取消</button>
+                  </div>
+                </template>
+                <!-- 查看态 -->
+                <template v-else>
+                  <div class="outline-item-summary">{{ o.chapter_summary }}</div>
+                  <div class="outline-item-actions">
+                    <button class="btn-outline-save" @click="outlineGenerateChapter(o)" :disabled="generating">
+                      📝 生成正文
+                    </button>
+                    <button class="btn-outline-edit" @click="startOutlineEditOne(o)">✏️ 修改</button>
+                    <button class="btn-outline-cancel" @click="outlineDeleteOne(o)" :disabled="outlineSaving">
+                      🗑 删除
+                    </button>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <div v-if="!outlineLoading && !outlineResult.length" class="empty">
+              暂无章节概要，输入剧情大框点击生成即可（概要临时缓存，生成正文后落库）
+            </div>
+          </div>
+        </div>
+
+        <div v-if="!outlineNovelId" class="empty sp-hint">请先在上方选择一个作品</div>
+      </div>
+    </div>
+
     <!-- 发布加载遮罩 -->
     <div v-if="publishOverlay.visible" class="modal-overlay publish-overlay">
       <div class="publish-modal">
@@ -432,6 +560,21 @@ export default {
     const isVip = computed(() => !!user.is_vip)
     const isSvip = computed(() => !!user.is_svip)
     const vipLevel = computed(() => user.vip_level ?? 0)
+
+    // 生成分页页码数组（含省略号）：如 [1, '...', 4, 5, 6, '...', 20]
+    const buildPageNums = (page, count) => {
+      if (count <= 7) return Array.from({ length: count }, (_, i) => i + 1)
+      const set = new Set([1, count, page - 2, page - 1, page, page + 1, page + 2].filter(p => p >= 1 && p <= count))
+      const sorted = [...set].sort((a, b) => a - b)
+      const out = []
+      let prev = 0
+      for (const p of sorted) {
+        if (p - prev > 1) out.push('...')
+        out.push(p)
+        prev = p
+      }
+      return out
+    }
     const freeQuota = computed(() => user.free_generate_quota ?? 0)
 
     // 今日发布统计
@@ -675,12 +818,46 @@ export default {
     const saving = ref(false)
     const regenerating = ref(false)
     const showChapterEditModal = ref(false)
+    // 已有章节列表分页
+    const chapterPage = ref(1)
+    const chapterPageSize = ref(10)
+    const chapterPageCount = computed(() => Math.max(1, Math.ceil(novelChapters.value.length / chapterPageSize.value)))
+    const chapterPaged = computed(() => {
+      if (chapterPage.value > chapterPageCount.value) chapterPage.value = chapterPageCount.value
+      const s = (chapterPage.value - 1) * chapterPageSize.value
+      // 章节号由大到小展示
+      const sorted = [...novelChapters.value].sort((a, b) => (b.chapter_number || 0) - (a.chapter_number || 0))
+      return sorted.slice(s, s + chapterPageSize.value)
+    })
+    const chapterPageNums = computed(() => buildPageNums(chapterPage.value, chapterPageCount.value))
+    const authorStyles = ref([])
+    const fetchAuthorStyles = async () => {
+      try {
+        const res = await api.get('/chapters/author-styles')
+        if (res.状态码 === 200 && Array.isArray(res.数据)) authorStyles.value = res.数据
+      } catch (e) { authorStyles.value = [] }
+    }
+    const chapterTemplates = ref([])
+    const fetchChapterTemplates = async () => {
+      try {
+        const res = await api.get('/chapters/chapter-templates')
+        if (res.状态码 === 200 && Array.isArray(res.数据)) chapterTemplates.value = res.数据
+      } catch (e) { chapterTemplates.value = [] }
+    }
+    const chapterTemplateGroups = computed(() => {
+      const groups = {}
+      for (const t of chapterTemplates.value) {
+        if (!groups[t.category]) groups[t.category] = { category: t.category, items: [] }
+        groups[t.category].items.push(t)
+      }
+      return Object.values(groups)
+    })
     const chapterForm = reactive({
       chapter_name: '', characters_involved: '', organizations: '',
-      locations: '', skills: '', word_count: 2000, chapter_summary: '', content: ''
+      locations: '', skills: '', word_count: 2500, chapter_summary: '', content: '', author_style: '', chapter_template: ''
     })
     const editChapterForm = reactive({
-      chapter_name: '', chapter_summary: '', content: ''
+      chapter_name: '', chapter_summary: '', content: '', author_style: '', chapter_template: ''
     })
     const editingChapterId = ref(null)
 
@@ -688,18 +865,18 @@ export default {
       chapterNovel.value = novel
       showChapterModal.value = true
       editingChapterId.value = null
-      Object.assign(chapterForm, { chapter_name: '', characters_involved: '', organizations: '', locations: '', skills: '', word_count: 2000, chapter_summary: '', content: '' })
+      Object.assign(chapterForm, { chapter_name: '', characters_involved: '', organizations: '', locations: '', skills: '', word_count: 2500, chapter_summary: '', content: '', author_style: '', chapter_template: '' })
       try {
         const res = await api.get(`/chapters/novel/${novel.novel_unique_id}`)
-        if (res.状态码 === 200) novelChapters.value = res.数据
+        if (res.状态码 === 200) { novelChapters.value = res.数据; chapterPage.value = 1 }
       } catch { novelChapters.value = [] }
     }
 
         const generateChapter = async () => {
       if (!chapterForm.chapter_name) return alert('请输入章节名称')
-      if (chapterForm.word_count > 2000) {
-        if (!confirm(`章节字数超过2000字上限（当前${chapterForm.word_count}字），将自动调整为2000字。是否继续？`)) return
-        chapterForm.word_count = 2000
+      if (chapterForm.word_count > 2500) {
+        if (!confirm(`章节字数超过2500字上限（当前${chapterForm.word_count}字），将自动调整为2500字。是否继续？`)) return
+        chapterForm.word_count = 2500
       }
       generating.value = true
       try {
@@ -711,7 +888,9 @@ export default {
           locations: chapterForm.locations,
           skills: chapterForm.skills,
           word_count: chapterForm.word_count,
-          chapter_summary: chapterForm.chapter_summary
+          chapter_summary: chapterForm.chapter_summary,
+          author_style: chapterForm.author_style,
+          chapter_template: chapterForm.chapter_template
         })
         if (res.状态码 === 200 && res.数据 && res.数据.task_id) {
           // 刷新用户信息（更新免费次数）
@@ -740,6 +919,7 @@ export default {
             } catch { /* ignore polling errors */ }
           }
           if (done) {
+            // 概要缓存保留到发布成功后才自动消费（发布时转入 MySQL 并移除缓存），此处不删除
             tab.value = 'drafts'
             await fetchDrafts()
           } else {
@@ -758,16 +938,193 @@ export default {
       }
     }
 
+    // 章节概要规划
+    const outlineNovelId = ref('')
+    const outlineDirection = ref('')
+    const outlineCount = ref(5)
+    const outlineGenerating = ref(false)
+    const outlineResult = ref([])        // Redis 缓存概要（24h，不落库）
+    const outlineLoading = ref(false)
+    const outlineSaving = ref(false)
+    const outlineEditNum = ref(null)     // 正在编辑的缓存概要章节号
+    const outlineEditName = ref('')
+    const outlineEditSummary = ref('')
+
+    // 加载：只展示 Redis 缓存概要（MySQL 章节概要仅作为生成输入，不在此展示）
+    const loadOutlineList = async () => {
+      if (!outlineNovelId.value) { outlineResult.value = []; return }
+      outlineLoading.value = true
+      try {
+        const cacheRes = await api.get('/chapters/outline/cache?novel_unique_id=' + outlineNovelId.value)
+        if (cacheRes.状态码 === 200 && cacheRes.数据 && Array.isArray(cacheRes.数据.chapters)) {
+          outlineResult.value = cacheRes.数据.chapters.slice().sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0))
+        } else {
+          outlineResult.value = []
+        }
+      } catch (e) {
+        console.error('[加载章节概要失败]', e)
+        outlineResult.value = []
+      } finally {
+        outlineLoading.value = false
+      }
+    }
+
+    // 切换作品：清空缓存预览并加载该作品概要
+    const onOutlineNovelChange = () => {
+      outlineResult.value = []
+      loadOutlineList()
+    }
+
+    const outlineGenerate = async () => {
+      if (!outlineNovelId.value) return alert('请先选择作品')
+      if (!outlineDirection.value.trim()) return alert('请输入后续剧情大框')
+      outlineGenerating.value = true
+      outlineResult.value = []
+      try {
+        const res = await api.post('/chapters/outline/generate', {
+          novel_unique_id: outlineNovelId.value,
+          story_direction: outlineDirection.value,
+          chapter_count: outlineCount.value
+        })
+        if (res.状态码 === 200 && res.数据 && res.数据.task_id) {
+          const taskId = res.数据.task_id
+          const maxWait = 150000
+          const pollInterval = 3000
+          let waited = 0
+          let done = false
+          while (waited < maxWait) {
+            await new Promise(r => setTimeout(r, pollInterval))
+            waited += pollInterval
+            try {
+              const statusRes = await api.get('/chapters/tasks/' + taskId)
+              if (statusRes.状态码 === 200 && statusRes.数据) {
+                const taskStatus = statusRes.数据.status
+                if (taskStatus === 'done') {
+                  await loadOutlineList()
+                  done = true
+                  break
+                } else if (taskStatus === 'failed') {
+                  alert(statusRes.数据.error || '概要生成失败')
+                  return
+                }
+              }
+            } catch { /* ignore polling errors */ }
+          }
+          if (!done) alert('概要生成超时，请稍后重试')
+        } else {
+          alert('提交失败: ' + (res.消息 || '未知错误'))
+        }
+      } catch (e) {
+        const msg = e.response ? (e.response.数据 || e.response.消息 || JSON.stringify(e.response.data)) : (e.message || '网络错误')
+        alert('概要生成失败: ' + msg)
+      } finally {
+        outlineGenerating.value = false
+      }
+    }
+
+    // 从缓存概要一键生成正文：预填章节管理弹窗表单
+    const outlineGenerateChapter = async (o) => {
+      const novel = myNovels.value.find(n => n.novel_unique_id === outlineNovelId.value)
+      if (!novel) return alert('作品不存在，请刷新后重试')
+      await openChapterModal(novel)
+      Object.assign(chapterForm, {
+        chapter_name: o.chapter_name || '',
+        chapter_summary: o.chapter_summary || ''
+      })
+      tab.value = 'my'
+    }
+
+    // 删除单条临时缓存概要（不落库，直接丢弃）
+    const outlineDeleteOne = async (o) => {
+      if (!confirm(`确定删除第${o.chapter_number}章《${o.chapter_name}》的缓存概要吗？`)) return
+      outlineSaving.value = true
+      try {
+        const res = await api.delete('/chapters/outline/cache', {
+          data: { novel_unique_id: outlineNovelId.value, chapter_number: o.chapter_number }
+        })
+        if (res.状态码 === 200) {
+          await loadOutlineList()
+          alert(res.消息 || '已删除')
+        } else {
+          alert(res.消息 || '删除失败')
+        }
+      } catch (e) {
+        const msg = e.response ? (e.response.数据 || e.response.消息 || JSON.stringify(e.response.data)) : (e.message || '网络错误')
+        alert('删除失败: ' + msg)
+      } finally {
+        outlineSaving.value = false
+      }
+    }
+
+    // 进入缓存概要编辑态
+    const startOutlineEditOne = (o) => {
+      outlineEditNum.value = o.chapter_number
+      outlineEditName.value = o.chapter_name || ''
+      outlineEditSummary.value = o.chapter_summary || ''
+    }
+    const cancelOutlineEditOne = () => { outlineEditNum.value = null }
+
+    // 保存缓存概要的修改（更新 Redis，不落库）
+    const outlineUpdateOne = async (o) => {
+      if (!outlineEditName.value.trim()) { alert('章节名不能为空'); return }
+      outlineSaving.value = true
+      try {
+        const res = await api.put('/chapters/outline/cache', {
+          novel_unique_id: outlineNovelId.value,
+          chapter_number: o.chapter_number,
+          chapter_name: outlineEditName.value.trim(),
+          chapter_summary: outlineEditSummary.value.trim()
+        })
+        if (res.状态码 === 200) {
+          outlineEditNum.value = null
+          await loadOutlineList()
+          alert(res.消息 || '概要已更新')
+        } else {
+          alert(res.消息 || '更新失败')
+        }
+      } catch (e) {
+        const msg = e.response ? (e.response.数据 || e.response.消息 || JSON.stringify(e.response.data)) : (e.message || '网络错误')
+        alert('更新失败: ' + msg)
+      } finally {
+        outlineSaving.value = false
+      }
+    }
+
     // 草稿
     const drafts = ref([])
     const continuing = reactive({})
     const extracting = reactive({})
     const publishing = reactive({})
     const publishOverlay = reactive({ visible: false, name: '', step: 0 })
+
+    // 判断提取结果是否包含有效维度数据（排除空串/无）
+    const hasMemoryFields = (info) => {
+      if (!info) return false
+      const keys = ['人物', '组织', '功法技能', '关键事件', '地点', '时间', '关键物品', '实力变化', '伏笔']
+      return keys.some(k => info[k] && String(info[k]).trim() && String(info[k]).trim() !== '无')
+    }
+
+    // 轮询异步提取/生成任务，返回任务结果 data（失败或超时返回 null）
+    const pollExtractResult = async (taskId, maxWait = 120000, pollInterval = 3000) => {
+      let waited = 0
+      while (waited < maxWait) {
+        await new Promise(r => setTimeout(r, pollInterval))
+        waited += pollInterval
+        try {
+          const statusRes = await api.get('/chapters/tasks/' + taskId)
+          if (statusRes.状态码 === 200 && statusRes.数据) {
+            const st = statusRes.数据.status
+            if (st === 'done') return statusRes.数据.result?.data || null
+            if (st === 'failed') return null
+          }
+        } catch { /* ignore polling errors */ }
+      }
+      return null
+    }
     const fetchDrafts = async () => {
       try {
         const res = await api.get('/chapters/drafts')
-        if (res.状态码 === 200) drafts.value = res.数据
+        if (res.状态码 === 200) drafts.value = (res.数据 || []).slice().reverse()  // 倒序展示：最新草稿在最上方
         else console.error('获取草稿列表失败:', res)
       } catch (e) { console.error('获取草稿列表异常:', e) }
     }
@@ -780,12 +1137,16 @@ export default {
       extracting[d.chapter_unique_id] = true
       try {
         const res = await api.post('/chapters/extract-info', { content: d.content, chapter_name: d.chapter_name, novel_unique_id: d.novel_unique_id })
-        console.log('[提取信息] 响应:', JSON.stringify(res, null, 2))
-        if (res.状态码 === 200 && res.数据) {
-          // 用 $set 或重新赋值确保响应式
-          const idx = drafts.value.findIndex(item => item.chapter_unique_id === d.chapter_unique_id)
-          if (idx !== -1) {
-            drafts.value[idx] = { ...drafts.value[idx], _info: res.数据 }
+        if (res.状态码 === 200 && res.数据 && res.数据.task_id) {
+          // 接口为异步任务，轮询等待真实提取结果
+          const info = await pollExtractResult(res.数据.task_id, 120000, 3000)
+          if (info && hasMemoryFields(info)) {
+            const idx = drafts.value.findIndex(item => item.chapter_unique_id === d.chapter_unique_id)
+            if (idx !== -1) {
+              drafts.value[idx] = { ...drafts.value[idx], _info: info }
+            }
+          } else {
+            alert('提取失败或超时，请稍后重试')
           }
         } else {
           alert('提取失败: ' + (res.消息 || JSON.stringify(res)))
@@ -825,17 +1186,34 @@ export default {
 
       try {
         const body = { content: d.content }
-        // 附带 AI 提取的信息
-        if (d._info) {
-          body.characters_involved = d._info.人物 || ''
-          body.organizations = d._info.组织 || ''
-          body.skills = d._info.功法技能 || ''
-          body.locations = d._info.locations || ''
-          body.events = d._info.关键事件 || ''
-          body.time_info = d._info.时间 || ''
-          body.key_items = d._info.关键物品 || ''
-          body.power_changes = d._info.实力变化 || ''
-          body.foreshadowing = d._info.伏笔 || ''
+        // 附带 AI 提取的信息（未提取或无有效数据时自动提取，确保记忆体同步保存成功）
+        let info = d._info
+        if (!hasMemoryFields(info)) {
+          try {
+            const extRes = await api.post('/chapters/extract-info', { content: d.content, chapter_name: d.chapter_name, novel_unique_id: d.novel_unique_id })
+            if (extRes.状态码 === 200 && extRes.数据 && extRes.数据.task_id) {
+              info = await pollExtractResult(extRes.数据.task_id, 120000, 3000)
+            }
+          } catch (e) {
+            console.error('[发布-自动提取] 异常:', e)
+            info = null
+          }
+          if (!hasMemoryFields(info)) {
+            publishOverlay.visible = false
+            alert('AI 提取章节关键信息失败，无法保证记忆体保存成功，请稍后重试发布')
+            return
+          }
+        }
+        if (info) {
+          body.characters_involved = info.人物 || ''
+          body.organizations = info.组织 || ''
+          body.skills = info.功法技能 || ''
+          body.locations = info.地点 || ''
+          body.events = info.关键事件 || ''
+          body.time_info = info.时间 || ''
+          body.key_items = info.关键物品 || ''
+          body.power_changes = info.实力变化 || ''
+          body.foreshadowing = info.伏笔 || ''
         }
 
         // 阶段2：调用后端 API（后端内部三阶段验证：txt→MySQL→ChromaDB）
@@ -851,6 +1229,8 @@ export default {
           drafts.value = drafts.value.filter(draft => draft.chapter_unique_id !== d.chapter_unique_id)
           await fetchDrafts()
           await fetchTodayPublished()
+          // 概要已随发布自动转入 MySQL 章节概要：刷新概要缓存列表
+          if (outlineNovelId.value && outlineNovelId.value === d.novel_unique_id) await loadOutlineList()
         } else {
           publishOverlay.visible = false
           alert(res.消息)
@@ -883,7 +1263,7 @@ export default {
         if (res.状态码 === 200) {
           alert('删除成功')
           const r2 = await api.get(`/chapters/novel/${chapterNovel.value.novel_unique_id}`)
-          if (r2.状态码 === 200) novelChapters.value = r2.数据
+          if (r2.状态码 === 200) { novelChapters.value = r2.数据; chapterPage.value = 1 }
           fetchTodayPublished()
         } else alert(res.消息)
       } catch (e) { alert('删除失败') }
@@ -894,7 +1274,9 @@ export default {
       Object.assign(editChapterForm, {
         chapter_name: ch.chapter_name || '',
         chapter_summary: ch.chapter_summary || '',
-        content: ch.content || ''
+        content: ch.content || '',
+        author_style: ch.author_style || '',
+        chapter_template: ch.chapter_template || ''
       })
       showChapterEditModal.value = true
     }
@@ -950,7 +1332,7 @@ export default {
         if (res.状态码 === 200) {
           alert('章节修改成功')
           const r2 = await api.get(`/chapters/novel/${chapterNovel.value.novel_unique_id}`)
-          if (r2.状态码 === 200) novelChapters.value = r2.数据
+          if (r2.状态码 === 200) { novelChapters.value = r2.数据; chapterPage.value = 1 }
           showChapterEditModal.value = false
         } else alert(res.消息)
       } catch (e) { alert('修改失败: ' + (e.response?.data?.detail || e.message)) }
@@ -964,7 +1346,9 @@ export default {
       try {
         const res = await api.post(`/chapters/regenerate/${editingChapterId.value}`, {
           chapter_summary: editChapterForm.chapter_summary,
-          word_count: 2000
+          word_count: 2500,
+          author_style: editChapterForm.author_style,
+          chapter_template: editChapterForm.chapter_template
         })
         if (res.状态码 === 200) {
           const newContent = res.数据?.content
@@ -1160,6 +1544,8 @@ export default {
       syncUserFromServer().then(() => fetchTodayPublished())
       window.addEventListener('user-info-changed', onUserChanged)
       fetchMyNovels()
+      fetchAuthorStyles()
+      fetchChapterTemplates()
     })
 
     onUnmounted(() => {
@@ -1169,7 +1555,9 @@ export default {
     return { tab, isVip, isSvip, vipLevel, freeQuota, publishedToday, maxDailyQuota, quotaRemaining, quotaPercent, levelLabel, levelDesc, fetchTodayPublished, novelForm, createError, createSuccess, handleCreateNovel,
       myNovels, fetchMyNovels,
       showChapterModal, chapterNovel, novelChapters, chapterForm, generating,
-      openChapterModal, generateChapter,
+      openChapterModal, generateChapter, authorStyles, fetchAuthorStyles,
+      chapterTemplates, fetchChapterTemplates, chapterTemplateGroups,
+      chapterPage, chapterPageSize, chapterPaged, chapterPageCount, chapterPageNums,
       drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, editChapter, saveChapterEdit, regenerateChapter, continueChapter, continuing, deleteNovel, downloadNovel, formatTime, saving, regenerating, showChapterEditModal, editChapterForm,
       extracting, extractDraftInfo, publishing, publishOverlay,
       genreOptions, selectedGenres, toggleGenre, handleCoverUpload,
@@ -1177,6 +1565,11 @@ export default {
       openEditModal, toggleEditGenre, handleEditCoverUpload, handleUpdateNovel,
       spNovelId, spChapters, spSelectedIds, spGenerating, spResult, spResultRef,
       spAllSelected, initScreenplay, spLoadChapters, spToggleAll, spGenerate, spCopyResult,
+      outlineNovelId, outlineDirection, outlineCount, outlineGenerating, outlineResult,
+      outlineLoading, outlineSaving,
+      outlineEditNum, outlineEditName, outlineEditSummary,
+      startOutlineEditOne, cancelOutlineEditOne, outlineUpdateOne,
+      loadOutlineList, onOutlineNovelChange, outlineGenerate, outlineGenerateChapter, outlineDeleteOne,
       copyChapterContent, fallbackCopy,
     }
   }
@@ -1391,6 +1784,8 @@ export default {
 .chapter-form h3 { margin-bottom: 14px; font-size: 15px; color: var(--text-secondary); }
 .chapter-form input { width: 100%; padding: 10px 14px; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; background: var(--bg-input); color: var(--text-primary); }
 .chapter-form input:focus { outline: none; border-color: var(--border-focus); }
+.author-style-select { width: 100%; padding: 10px 14px; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; background: var(--bg-input); color: var(--text-primary); }
+.edit-row .author-style-select { width: 580px; margin-bottom: 0; }
 .chapter-btns { display: flex; gap: 10px; margin-top: 4px; }
 .chapter-btns button { flex: 1; padding: 11px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; transition: all 0.3s; }
 .chapter-btns button:first-child { background: var(--bg-card); color: var(--text-secondary); border: 1px solid var(--border); }
@@ -1691,6 +2086,71 @@ export default {
 }
 
 .sp-hint { padding: 60px 0; font-size: 14px; color: var(--text-muted); }
+
+/* ==================== 章节概要规划 ==================== */
+.outline-hint { font-size: 12px; color: var(--text-muted); margin-left: 10px; }
+.outline-result { margin-top: 20px; padding: 16px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; }
+.outline-result-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; color: #22c55e; }
+.outline-loading { font-size: 12px; font-weight: 400; color: var(--text-muted); margin-left: 10px; }
+.outline-group-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 8px 0 4px;
+  padding: 6px 10px;
+  background: var(--bg-input);
+  border-radius: 6px;
+}
+.outline-item { padding: 12px 0; border-bottom: 1px dashed var(--border); }
+.outline-item:last-child { border-bottom: none; }
+.outline-item-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+.outline-item-num { font-size: 13px; font-weight: 600; color: var(--text-primary); background: var(--bg-input); padding: 2px 8px; border-radius: 6px; white-space: nowrap; }
+.outline-item-name { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.outline-item-summary { font-size: 13px; line-height: 1.7; color: var(--text-secondary); }
+.outline-tag { font-size: 11px; padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+.outline-tag.pending { background: rgba(251, 191, 36, 0.12); color: #f59e0b; }
+.outline-tag.saved { background: rgba(74, 222, 128, 0.12); color: var(--success-text); }
+.outline-item-actions { display: flex; gap: 8px; margin-top: 8px; }
+.btn-outline-save, .btn-outline-edit {
+  padding: 5px 14px;
+  font-size: 13px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+  color: #fff;
+}
+.btn-outline-save:hover, .btn-outline-edit:hover { opacity: 0.9; transform: translateY(-1px); }
+.btn-outline-save:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+.btn-outline-edit { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+.btn-outline-cancel {
+  padding: 5px 14px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  background: transparent;
+  transition: all 0.15s;
+}
+.btn-outline-cancel:hover { border-color: var(--accent-text); color: var(--text-primary); }
+.outline-edit-input { width: 100%; max-width: 480px; }
+.outline-edit-textarea { width: 100%; resize: vertical; min-height: 80px; }
+
+/* ==================== 分页 ==================== */
+.pagination { display: flex; align-items: center; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+.page-btn {
+  min-width: 30px; height: 30px; padding: 0 8px;
+  font-size: 13px; color: var(--text-secondary);
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: 6px; cursor: pointer; transition: all 0.15s;
+}
+.page-btn:hover:not(:disabled) { color: var(--accent-text); border-color: var(--border-hover); }
+.page-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.page-btn.active { background: linear-gradient(135deg, #06b6d4, #8b5cf6); color: #fff; border-color: transparent; }
+.page-ellipsis { color: var(--text-muted); padding: 0 2px; font-size: 13px; }
+.chapter-count-hint { font-size: 12px; font-weight: 400; color: var(--text-muted); margin-left: 8px; }
 
 /* 剧本结果 - 弹窗 */
 .sp-modal {

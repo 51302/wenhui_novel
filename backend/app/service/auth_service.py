@@ -243,7 +243,11 @@ class AuthService:
 
         if len(password) < 8:
             return fail("密码必须超过8位数", code=400)
-        
+
+        # 用户名不允许包含中文
+        if re.search(r"[\u4e00-\u9fff]", username or ""):
+            return fail("用户名不能包含中文，请使用字母、数字或下划线", code=400)
+
         # 检查用户名是否已存在
         existing = UserDAO.get_by_username(db, username)
         if existing:
