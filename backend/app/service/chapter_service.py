@@ -9,16 +9,18 @@ from app.dao.chapter_dao import ChapterDAO
 from app.utils.response import success, fail
 import app.utils.redis_cache as redis_mod
 from app.service.es_service import es_service
-from app.config import deepseek_api_key, deepseek_base_url, deepseek_model
+from app.config import deepseek_api_key, deepseek_base_url, deepseek_model, deepseek_long_model
+from app.config import gen_max_tokens_multiplier, gen_max_tokens_min, gen_hard_cap_ratio, gen_hard_cap_min_extra
 from app.utils.logger import system_logger
 from app.utils.task_queue import run_async
 from app.service.chapter_gen_service import ChapterGenService
+from app.service.text_cleaner import clean_generated_text, check_ai_features, collect_feature_sentences
 from app.prompts.chapter_prompts import (
     LIGHT_EXTRACT_PROMPT, FULL_EXTRACT_PROMPT,
     MEMORY_DIMENSION_DEFS, MEMORY_EXTRACT_PROMPT, MEMORY_INCREMENTAL_PROMPT,
     get_memory_category_names, get_frontend_to_dimension_map,
     match_ai_label_to_dimension, get_dimension_dedup_map,
-    EMOTIONAL_WRITING_GUIDE, COMBAT_WRITING_GUIDE, MEME_STYLE_GUIDE, DEAI_WRITING_GUIDE,
+    HUMAN_EMOTION_GUIDE, COMBAT_WRITING_GUIDE, MEME_STYLE_GUIDE,
     COGNITION_BOUNDARY_GUIDE,
     GENERATE_SYSTEM_PROMPT, GENERATE_CREATIVE_DIRECTION,
     GENERATION_FRAMEWORK, SELF_CHECK_LIST,
@@ -55,16 +57,106 @@ class ChapterService:
 
     @staticmethod
     def _get_novel_settings(novel_unique_id: str) -> dict:
-        """读取作品设定文件内容
+        """读取作品设定文件内容 + 数据库中的简介/世界观，合并为完整设定文本
+
         :param novel_unique_id: 作品唯一ID
         :return: 设定内容字典（含content和path）
         """
         novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
         settings_file = os.path.join(novel_dir, "作品设定.txt")
+        file_content = ""
         if os.path.exists(settings_file):
             with open(settings_file, "r", encoding="utf-8") as f:
-                return {"content": f.read(), "path": settings_file}
-        return {"content": "", "path": ""}
+                file_content = f.read()
+
+        # 从数据库补充简介（description）和世界观（world_setting）——
+        # 简介含关键场景承诺（如"暗金色光炸出、灾厄化灰"），必须注入 prompt 让 AI 兑现
+        extra_parts = []
+        try:
+            from app.dao.novel_dao import NovelDAO
+            from app.models.base import SessionLocal
+            db = SessionLocal()
+            try:
+                novel = NovelDAO.get_by_unique_id(db, novel_unique_id)
+                if novel:
+                    desc = (novel.description or "").strip()
+                    if desc:
+                        extra_parts.append(f"【作品简介 —— 关键场景/台词承诺，正文对应场景必须按此呈现】\n{desc}")
+                    ws = (novel.world_setting or "").strip()
+                    if ws and ws not in file_content:
+                        extra_parts.append(f"【世界观设定】\n{ws}")
+            finally:
+                db.close()
+        except Exception as e:
+            system_logger.warning(f"[设定读取] 补充简介/世界观失败: {e}")
+
+        combined = ""
+        if extra_parts:
+            combined = "\n\n".join(extra_parts) + "\n\n" + file_content
+        else:
+            combined = file_content
+
+        return {"content": combined, "path": settings_file if file_content else ""}
+
+    @staticmethod
+    def _get_novel_genre(novel_unique_id: str) -> str:
+        """读取作品题材标签（novel.genre），用于提取 prompt 的 {novel_genre} 占位符。
+
+        :return: 题材字符串（如"仙侠""都市""玄幻"），读取失败返回通用默认值"小说"
+        """
+        try:
+            from app.dao.novel_dao import NovelDAO
+            from app.models.base import SessionLocal
+            db = SessionLocal()
+            try:
+                novel = NovelDAO.get_by_unique_id(db, novel_unique_id)
+                if novel:
+                    genre = (novel.genre or novel.target_reader or "").strip()
+                    if genre:
+                        return genre
+            finally:
+                db.close()
+        except Exception as e:
+            system_logger.warning(f"[题材读取] 获取作品题材失败: {e}")
+        return "小说"
+
+    @staticmethod
+    def _load_character_cards(db: Session, novel_unique_id: str) -> list:
+        """读取作品角色卡（novels.characters JSON），解析失败返回 []
+
+        用于：章节生成 prompt 注入主角人设/配角设定，避免 AI 忘了主角「疯批/怼神」等性格写崩
+        """
+        try:
+            novel = NovelDAO.get_by_unique_id(db, novel_unique_id)
+            chars_text = (novel.characters or "") if novel else ""
+            if not chars_text:
+                return []
+            chars = json.loads(chars_text)
+            return chars if isinstance(chars, list) else []
+        except Exception as e:
+            system_logger.warning(f"[角色卡注入] 读取失败: {e}")
+            return []
+
+    @staticmethod
+    def _resolve_default_template(db: Session, novel_unique_id: str) -> str:
+        """生成时未手动选章节模板 → 按作品主角性格自动适配默认模板
+
+        取 novels.characters JSON 中第一个角色（约定为作品主角）的 personality，
+        关键词匹配 PERSONALITY_TEMPLATE_MAP（见 chapter_prompts.py）返回模板ID；
+        无角色 / 无性格 / 无匹配时返回空字符串（不强制套模板）。
+        """
+        try:
+            chars = ChapterService._load_character_cards(db, novel_unique_id)
+            if not chars:
+                return ""
+            personality = (chars[0].get("personality") or "").strip()
+            if not personality:
+                return ""
+            from app.prompts.chapter_prompts import resolve_personality_template
+            return resolve_personality_template(personality)
+        except Exception as e:
+            system_logger.warning(f"[模板适配] 读取主角性格失败: {e}")
+            return ""
 
     # ==================== 记忆体系统（AI提取关键信息 → Redis Hash 存储） ====================
 
@@ -705,8 +797,16 @@ class ChapterService:
         return ""
 
     @staticmethod
-    def _trim_to_summary_boundary(generated_text: str, chapter_summary: str) -> str:
-        """硬截断：找到概要最后一个事件的正文落点，删除之后所有内容。"""
+    def _trim_to_summary_boundary(generated_text: str, chapter_summary: str,
+                                  tail_reserve: int = 500) -> str:
+        """概要边界截断：防止模型把概要事件写完后仍超纲续写。
+
+        只处理「明显超纲」的情况（截断点后残留 > tail_reserve 字）：
+        - 模型写完概要最后事件后若只是自然收尾（钩子/余韵，≤ tail_reserve 字），
+          保留全文——硬删会把章节结尾砍掉，造成"凤头马尾/狗尾续貂"；
+        - 残留很多说明模型在续写概要之外的新剧情，此时截断，并保留截断点后
+          最多 3 行短句作为收尾缓冲，避免戛然而止。
+        """
         if not chapter_summary or not generated_text:
             return generated_text
 
@@ -749,9 +849,18 @@ class ChapterService:
         if target_line_idx < 0 or best_score < 2:
             return generated_text
 
+        # 截断点后的残留量：≤ tail_reserve 视为模型自然收尾（钩子/余韵），
+        # 保留全文不截断，避免把章节结尾硬删掉
+        tail_len = sum(len(l) for l in lines[target_line_idx + 1:])
+        if tail_len <= tail_reserve:
+            return generated_text
+
         keep_lines = lines[:target_line_idx + 1]
-        # 最多再加 2 行短收束（放宽：允许更长的自然收尾）
-        for offset in (1, 2):
+        # 截断后保留量过少（<50%）→ 落点匹配失败/误切，保留全文
+        if len("\n".join(keep_lines)) < len(generated_text) * 0.5:
+            return generated_text
+        # 保留截断点后最多 3 行短句作为收尾缓冲，避免戛然而止
+        for offset in (1, 2, 3):
             idx = target_line_idx + offset
             if idx < len(lines):
                 next_line = lines[idx].strip()
@@ -760,11 +869,7 @@ class ChapterService:
                 else:
                     break
 
-        trimmed = '\n'.join(keep_lines).strip()
-        if len(trimmed) < len(generated_text) * 0.3:
-            return generated_text
-
-        return trimmed
+        return '\n'.join(keep_lines).strip()
 
 
     @staticmethod
@@ -782,7 +887,8 @@ class ChapterService:
         info_data = {}
         try:
             async with httpx.AsyncClient(timeout=120) as client:
-                prompt = FULL_EXTRACT_PROMPT.replace("{content}", content[-15000:])
+                _genre = ChapterService._get_novel_genre(novel_unique_id)
+                prompt = FULL_EXTRACT_PROMPT.replace("{content}", content[-15000:]).replace("{novel_genre}", _genre)
                 response = await client.post(
                     f"{deepseek_base_url()}/v1/chat/completions",
                     headers={"Authorization": f"Bearer {deepseek_api_key()}", "Content-Type": "application/json"},
@@ -815,7 +921,8 @@ class ChapterService:
             async with httpx.AsyncClient(timeout=180) as client:
                 # 使用 FULL_EXTRACT_PROMPT 提取更详细的信息，内容不截断
                 extract_content = content if len(content) <= 15000 else content[:7500] + "\n...\n" + content[-7500:]
-                prompt = FULL_EXTRACT_PROMPT.replace("{content}", extract_content)
+                _genre = ChapterService._get_novel_genre(novel_unique_id)
+                prompt = FULL_EXTRACT_PROMPT.replace("{content}", extract_content).replace("{novel_genre}", _genre)
                 response = await client.post(
                     f"{deepseek_base_url()}/v1/chat/completions",
                     headers={"Authorization": f"Bearer {deepseek_api_key()}", "Content-Type": "application/json"},
@@ -1145,6 +1252,7 @@ class ChapterService:
         import asyncio
         from app.config import get as cfg
         concurrency = cfg("redis.memory_extract_threads", 10)
+        _novel_genre = ChapterService._get_novel_genre(novel_unique_id)
 
         async def extract_one(idx: int, fname: str, sem: asyncio.Semaphore):
             """并发提取单个章节的关键信息，返回 (idx, summary_str)"""
@@ -1161,7 +1269,7 @@ class ChapterService:
 
                 chapter_name = fname.rsplit("_", 1)[0] if "_" in fname else fname.replace(".txt", "")
 
-                info = await ChapterService._extract_with_light_prompt(full_text)
+                info = await ChapterService._extract_with_light_prompt(full_text, _novel_genre)
 
                 if info.get("success") and info.get("data"):
                     data = info["data"]
@@ -1440,6 +1548,7 @@ class ChapterService:
         if missing_redis:
             max_concurrency = cfg("redis.memory_extract_threads", 10)
             sem = asyncio.Semaphore(max_concurrency)
+            _novel_genre = ChapterService._get_novel_genre(novel_unique_id)
 
             async def _extract_only(name: str, content: str) -> tuple:
                 """仅做 AI 提取，不写 Redis"""
@@ -1452,7 +1561,7 @@ class ChapterService:
                     info_data = {}
                     try:
                         async with httpx.AsyncClient(timeout=120) as client:
-                            prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-8000:])
+                            prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-8000:]).replace("{novel_genre}", _novel_genre)
                             resp = await client.post(
                                 f"{deepseek_base_url()}/v1/chat/completions",
                                 headers={
@@ -1524,16 +1633,17 @@ class ChapterService:
             await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
 
     @staticmethod
-    async def _extract_with_light_prompt(content: str) -> dict:
+    async def _extract_with_light_prompt(content: str, novel_genre: str = "") -> dict:
         """AI 轻量提取章节关键信息（LIGHT_EXTRACT_PROMPT），返回 {"success": True, "data": {...}}"""
         # Mock 模式（压测用）：返回空维度结构，不调用真实 DeepSeek
         from app.config import get as cfg
         if cfg("ai.mock_generate", False):
             from app.prompts.chapter_prompts import get_memory_category_names
             return {"success": True, "data": {d: [] for d in get_memory_category_names()}}
+        _genre = novel_genre or "小说"
         try:
             async with httpx.AsyncClient(timeout=120) as client:
-                prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-8000:])
+                prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-8000:]).replace("{novel_genre}", _genre)
                 resp = await client.post(
                     f"{deepseek_base_url()}/v1/chat/completions",
                     headers={
@@ -1553,8 +1663,13 @@ class ChapterService:
                 if resp.status_code == 200:
                     data = resp.json()
                     text = data["choices"][0]["message"]["content"]
-                    return {"success": True, "data": ChapterService._parse_extract_result(text)}
-                return {"success": False, "data": {}}
+                    parsed = ChapterService._parse_extract_result(text)
+                    if not parsed:
+                        system_logger.warning(f"[AI提取] 解析结果为空，原始响应前500字: {text[:500]}")
+                    return {"success": True, "data": parsed}
+                else:
+                    system_logger.error(f"[AI提取] DeepSeek返回非200: status={resp.status_code}, body={resp.text[:500]}")
+                    return {"success": False, "data": {}}
         except Exception as e:
             system_logger.error(f"[AI提取] 异常: {e}")
             return {"success": False, "data": {}}
@@ -2112,6 +2227,8 @@ class ChapterService:
             return ("压测用模拟章节内容，仅用于接口压力测试，不包含真实剧情。" * 200), ""
         try:
             async with httpx.AsyncClient(timeout=180) as client:
+                # 正文生成用长文本模型（flash 句子过平滑易被 AI 检测标记，改用 v4；其余功能仍用 flash）
+                gen_model = deepseek_long_model()
                 resp = await client.post(
                     f"{deepseek_base_url()}/v1/chat/completions",
                     headers={
@@ -2119,15 +2236,15 @@ class ChapterService:
                         "Content-Type": "application/json"
                     },
                     json={
-                        "model": deepseek_model(),
+                        "model": gen_model,
                         "messages": [
                             {"role": "system", "content": GENERATE_SYSTEM_PROMPT},
                             {"role": "user", "content": prompt},
                         ],
-                        # 关闭思考模式：deepseek-v4-flash 默认多想，思考会消耗大量 max_tokens 并拖慢生成
+                        # 关闭思考模式：模型默认多想，思考会消耗大量 max_tokens 并拖慢生成
                         "thinking": {"type": "disabled"},
                         "max_tokens": max_tokens,
-                        "temperature": 0.85,
+                        "temperature": 0.7,
                         "top_p": 0.92,
                         "frequency_penalty": 0.3,
                         "presence_penalty": 0.4,
@@ -2149,7 +2266,7 @@ class ChapterService:
                 return "", "模型返回空内容（可能只输出思考内容）"
             # 只调用一次：无论字数多少都直接返回，不重试、不扩写
             system_logger.info(
-                f"AI生成 单次完成 finish_reason={finish_reason} len={len(text)} "
+                f"AI生成 单次完成 model={gen_model} finish_reason={finish_reason} len={len(text)} "
                 f"usage={data.get('usage', {})}")
             return text, ""
         except httpx.TimeoutException:
@@ -2158,6 +2275,102 @@ class ChapterService:
         except Exception as e:
             system_logger.warning(f"AI生成 异常: {e}")
             return "", str(e)
+
+    @staticmethod
+    async def _rewrite_ai_features(text: str) -> str:
+        """内容层 AI 特征超标 → LLM 定向改写（config.yaml ai.text_clean.llm_rewrite=true 启用）。
+
+        程序化清洗管不了比字比较句/台词对仗/"跟X似的"/否定排队（删了伤语义），
+        这一步用一次 v4 调用兜底：只改写命中的句子，其余一字不动；
+        改写后按行映射回原文 → 复跑程序化清洗 → 复检特征，超标项显著下降。
+
+        :param text: 已过程序化清洗的章节正文
+        :return: 改写后的正文（改写失败/无超标时原样返回）
+        """
+        from app.config import get as cfg
+        if not cfg("ai.text_clean.llm_rewrite", False):
+            return text
+        report = check_ai_features(text)
+        if not report:
+            return text
+        targets = collect_feature_sentences(text)
+        if not targets:
+            return text
+        system_logger.info(f"[章节生成] 内容层特征超标，触发 LLM 定向改写: {report}（{len(targets)}句）")
+        numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(targets))
+        prompt = (
+            "你是网文改稿编辑，任务是把句子里的 AI 写作特征改掉，让文字更像人手写的。\n"
+            "检测到的特征与改写要求：\n"
+            "- 比字比较句（\"比我的大\"\"比我们都旧\"）：改成口语直述（\"大得多，宽一圈\"\"头一个醒的\"），同句避免第二个比较；\n"
+            "- \"跟X似的\"比喻：换直述（\"跟砂纸磨过似的\"→\"干得发紧\"）；\n"
+            "- 否定排队（\"不知道。不知道。\"）：只留一次，其余删掉或并进叙述；\n"
+            "- 台词对仗（相邻两句等长收尾）：拆成错落长度，一句长一句短；\n"
+            "- 一问一答剧本式（连续\"问？答。问？\"无停顿）：中间插入动作/反应/环境打断，或把答句并进叙述；\n"
+            "- 解释性描写（\"因为A所以B因此C\"式设定解释）：改成人物感受，让读者自己推。\n"
+            "- 比喻密度超标（\"像X一样\"\"仿佛X\"\"犹如X\"扎堆）：整段只留 1 处比喻，其余换直述或动作，句式必须错开；\n"
+            "- 判断句排比（\"是陈述。\"\"是它在动。\"独立成段）：合并进叙述或改成动作描写，禁止\"是X。\"独立成句；\n"
+            "- 推理展开链（\"是陈述。是等了很久很久的语气。\"判断+解释枚举）：只留判断句，删掉后面的解释链，让读者自己推；\n"
+            "- 三连否定排比（\"没有恐惧，没有厌恶，只有熟悉感\"）：改单一结论（\"目光压得很平，看过太多遍的那种平\"），删掉前两个否定项；\n"
+            "- 半解释骑墙（\"某种更深的东西\"\"说不清的甜腥气\"）：要么说死（\"像铁锈混着烂肉\"），要么不解释留白，禁止\"某种/说不清的\"骑墙；\n"
+            "- 书面连词超频（\"不仅X而且Y\"\"既X又Y\"\"与其X不如Y\"）：换成口语承接（\"不但\"→\"不光\"，或直接拆成两句；\"与其…不如\"→\"宁可\"或直述）；\n"
+            "- 五感全覆盖（单场景视觉+听觉+嗅觉+触觉+味觉全写）：砍到1主1辅，挑一个主感官详写+一个辅感官一笔带过，其余删掉；\n"
+            "- 语义重复强调（\"纹路是一样的。…一样的纹路。\"同一意思拆两句复述）：合并成一句，删掉重复表述；\n"
+            "- 句子残缺（\"尖细的、。\"\"湿漉漉的、\"顿号/逗号后直接句号或悬空）：补全残缺内容或删除悬空标点，让句子完整；\n"
+            "- 句子粘连（\"涌出来不是渗\"两句无标点直接连）：在两句之间补逗号或句号，让断句清晰；\n"
+            "- 顿号形容词链悬空（\"那种没来由的、尖细的、\"以顿号结尾无后续）：删除悬空顿号或补全形容词；\n"
+            "- 得字残缺句（\"声音干得。\"\"平得。\"形容词+得+句号）：补全残缺内容（\"干得发紧\"\"平得没有起伏\"），让句子完整；\n"
+            "- 单字残缺句（\"又。\"独立成句）：补全动词或并入前后句；\n"
+            "- 名词代词粘连（\"心跳他开口了\"两句无标点）：在名词和代词之间补逗号。\n"
+            "以下每行是一个需要改写的句子。逐句改写：保持原意、原剧情、原长度（±2字内），"
+            "人名地名一律不变。\n"
+            "只输出改写后的句子，一行对应一句，不要编号、不要解释、不要原文。\n\n"
+            f"{numbered}"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(
+                    f"{deepseek_base_url()}/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {deepseek_api_key()}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": deepseek_long_model(),
+                        "messages": [
+                            {"role": "system", "content": "你是一个经验丰富的网文编辑，专门做反 AI 检测改写。"},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "thinking": {"type": "disabled"},
+                        "max_tokens": min(int(len("".join(targets)) * 2.5) + 400, 4000),
+                        "temperature": 0.7,
+                    },
+                )
+            data = resp.json()
+            if resp.status_code != 200 or "choices" not in data or not data["choices"]:
+                system_logger.warning(f"[章节生成] 定向改写接口失败: HTTP {resp.status_code}")
+                return text
+            rewritten = (data["choices"][0]["message"].get("content") or "").strip()
+        except Exception as e:
+            system_logger.warning(f"[章节生成] 定向改写异常: {e}，保留原文")
+            return text
+        lines = [ln.strip() for ln in rewritten.splitlines() if ln.strip()]
+        new_text = text
+        replaced = 0
+        for old_s, new_s in zip(targets, lines):
+            # 容错：剥掉模型可能带的编号前缀
+            new_s = re.sub(r'^\d+[\.、）)]\s*', '', new_s)
+            if old_s in new_text and new_s and old_s != new_s:
+                new_text = new_text.replace(old_s, new_s, 1)
+                replaced += 1
+        if replaced == 0:
+            system_logger.warning("[章节生成] 定向改写未命中任何句子，保留原文")
+            return text
+        cleaned, stats = clean_generated_text(new_text)
+        if stats:
+            system_logger.info(f"[章节生成] 定向改写后复洗: {stats}")
+        report2 = check_ai_features(cleaned)
+        system_logger.info(f"[章节生成] 定向改写{replaced}句，复检: {'达标' if not report2 else report2}")
+        return cleaned
 
     # ============================================================
     # 章节概要规划：为作品批量生成后续 N 章概要并批量创建草稿
@@ -2452,42 +2665,105 @@ class ChapterService:
 
     @staticmethod
     def _parse_outline_json(text: str, expected_count: int) -> list:
-        """从容错文本中解析概要 JSON 数组；失败返回 []"""
+        """从容错文本中解析概要 JSON 数组（多层降级）；失败返回 []"""
         if not text:
             return []
-        # 去掉可能的 ```json ``` 包裹
-        cleaned = text.strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
-            cleaned = re.sub(r"\s*```$", "", cleaned)
-        # 截取第一个 [ 到最后一个 ]
-        start = cleaned.find("[")
-        end = cleaned.rfind("]")
-        if start == -1 or end == -1 or end <= start:
-            return []
-        json_str = cleaned[start:end + 1]
-        try:
-            data = json.loads(json_str)
-        except Exception:
-            # 兼容缺失逗号等常见 JSON 损坏：按行拆分提取 chapter_name / chapter_summary
-            rows = re.findall(
-                r'"(?:chapter_name|章节名)"\s*[:：]\s*"([^"]*)"\s*,\s*"(?:chapter_summary|概要)"\s*[:：]\s*"([^"]*)"',
-                text)
-            return [{"chapter_name": n, "chapter_summary": s} for n, s in rows] if rows else []
-        if isinstance(data, list):
+
+        def _norm_item(d: dict) -> dict | None:
+            name = (d.get("chapter_name") or d.get("章节名") or d.get("name") or "").strip()
+            summary = (d.get("chapter_summary") or d.get("概要") or d.get("summary") or "").strip()
+            return {"chapter_name": name, "chapter_summary": summary} if name and summary else None
+
+        # ===== 1. 基础清洗：去 markdown 代码块 + BOM + 前后空白 =====
+        cleaned = text.strip().lstrip("\ufeff")
+        cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned).strip()
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+
+        # ===== 2. 提取 JSON 片段 =====
+        candidates = []
+        # 2a. 截取第一个 [ 到最后一个 ]（数组直接返回）
+        s1, e1 = cleaned.find("["), cleaned.rfind("]")
+        if s1 != -1 and e1 != -1 and e1 > s1:
+            candidates.append(cleaned[s1:e1 + 1])
+        # 2b. 如果外层包了 {"chapters": [...]} / {"data": [...]}，挖内层
+        for key in ("chapters", "data", "list", "result"):
+            m = re.search(rf'"{key}"\s*[:：]\s*(\[.*\])', cleaned, re.S)
+            if m:
+                candidates.append(m.group(1))
+        # 2c. 直接文本本身
+        candidates.append(cleaned)
+
+        # ===== 3. 按候选逐次尝试 JSON.parse =====
+        last_err = None
+        for json_str in candidates:
+            if not json_str:
+                continue
+            # 预处理中文标点：中文引号、中文逗号、中文冒号（仅在 JSON 字符串外层的标点）
+            try:
+                data = json.loads(json_str)
+            except Exception as e1:
+                last_err = e1
+                # 3a. 修复尾逗号：},]  → }]
+                repaired = re.sub(r",\s*([}\]])", r"\1", json_str)
+                # 3b. 中文引号 → 英文引号（只处理键值边界的，避免破坏内容）
+                repaired = repaired.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+                try:
+                    data = json.loads(repaired)
+                except Exception as e2:
+                    last_err = e2
+                    # 3c. 尝试 json.JSONDecoder 的 raw_decode（忽略末尾垃圾）
+                    try:
+                        decoder = json.JSONDecoder(strict=False)
+                        data, _ = decoder.raw_decode(json_str)
+                    except Exception as e3:
+                        last_err = e3
+                        data = None
+            if data is None:
+                continue
+            # 接受 list / dict(含chapters/data/list的包装)
+            if isinstance(data, list):
+                arr = data
+            elif isinstance(data, dict):
+                arr = None
+                for k in ("chapters", "data", "list", "result"):
+                    if isinstance(data.get(k), list):
+                        arr = data[k]
+                        break
+                if arr is None:
+                    # 兜底：把 dict 本身当单条
+                    arr = [data]
+            else:
+                continue
             out = []
-            for item in data:
-                if isinstance(item, dict) and item.get("chapter_name") and item.get("chapter_summary"):
-                    out.append({"chapter_name": item["chapter_name"],
-                                "chapter_summary": item["chapter_summary"]})
-            return out
-        return []
+            for item in arr:
+                if isinstance(item, dict):
+                    ni = _norm_item(item)
+                    if ni:
+                        out.append(ni)
+            if out:
+                return out[:expected_count * 2]
+
+        # ===== 4. 全量正则兜底（逐对象正则抓取，容错 JSON 极度破损）=====
+        rows = re.findall(
+            r'"(?:chapter_name|章节名|name)"\s*[:：]\s*"([^"]*)"[^}]*"(?:chapter_summary|概要|summary)"\s*[:：]\s*"([^"]*)"',
+            text, re.S)
+        if not rows:
+            rows = re.findall(
+                r'"(?:chapter_summary|概要|summary)"\s*[:：]\s*"([^"]*)"[^}]*"(?:chapter_name|章节名|name)"\s*[:：]\s*"([^"]*)"',
+                text, re.S)
+            rows = [(s, n) for n, s in rows]
+        system_logger.warning(
+            f"[概要规划] JSON解析降级到正则抓取, 匹配条数={len(rows)}, "
+            f"最后一次parse_err={last_err}, 原始返回前300字={text[:300]!r}"
+        )
+        return [{"chapter_name": n.strip(), "chapter_summary": s.strip()}
+                for n, s in rows if n.strip() and s.strip()][:expected_count * 2]
 
     @staticmethod
     async def generate_with_ai(db, novel_unique_id: str, user_id: int, chapter_name: str,
                                characters_involved: str = "", organizations: str = "",
                                locations: str = "", skills: str = "",
-                               word_count: int = 2500, chapter_summary: str = "",
+                               word_count: int = 2000, chapter_summary: str = "",
                                created_by: str = "", author_style: str = "",
                                chapter_template: str = "") -> dict:
         """AI 生成新章节（异步任务入口）
@@ -2558,6 +2834,13 @@ class ChapterService:
 
         # ===== 5. 作品设定 + 提示词组装（提示词工程内容不变） =====
         settings = ChapterService._get_novel_settings(novel_unique_id)
+        # 加载角色卡（主角+前几位配角）注入 prompt，解决「疯批不疯/怼神不怼」式人设写崩
+        character_cards = ChapterService._load_character_cards(db, novel_unique_id)
+        # 未手动选章节模板 → 按作品主角性格自动适配默认模板
+        if not chapter_template:
+            chapter_template = ChapterService._resolve_default_template(db, novel_unique_id)
+            if chapter_template:
+                system_logger.info(f"[章节生成] 未手动选模板，按主角性格自动适配: {chapter_template}")
         prompt = ChapterGenService.build_prompt(
             chapter_name=title,
             memory_body=memory_body,
@@ -2568,6 +2851,7 @@ class ChapterService:
             include_combat_meme=True,
             author_style=author_style,
             chapter_template=chapter_template,
+            character_cards=character_cards,
         )
         system_logger.info(
             f"[章节生成] 请求输入统计: 记忆体={len(memory_body)}字符 | 概要={len(chapter_summary or '')}字 "
@@ -2576,13 +2860,15 @@ class ChapterService:
         # ===== 6. 调用 AI 生成（只调用一次，不重试不扩写）+ 后处理截断 =====
         # min_acceptable 仅用于概要边界截断后的字数判断（生成多少就是多少，不做补齐）
         min_acceptable = max(int(word_count * 0.8), 800)
-        # max_tokens 覆盖目标上限（2500字×3=7500 token），防止模型写超长废稿拖慢生成
+        # max_tokens 覆盖目标上限（4000字×4=16000 token），排除 max_tokens 不足导致的提前截断
+        gen_max_tokens = max(int(word_count * 4), 16000)
         generated_text, err = await ChapterService._call_generation_api(
-            prompt, max(int(word_count * 3), 6000))
+            prompt, gen_max_tokens)
         if not generated_text:
             return fail(f"章节生成失败: {err}", code=500)
+        system_logger.info(f"[章节生成] max_tokens={gen_max_tokens} 目标字数={word_count}")
 
-        # 概要边界截断（生成内容不得超过概要覆盖的事件范围）
+        # 概要边界截断（生成内容不得超过概要覆盖的事件范围；自然收尾保留，不砍结尾）
         if chapter_summary:
             trimmed = ChapterService._trim_to_summary_boundary(generated_text, chapter_summary)
             # 截断后字数骤降：说明落点匹配失败或后文是有效内容，保留完整生成文本避免字数缩水
@@ -2591,8 +2877,29 @@ class ChapterService:
                     f"[章节生成] 截断后字数不足({len(trimmed)}字<{min_acceptable})，保留完整生成文本")
             else:
                 generated_text = trimmed
-        # 1.2倍上限截断（目标2500字 → 最多3000字），避免生成超长
-        generated_text = generated_text[: int(word_count * 1.2)]
+        # 超长上限截断（目标4000字 → 最多约8000字），避免生成超长；
+        # 上限放宽到 2.0 倍且不低于 +3000，并按段落/句号边界截断，避免句中硬切导致结尾残缺
+        hard_cap = max(int(word_count * 2.0), word_count + 3000)
+        if len(generated_text) > hard_cap:
+            cut = generated_text[:hard_cap]
+            for sep in ("\n\n", "\n", "。", "！", "？"):
+                idx = cut.rfind(sep)
+                if idx > int(hard_cap * 0.8):
+                    cut = cut[:idx + len(sep)]
+                    break
+            generated_text = cut
+
+        # ===== 6.5 程序化清洗：生成后按代码规则去除 AI 检测统计特征 =====
+        # （破折号/冒号/省略号压减、"不是X是Y"压缩、三连排比拆散、明喻换词、均匀长句拆短）
+        # 只动标点与高频句式，不删剧情；引号内对话整体保护不改写
+        cleaned_text, clean_stats = clean_generated_text(generated_text)
+        if clean_stats:
+            system_logger.info(f"[章节生成] 程序化清洗 {title}: {clean_stats}")
+        generated_text = cleaned_text
+
+        # ===== 6.6 内容层特征超标 → LLM 定向改写（config.yaml ai.text_clean.llm_rewrite=true 启用） =====
+        # 比字比较句/台词对仗/"跟X似的"/否定排队程序化删不动，超标时用一次 v4 调用只改超标句
+        generated_text = await ChapterService._rewrite_ai_features(generated_text)
         actual_word_count = len(generated_text)
 
         # ===== 7. 保存：填充概要草稿 / 覆盖旧正文草稿 / 新建草稿；+ TXT 文件 + 清草稿缓存 =====
@@ -2717,7 +3024,7 @@ class ChapterService:
 
     @staticmethod
     async def regenerate_with_ai(db: Session, chapter_unique_id: str, user_id: int,
-                                 word_count: int = 2500, chapter_summary: str = None,
+                                 word_count: int = 2000, chapter_summary: str = None,
                                  author_style: str = "", chapter_template: str = "") -> dict:
         """AI 重新生成指定章节（章节编辑）
 
@@ -2765,6 +3072,13 @@ class ChapterService:
 
         # ===== 4. 作品设定 + 提示词组装（提示词工程内容不变） =====
         settings = ChapterService._get_novel_settings(novel_unique_id)
+        # 加载角色卡（主角+前几位配角）注入 prompt，解决「疯批不疯/怼神不怼」式人设写崩
+        character_cards = ChapterService._load_character_cards(db, novel_unique_id)
+        # 未手动选章节模板 → 按作品主角性格自动适配默认模板
+        if not chapter_template:
+            chapter_template = ChapterService._resolve_default_template(db, novel_unique_id)
+            if chapter_template:
+                system_logger.info(f"[AI重新生成] 未手动选模板，按主角性格自动适配: {chapter_template}")
         prompt = ChapterGenService.build_prompt(
             chapter_name=chapter.chapter_name,
             memory_body=memory_body,
@@ -2775,6 +3089,7 @@ class ChapterService:
             include_combat_meme=True,
             author_style=author_style,
             chapter_template=chapter_template,
+            character_cards=character_cards,
         )
         system_logger.info(
             f"[AI重新生成] 请求输入统计: 记忆体={len(memory_body)}字符 | 概要={len(summary or '')}字 "
@@ -2783,11 +3098,13 @@ class ChapterService:
         # ===== 5. 调用 AI 生成（只调用一次，不重试不扩写）+ 后处理截断 =====
         # min_acceptable 仅用于概要边界截断后的字数判断（生成多少就是多少，不做补齐）
         min_acceptable = max(int(word_count * 0.8), 800)
-        # max_tokens 覆盖目标上限（2500字×3=7500 token），防止模型写超长废稿拖慢生成
+        # max_tokens 覆盖目标上限（4000字×4=16000 token），排除 max_tokens 不足导致的提前截断
+        gen_max_tokens = max(int(word_count * gen_max_tokens_multiplier()), gen_max_tokens_min())
         generated_text, err = await ChapterService._call_generation_api(
-            prompt, max(int(word_count * 3), 6000))
+            prompt, gen_max_tokens)
         if not generated_text:
             return fail(f"AI重新生成失败: {err}", code=500)
+        system_logger.info(f"[AI重新生成] max_tokens={gen_max_tokens} 目标字数={word_count}")
 
         if summary:
             trimmed = ChapterService._trim_to_summary_boundary(generated_text, summary)
@@ -2797,8 +3114,23 @@ class ChapterService:
                     f"[AI重新生成] 截断后字数不足({len(trimmed)}字<{min_acceptable})，保留完整生成文本")
             else:
                 generated_text = trimmed
-        # 1.2倍上限截断（目标2500字 → 最多3000字），避免生成超长
-        generated_text = generated_text[: int(word_count * 1.2)]
+        # 超长上限截断（目标字数 → 最多约 hard_cap_ratio 倍），避免生成超长；
+        # 上限放宽到 hard_cap_ratio 倍且不低于 +hard_cap_min_extra，并按段落/句号边界截断，避免句中硬切导致结尾残缺
+        hard_cap = max(int(word_count * gen_hard_cap_ratio()), word_count + gen_hard_cap_min_extra())
+        if len(generated_text) > hard_cap:
+            cut = generated_text[:hard_cap]
+            for sep in ("\n\n", "\n", "。", "！", "？"):
+                idx = cut.rfind(sep)
+                if idx > int(hard_cap * 0.8):
+                    cut = cut[:idx + len(sep)]
+                    break
+            generated_text = cut
+
+        # ===== 5.5 程序化清洗：生成后按代码规则去除 AI 检测统计特征 =====
+        cleaned_text, clean_stats = clean_generated_text(generated_text)
+        if clean_stats:
+            system_logger.info(f"[AI重新生成] 程序化清洗: {clean_stats}")
+        generated_text = cleaned_text
         actual_word_count = len(generated_text)
 
         # ===== 6. 保存：覆盖 TXT + 更新 MySQL 字数 =====
@@ -2841,7 +3173,52 @@ class ChapterService:
         memory_body = ChapterService._retrieve_relevant_memory(
             memory_body, chapter.chapter_summary, current_chapter_num=cur_num)
 
+        # 加载角色卡（主角+前几位配角）注入 prompt，续写也必须符合人设（疯批/怼神不能续写时变乖巧）
+        character_cards = ChapterService._load_character_cards(db, chapter.novel_unique_id)
+        protagonist_block = ""
+        if isinstance(character_cards, list) and character_cards:
+            try:
+                main = character_cards[0]
+                name = (main.get("name") or "").strip()
+                pers = (main.get("personality") or "").strip()
+                pos = (main.get("position") or "").strip()
+                intro = (main.get("intro") or "").strip()[:800]
+                if name:
+                    parts = [f"【🔴 主角人设硬约束（续写必须遵循，违反即作废）】主角：{name}"]
+                    if pers:
+                        parts.append(f"性格关键词（所有言行必须符合，禁止写相反的人）：{pers}")
+                    if pos:
+                        parts.append(f"角色定位：{pos}")
+                    if intro:
+                        parts.append(f"人物卡（关键信息）：{intro}")
+                    parts.append("硬约束：续写主角的台词/选择/情绪都必须符合上述性格，禁止写与性格相反的反应"
+                                 "（如嘴贱型忽然恭敬、疯批型忽然乖巧、清醒疯型忽然无脑）。")
+                    protagonist_block = "\n".join(parts)
+            except Exception as e:
+                system_logger.warning(f"[AI续写] 角色卡注入异常: {e}")
+
+        # 按主角性格关键词注入对应的疯批/怼神/嘴贱专属规则（与 build_prompt 保持同一套规则）
+        chaot_rules = ""
+        if isinstance(character_cards, list) and character_cards:
+            try:
+                pers_all = (character_cards[0].get("personality") or "") + " " + (character_cards[0].get("intro") or "")
+                import re as _re
+                if _re.search(r'疯|疯批|疯癫|癫|偏执|病娇|嘴贱|反骨|狂', pers_all):
+                    chaot_rules = (
+                        "【🔴 疯批主角 续写专属规则（本章主角命中疯/疯批/偏执/嘴贱/反骨等关键词，强制）】\n"
+                        "1. 台词不配合不礼貌：权威/高位者（神明/观众/上级/审判者/观测员）说话时，至少一次打断/反问/抬杠/答非所问，禁止恭敬回应；\n"
+                        "2. 行为反套路：规则让他做的事至少一次不乖乖照做（或问一句「凭什么」），实力不够时做小动作拆台；\n"
+                        "3. 怼神/怼观众：若出现神明/观测员/直播间/弹幕/观礼台，至少一次正面怼（反抗/反问/羞辱/无视四选一），示例台词参考：\n"
+                        "   「你让我往东我就往东？你谁啊？你说句'请'。」「你们看了三百年不腻？你们站里有食堂吗？」「演？我不是你们的戏子。」「掉就掉呗，你们不还在看吗？」；\n"
+                        "4. 直播间互动：设定有弹幕时，至少一次主角对弹幕的反应（吐槽/无视/骂回去/对着空气说风凉话）；\n"
+                        "5. 清醒的疯：每一次「疯行」背后都有目的/算计/要保护的人，禁止真的脑子有病；碰到人设规定的底线（如家人/恩人）立刻安静，反差是爽点。")
+            except Exception as e:
+                system_logger.warning(f"[AI续写] 疯批规则注入异常: {e}")
+
         prompt = f"""你是在续写这部小说。请根据记忆体和已写内容，续写出高质量、生动、字数充足的小说内容。
+
+{protagonist_block}
+{chaot_rules}
 
 【作品记忆体】（必须严格遵循的人物、事件、世界观）
 {memory_body}
@@ -2878,6 +3255,13 @@ class ChapterService:
 
 七、内容丰富：每段都推进剧情或塑造人物，对话与叙述比例约 3:7
 
+八、【🔴 设定至上 —— 续写也必须严格遵守】
+   1. 角色独立性：设定中每个角色都是独立个体，禁止合并角色（把 A 的外貌 + B 的能力揉成一个人）。
+   2. 禁止发明设定：设定文件中没有的力量体系/概念/术语/组织，一律不得出现在续写中。
+   3. 地名/道具名以设定为准：设定里叫什么就写什么，禁止改名；设定列出的随身物品不得遗漏。
+   4. 简介承诺必须兑现：简介中描述的关键场景/台词，续写中对应场景必须按简介呈现。
+   5. 设定 vs 记忆体冲突时以设定为准。
+
 只输出续写内容，不要重复已有文字，不要加标题。直接从续写的第一句开始。"""
 
         async with httpx.AsyncClient(timeout=180) as client:
@@ -2889,13 +3273,13 @@ class ChapterService:
                         "Content-Type": "application/json"
                     },
                     json={
-                        "model": deepseek_model(),
-                        "messages": [
-                            {"role": "system", "content": GENERATE_SYSTEM_PROMPT},
-                            {"role": "user", "content": prompt + "\n\n" + GENERATION_FRAMEWORK + "\n\n" + EMOTIONAL_WRITING_GUIDE + "\n\n" + DEAI_WRITING_GUIDE + "\n\n" + HUMAN_WRITING_GUIDE + "\n\n" + COGNITION_BOUNDARY_GUIDE + "\n\n" + SELF_CHECK_LIST}
-                        ],
-                        "thinking": {"type": "disabled"},
-                        "max_tokens": word_count * 4,
+                    "model": deepseek_long_model(),
+                    "messages": [
+                        {"role": "system", "content": GENERATE_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt + "\n\n" + GENERATION_FRAMEWORK + "\n\n" + HUMAN_EMOTION_GUIDE + "\n\n" + COGNITION_BOUNDARY_GUIDE + "\n\n" + SELF_CHECK_LIST}
+                    ],
+                    "thinking": {"type": "disabled"},
+                    "max_tokens": word_count * 4,
                         "temperature": 0.85,
                         "top_p": 0.92,
                         "frequency_penalty": 0.3,
@@ -2913,6 +3297,12 @@ class ChapterService:
                     system_logger.error(f"AI续写失败: {chapter.chapter_name} → 模型返回空内容")
                     return fail("AI续写失败: 模型返回空内容，请重试", code=500)
                 system_logger.info(f"AI续写成功: {chapter.chapter_name} +{len(generated_text)}字")
+
+                # 程序化清洗续写片段（去 AI 检测统计特征，引号内对话保护不改写）
+                cleaned_text, clean_stats = clean_generated_text(generated_text)
+                if clean_stats:
+                    system_logger.info(f"[AI续写] 程序化清洗: {clean_stats}")
+                generated_text = cleaned_text
 
                 # 追加续写内容到文件（兼容）和数据库
                 new_content = existing_content + "\n\n" + generated_text
@@ -3493,11 +3883,15 @@ class ChapterService:
 
     @staticmethod
     def _worker_extract_info(task_id: str, task_data: dict) -> dict:
-        """Worker handler：从章节内容中 AI 提取关键信息"""
+        """Worker handler：AI 提取关键信息（失败直接报错，不降级，避免脏数据污染记忆体）"""
         content = task_data.get("content", "")
         chapter_name = task_data.get("chapter_name", "")
+        novel_unique_id = task_data.get("novel_unique_id", "")
+        _genre = ChapterService._get_novel_genre(novel_unique_id) if novel_unique_id else ""
         try:
-            result = run_async(ChapterService._extract_with_light_prompt, content)
+            result = run_async(ChapterService._extract_with_light_prompt, content, _genre)
+            if not result.get("success"):
+                system_logger.error(f"[Worker-extract] AI提取失败({chapter_name}): {result.get('error', '未知错误')}")
             return result
         except Exception as e:
             system_logger.error(f"[Worker-extract] 异常: {e}")

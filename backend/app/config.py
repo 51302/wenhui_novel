@@ -83,6 +83,17 @@ def deepseek_model() -> str:
     return get("deepseek.model", "deepseek-chat")
 
 
+def deepseek_long_model() -> str:
+    """获取 DeepSeek 长文本模型名称（章节正文生成专用）
+
+    flash 模型生成的句子过于平滑，AI 检测工具（困惑度+突发性统计）容易标记；
+    正文生成改用 deepseek-v4-pro，对"人味"规则执行更彻底、AI 味更淡。
+    其余轻量功能（概要/提取/续写）仍用 deepseek.model。
+    :return: 长文本模型名称，默认 deepseek-v4-pro
+    """
+    return get("deepseek.model_long", "deepseek-v4-pro")
+
+
 def vip_default_plan() -> str:
     """获取默认 VIP 套餐类型
     :return: 套餐类型，默认 vip_monthly"""
@@ -100,3 +111,42 @@ def reload():
     """热重载后强制重新读取（uvicorn --reload 时模块级缓存不刷新）"""
     global _config_cache
     _config_cache = None
+
+
+# ============================================================
+#  章节生成参数（字数/token/截断控制）
+# ============================================================
+
+def gen_word_count() -> int:
+    """默认目标字数"""
+    return int(get("ai.generation.word_count", 4000))
+
+
+def gen_word_count_max() -> int:
+    """前端字数输入上限"""
+    return int(get("ai.generation.word_count_max", 4000))
+
+
+def gen_word_count_ratio() -> float:
+    """prompt 要求字数上浮倍数"""
+    return float(get("ai.generation.word_count_ratio", 1.6))
+
+
+def gen_max_tokens_multiplier() -> int:
+    """max_tokens 倍数"""
+    return int(get("ai.generation.max_tokens_multiplier", 4))
+
+
+def gen_max_tokens_min() -> int:
+    """max_tokens 下限"""
+    return int(get("ai.generation.max_tokens_min", 16000))
+
+
+def gen_hard_cap_ratio() -> float:
+    """超长截断倍数"""
+    return float(get("ai.generation.hard_cap_ratio", 2.0))
+
+
+def gen_hard_cap_min_extra() -> int:
+    """超长截断保底"""
+    return int(get("ai.generation.hard_cap_min_extra", 3000))

@@ -260,7 +260,7 @@ def generate_chapter(
 
 class RegenerateBody(BaseModel):
     chapter_summary: str = None
-    word_count: int = 2500
+    word_count: int = 2000
     author_style: str = ""
     chapter_template: str = ""
 
@@ -405,6 +405,7 @@ def extract_chapter_info(
     task_id = TaskQueue.push("ai:extract", {
         "content": body.content,
         "chapter_name": body.chapter_name,
+        "novel_unique_id": body.novel_unique_id,
     }, ttl=1800)
     if not task_id:
         return fail("系统繁忙，请稍后重试", code=503)

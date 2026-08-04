@@ -15,8 +15,8 @@ from app.dao.chapter_dao import ChapterDAO
 from app.prompts.chapter_prompts import (
     GENERATE_SYSTEM_PROMPT, GENERATE_CREATIVE_DIRECTION,
     GENERATION_FRAMEWORK, SELF_CHECK_LIST, CHARACTER_NAMING_GUIDE,
-    EMOTIONAL_WRITING_GUIDE, COMBAT_WRITING_GUIDE, MEME_STYLE_GUIDE,
-    DEAI_WRITING_GUIDE, HUMAN_WRITING_GUIDE, COGNITION_BOUNDARY_GUIDE,
+    HUMAN_EMOTION_GUIDE, COMBAT_WRITING_GUIDE, MEME_STYLE_GUIDE,
+    COGNITION_BOUNDARY_GUIDE, VULGAR_DIALOGUE_GUIDE,
     get_author_style_guide, get_chapter_template_guide,
 )
 from app.utils.logger import system_logger
@@ -257,14 +257,76 @@ class ChapterGenService:
     def build_prompt(*, chapter_name: str, memory_body: str, settings_text: str,
                      last_chapter_ending: str, chapter_summary: str, word_count: int,
                      include_combat_meme: bool = True, author_style: str = "",
-                     chapter_template: str = "") -> str:
+                     chapter_template: str = "", character_cards: list = None) -> str:
         """组装章节生成 Prompt（提示词工程内容不变）
 
         :param include_combat_meme: 是否包含 战斗写作指南 + 网梗风格指南
             原生成实现包含；若复用方需要精简可传 False。
         :param author_style: 作家风格ID（如 "chendong"），匹配 AUTHOR_STYLES 注入对应章节技法模板
         :param chapter_template: 章节模板ID（如 "crush_fight"），匹配 CHAPTER_TEMPLATES 注入对应写作模板
+        :param character_cards: 角色卡列表（novels.characters JSON 原数组）。
+            取第一个作为主角，注入 personality/intro/核心台词风格/position 到提示词，
+            避免模型不知道主角「疯/嘴贱/怼神」等性格设定写崩人设；
+            其余角色若在本章概要涉及也顺带列出作提示。
         """
+        # ========== 角色卡 → 人设注入（主角首卡，其余卡若在概要中提及也追加）==========
+        # 目的：解决「主角性格写不出来」的根本问题——以前 prompt 只有记忆体但记忆体是逐章提取的
+        # 渐进式结果，刚开头前几章几乎没有人设信息，导致主角言行像路人。
+        # 这里把 novels.characters 原始设定（用户填的 personality/intro/台词）在 L1 铁律之后立刻注入，
+        # 用高权重约束主角人设、台词风格、底线。
+        protagonist_guide = ""
+        side_roles_guide = ""
+        if isinstance(character_cards, list) and character_cards:
+            def _clean(x: str) -> str:
+                return (x or "").strip().replace("\r\n", "\n")
+
+            def _normalize(card: dict) -> dict:
+                return {
+                    "name": _clean(card.get("name") or ""),
+                    "personality": _clean(card.get("personality") or ""),
+                    "intro": _clean(card.get("intro") or ""),
+                    "position": _clean(card.get("position") or ""),
+                    "core_lines": _clean(card.get("core_lines") or card.get("台词风格") or ""),
+                }
+
+            # 主角（约定：characters 第 0 个 = 主角，含 personality 就必须是主角）
+            n_main = _normalize(character_cards[0])
+            if n_main["name"]:
+                lines = []
+                lines.append(f"【🔴 主角人设硬约束 —— 违反即整章作废】")
+                lines.append(f"主角名：{n_main['name']}")
+                if n_main["personality"]:
+                    lines.append(f"性格关键词（所有言行必须符合此性格，禁止写相反的人）：{n_main['personality']}")
+                if n_main["position"]:
+                    lines.append(f"角色定位/全书功能（不得写崩其定位）：{n_main['position']}")
+                if n_main["intro"]:
+                    # 截取前 1200 字，避免注入过长导致坍缩
+                    snippet = n_main["intro"][:1200]
+                    lines.append(f"人物卡（外貌/习惯/成长弧线/台词风格/关键动作/底线：以下内容只能更具体，不能违背）：\n{snippet}")
+                lines.append("硬约束：本章中主角的每一次开口、每一个选择、每一次情绪变化，都必须符合上述性格与定位；"
+                             "禁止写出与性格相反的反应（如嘴贱型忽然恭敬、疯批型忽然乖巧、清醒疯型忽然无脑）。")
+                protagonist_guide = "\n".join(lines)
+
+            # 其他角色：只把在本章概要或记忆体/设定中可能出现的（取前 5 个）列出来，避免 AI 忘了配角定位
+            extras = []
+            for c in character_cards[1:6]:
+                n = _normalize(c)
+                if not n["name"]:
+                    continue
+                one = f"- {n['name']}"
+                bits = []
+                if n["position"]:
+                    bits.append(n["position"][:120])
+                if n["personality"]:
+                    bits.append(f"性格：{n['personality'][:200]}")
+                if n["intro"]:
+                    bits.append(f"关键设定：{n['intro'][:260]}")
+                if bits:
+                    one += " | " + "；".join(bits)
+                extras.append(one)
+            if extras:
+                side_roles_guide = "【本章出场参考角色卡（配角不能写崩）】\n" + "\n".join(extras)
+
         # 章节概要 → 事件清单（给 AI 的硬边界）
         summary_narrative = ""
         if chapter_summary:
@@ -281,34 +343,53 @@ class ChapterGenService:
             event_checklist=chapter_summary or "根据前文自然推进剧情",
             summary_narrative=summary_narrative or "根据前文自然推进剧情",
         )
+        # 主角人设硬约束：紧贴「最高优先级」之后注入（权重最高）
+        if protagonist_guide:
+            prompt += "\n\n" + protagonist_guide
+        if side_roles_guide:
+            prompt += "\n\n" + side_roles_guide
         # 提示词工程组装：约束分层/冲突裁决/写作流程）→ 各风格指南 → 字数要求 → 自查清单
         # 开头先强调字数目标（首尾双强调，防止模型过早停笔）
-        # 字数区间=目标~目标*1.2（默认2500 → 2500~3000字），与后端硬截断上限一致，
-        # 让模型在区间内自然收尾，避免写超后被截断破坏结尾
+        # 字数区间=目标~目标*1.6（默认2500 → 2500~4000字），后端硬截断上限更宽（1.8倍+2000，默认4500字），
+        # 让模型在区间内自然收尾，避免写超后被后端截断破坏结尾
         min_words = word_count
-        max_words = int(word_count * 1.2)
+        max_words = int(word_count * 1.6)
         prompt += f"\n\n🔴 本章目标字数：{min_words}~{max_words} 字。"
+        # 长文衰减提醒锚点：反 AI 规则在 5000 字后会被模型稀释，此处强制提醒
+        # 作用时机：模型读到字数要求时正处于写作起点，提醒会随上下文持续生效到中后段
+        prompt += (
+            "\n\n🔴【长文防衰减提醒】写到 60% 篇幅后回头自查，违反任一项立即调整后续写法："
+            "\n- 比喻密度：全章「像X/跟X似的/仿佛X」不超过 3 处，同一段落不超过 1 处，句式必须错开"
+            "\n- 五感扫描：单个场景禁止视觉+听觉+嗅觉+触觉+味觉全覆盖，只聚焦 1-2 个感官，其余不写"
+            "\n- 推理枚举：人物推理只给结论+1 依据，禁止「结论+反例①②③」枚举式展开"
+            "\n- 判断句排比：禁止连续段落以「是X。」独立成句开头，制造冷峻模板感"
+            "\n- 场景扫描：禁止把房间/空间每个角落都描写一遍，只给 1-2 个关键细节+体感"
+        )
         prompt += "\n\n" + GENERATION_FRAMEWORK
         # 人物具名规则紧贴 L1 生死线：新出场角色必须有名有姓，组织/事件必须带出人名
         prompt += "\n\n" + CHARACTER_NAMING_GUIDE
-        prompt += "\n\n" + EMOTIONAL_WRITING_GUIDE
-        prompt += "\n\n" + DEAI_WRITING_GUIDE
-        prompt += "\n\n" + HUMAN_WRITING_GUIDE
+        # 人味与情感指南（合并原 情感/降AI味/真人感 三份，去重精简后仍保留全部规则点）
+        prompt += "\n\n" + HUMAN_EMOTION_GUIDE
         if include_combat_meme:
             prompt += "\n\n" + COMBAT_WRITING_GUIDE
+        prompt += "\n\n" + VULGAR_DIALOGUE_GUIDE
         prompt += "\n\n" + COGNITION_BOUNDARY_GUIDE
         # 作家风格模板（近因效应：紧贴字数硬性要求之前注入，让"本章技法"离正文指令最近）
-        author_guide = get_author_style_guide(author_style)
-        if author_guide:
-            prompt += "\n\n" + author_guide
+        # 支持逗号分隔多选：如 "chendong,xiaohei" 逐个注入，多个风格可叠加
+        for style_id in [s.strip() for s in (author_style or "").split(",") if s.strip()]:
+            author_guide = get_author_style_guide(style_id)
+            if author_guide:
+                prompt += "\n\n" + author_guide
         # 章节写作模板（场景/情绪/字数结构/语言风格，与作家风格可叠加使用）
-        template_guide = get_chapter_template_guide(chapter_template)
-        if template_guide:
-            prompt += "\n\n" + template_guide
+        # 支持逗号分隔多选：如 "crush_fight,bloody_fight" 逐个注入
+        for template_id in [t.strip() for t in (chapter_template or "").split(",") if t.strip()]:
+            template_guide = get_chapter_template_guide(template_id)
+            if template_guide:
+                prompt += "\n\n" + template_guide
 
-        # 追加字数指令到 prompt 末尾（硬性要求）：目标 word_count ~ word_count*1.2 字
-        # （默认2500 → 2500~3000字：下限=目标字数，保证重试阈值 word_count 之上还有余量）
-        prompt += f"\n\n🔴 字数硬性要求：本章必须写 {min_words}~{max_words} 字。每个事件至少展开400-600字的生动描写！开头第一句就是正文，事件全部写完但字数未达标时继续在已写事件内展开（环境/动作/对话/内心/情绪），直到写满目标字数才允许收尾。绝对禁止凑字数或水文字，但每个事件必须写饱写透！"
+        # 追加字数指令到 prompt 末尾（硬性要求）：目标 word_count ~ word_count*1.6 字
+        # （默认2500 → 2500~4000字：下限=目标字数，保证重试阈值 word_count 之上还有余量）
+        prompt += f"\n\n🔴 字数硬性要求：本章必须写 {min_words}~{max_words} 字。每个事件至少展开400-600字的生动描写！开头第一句就是正文，事件全部写完但字数未达标时，可在最后一个事件中补充新的细节、延长对话、增加环境或心理描写来充实篇幅。【绝对禁止复述、换词重写已经写过的内容！】每段必须有新信息，不得与前面任何段落内容雷同或语义重复——平台会检测「相邻或跨段大段雷同/复述」并直接驳回签约。绝对禁止凑字数或水文字，但每个事件必须写饱写透！"
         prompt += f"\n章节标题：「{chapter_name}」"
         # 自查清单放最末尾（近因效应）：停笔前逐项核对
         prompt += "\n\n" + SELF_CHECK_LIST

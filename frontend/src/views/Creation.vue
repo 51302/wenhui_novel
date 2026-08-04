@@ -186,16 +186,42 @@
             <input v-model="chapterForm.locations" placeholder="涉及地点" />
             <input v-model="chapterForm.skills" placeholder="涉及技能" />
             <input v-model.number="chapterForm.word_count" type="number" placeholder="章节字数" />
-            <select v-model="chapterForm.author_style" class="author-style-select">
-              <option value="">默认（不指定作家风格）</option>
-              <option v-for="s in authorStyles" :key="s.id" :value="s.id">{{ s.name }} - {{ s.brief }}</option>
-            </select>
-            <select v-model="chapterForm.chapter_template" class="author-style-select">
-              <option value="">默认（不指定章节模板）</option>
-              <optgroup v-for="g in chapterTemplateGroups" :key="g.category" :label="g.category">
-                <option v-for="t in g.items" :key="t.id" :value="t.id">{{ t.name }}</option>
-              </optgroup>
-            </select>
+            <div class="edit-row"><label>作家风格<span class="multi-tip">（可多选，最多4个）</span></label>
+              <div class="multi-select" :class="{ open: msStyleOpen }">
+                <button type="button" class="multi-select-trigger" @click="msStyleOpen = !msStyleOpen">
+                  <span class="ms-trigger-label">{{ selAuthorStyles.length ? '已选 ' + selAuthorStyles.length + ' 个作家风格' : '点击选择作家风格' }}</span>
+                  <span class="ms-trigger-arrow" :class="{ up: msStyleOpen }">▾</span>
+                </button>
+                <div v-if="msStyleOpen" class="multi-select-panel">
+                  <div v-for="s in authorStyles" :key="s.id" class="ms-item"
+                       :class="{ checked: selAuthorStyles.includes(s.id), disabled: !selAuthorStyles.includes(s.id) && selAuthorStyles.length >= 4 }"
+                       @click="toggleMulti(selAuthorStyles, s.id)">
+                    <span class="ms-name">{{ s.name }}</span>
+                    <small class="ms-brief">{{ s.brief }}</small>
+                    <span v-if="selAuthorStyles.includes(s.id)" class="ms-check">✓</span>
+                  </div>
+                  <div class="ms-panel-hint">最多可选 4 个{{ selAuthorStyles.length >= 4 ? '（已达上限，取消勾选后可换选）' : '，选中后置灰' }}</div>
+                </div>
+              </div></div>
+            <div class="edit-row"><label>章节模板<span class="multi-tip">（可多选，最多4个，不选则跟随主角性格）</span></label>
+              <div class="multi-select" :class="{ open: msTemplateOpen }">
+                <button type="button" class="multi-select-trigger" @click="msTemplateOpen = !msTemplateOpen">
+                  <span class="ms-trigger-label">{{ selChapterTemplates.length ? '已选 ' + selChapterTemplates.length + ' 个章节模板' : '点击选择章节模板' }}</span>
+                  <span class="ms-trigger-arrow" :class="{ up: msTemplateOpen }">▾</span>
+                </button>
+                <div v-if="msTemplateOpen" class="multi-select-panel">
+                  <template v-for="g in chapterTemplateGroups" :key="g.category">
+                    <div class="ms-group">{{ g.category }}</div>
+                    <div v-for="t in g.items" :key="t.id" class="ms-item"
+                         :class="{ checked: selChapterTemplates.includes(t.id), disabled: !selChapterTemplates.includes(t.id) && selChapterTemplates.length >= 4 }"
+                         @click="toggleMulti(selChapterTemplates, t.id)">
+                      <span class="ms-name">{{ t.name }}</span>
+                      <span v-if="selChapterTemplates.includes(t.id)" class="ms-check">✓</span>
+                    </div>
+                  </template>
+                  <div class="ms-panel-hint">最多可选 4 个{{ selChapterTemplates.length >= 4 ? '（已达上限，取消勾选后可换选）' : '，选中后置灰' }}</div>
+                </div>
+              </div></div>
             <textarea v-model="chapterForm.chapter_summary" class="wide-textarea" style="width: 580px; height: 71px;" placeholder="剧情发展路线(如：主角偷袭天道教宗→夺取镇教之宝→被追杀→坠崖获机缘)" rows="4"></textarea>
             <div class="chapter-btns">
               <button class="btn-ai" @click="generateChapter" :disabled="generating">
@@ -240,18 +266,42 @@
           <div class="edit-row"><label>章节名称</label><input v-model="editChapterForm.chapter_name" /></div>
           <div class="edit-row"><label>剧情发展路线</label>
             <textarea v-model="editChapterForm.chapter_summary" class="wide-textarea" rows="4" style="width: 580px; height: 71px;" placeholder="剧情发展路线(如：主角偷袭天道教宗→夺取镇教之宝→被追杀→坠崖获机缘)"></textarea></div>
-          <div class="edit-row"><label>作家风格</label>
-            <select v-model="editChapterForm.author_style" class="author-style-select">
-              <option value="">默认（不指定作家风格）</option>
-              <option v-for="s in authorStyles" :key="s.id" :value="s.id">{{ s.name }} - {{ s.brief }}</option>
-            </select></div>
-          <div class="edit-row"><label>章节模板</label>
-            <select v-model="editChapterForm.chapter_template" class="author-style-select">
-              <option value="">默认（不指定章节模板）</option>
-              <optgroup v-for="g in chapterTemplateGroups" :key="g.category" :label="g.category">
-                <option v-for="t in g.items" :key="t.id" :value="t.id">{{ t.name }}</option>
-              </optgroup>
-            </select></div>
+          <div class="edit-row"><label>作家风格<span class="multi-tip">（可多选，最多4个）</span></label>
+            <div class="multi-select" :class="{ open: msEditStyleOpen }">
+              <button type="button" class="multi-select-trigger" @click="msEditStyleOpen = !msEditStyleOpen">
+                <span class="ms-trigger-label">{{ selEditAuthorStyles.length ? '已选 ' + selEditAuthorStyles.length + ' 个作家风格' : '点击选择作家风格' }}</span>
+                <span class="ms-trigger-arrow" :class="{ up: msEditStyleOpen }">▾</span>
+              </button>
+              <div v-if="msEditStyleOpen" class="multi-select-panel">
+                <div v-for="s in authorStyles" :key="s.id" class="ms-item"
+                     :class="{ checked: selEditAuthorStyles.includes(s.id), disabled: !selEditAuthorStyles.includes(s.id) && selEditAuthorStyles.length >= 4 }"
+                     @click="toggleMulti(selEditAuthorStyles, s.id)">
+                  <span class="ms-name">{{ s.name }}</span>
+                  <small class="ms-brief">{{ s.brief }}</small>
+                  <span v-if="selEditAuthorStyles.includes(s.id)" class="ms-check">✓</span>
+                </div>
+                <div class="ms-panel-hint">最多可选 4 个{{ selEditAuthorStyles.length >= 4 ? '（已达上限，取消勾选后可换选）' : '，选中后置灰' }}</div>
+              </div>
+            </div></div>
+          <div class="edit-row"><label>章节模板<span class="multi-tip">（可多选，最多4个，不选则跟随主角性格）</span></label>
+            <div class="multi-select" :class="{ open: msEditTemplateOpen }">
+              <button type="button" class="multi-select-trigger" @click="msEditTemplateOpen = !msEditTemplateOpen">
+                <span class="ms-trigger-label">{{ selEditChapterTemplates.length ? '已选 ' + selEditChapterTemplates.length + ' 个章节模板' : '点击选择章节模板' }}</span>
+                <span class="ms-trigger-arrow" :class="{ up: msEditTemplateOpen }">▾</span>
+              </button>
+              <div v-if="msEditTemplateOpen" class="multi-select-panel">
+                <template v-for="g in chapterTemplateGroups" :key="g.category">
+                  <div class="ms-group">{{ g.category }}</div>
+                  <div v-for="t in g.items" :key="t.id" class="ms-item"
+                       :class="{ checked: selEditChapterTemplates.includes(t.id), disabled: !selEditChapterTemplates.includes(t.id) && selEditChapterTemplates.length >= 4 }"
+                       @click="toggleMulti(selEditChapterTemplates, t.id)">
+                    <span class="ms-name">{{ t.name }}</span>
+                    <span v-if="selEditChapterTemplates.includes(t.id)" class="ms-check">✓</span>
+                  </div>
+                </template>
+                <div class="ms-panel-hint">最多可选 4 个{{ selEditChapterTemplates.length >= 4 ? '（已达上限，取消勾选后可换选）' : '，选中后置灰' }}</div>
+              </div>
+            </div></div>
           <div class="edit-row"><label>章节正文</label><button class="btn-copy-content" @click="copyChapterContent" title="复制正文内容">📋</button>
             <textarea v-model="editChapterForm.content" rows="16" placeholder="章节正文内容"></textarea></div>
           <div class="edit-actions">
@@ -790,7 +840,7 @@ export default {
           realm_setting: realmsJson || null, characters: charsJson,
           sign_type: novelForm.sign_type
         }
-        const res = await api.post('/novels/create', null, { params })
+        const res = await api.post('/novels/create', params)
         if (res.状态码 === 200) {
           createSuccess.value = '作品创建成功！'
           Object.assign(novelForm, { title: '', target_reader: '', genre: '', description: '', story_background: '', world_setting: '', cover_image: '', realms: [{ name: '', value: '' }], characters: [], sign_type: 'non_exclusive' })
@@ -854,17 +904,38 @@ export default {
     })
     const chapterForm = reactive({
       chapter_name: '', characters_involved: '', organizations: '',
-      locations: '', skills: '', word_count: 2500, chapter_summary: '', content: '', author_style: '', chapter_template: ''
+      locations: '', skills: '', word_count: 4000, chapter_summary: '', content: '', author_style: '', chapter_template: ''
     })
     const editChapterForm = reactive({
       chapter_name: '', chapter_summary: '', content: '', author_style: '', chapter_template: ''
     })
     const editingChapterId = ref(null)
+    // 多选：作家风格 / 章节模板
+    const selAuthorStyles = ref([])
+    const selChapterTemplates = ref([])
+    const selEditAuthorStyles = ref([])
+    const selEditChapterTemplates = ref([])
+    // 多选下拉展开状态
+    const msStyleOpen = ref(false)
+    const msTemplateOpen = ref(false)
+    const msEditStyleOpen = ref(false)
+    const msEditTemplateOpen = ref(false)
+    // 多选切换：已选则取消，未选且未达上限(4个)则选中
+    // 注意：模板中 ref 自动解包，此处接收的是数组本身（非 ref）
+    const toggleMulti = (arr, id) => {
+      const i = arr.indexOf(id)
+      if (i > -1) arr.splice(i, 1)
+      else if (arr.length < 4) arr.push(id)
+    }
 
     const openChapterModal = async (novel) => {
       chapterNovel.value = novel
       showChapterModal.value = true
       editingChapterId.value = null
+      selAuthorStyles.value = []
+      selChapterTemplates.value = []
+      msStyleOpen.value = false
+      msTemplateOpen.value = false
       Object.assign(chapterForm, { chapter_name: '', characters_involved: '', organizations: '', locations: '', skills: '', word_count: 2500, chapter_summary: '', content: '', author_style: '', chapter_template: '' })
       try {
         const res = await api.get(`/chapters/novel/${novel.novel_unique_id}`)
@@ -889,8 +960,8 @@ export default {
           skills: chapterForm.skills,
           word_count: chapterForm.word_count,
           chapter_summary: chapterForm.chapter_summary,
-          author_style: chapterForm.author_style,
-          chapter_template: chapterForm.chapter_template
+          author_style: selAuthorStyles.value.join(','),
+          chapter_template: selChapterTemplates.value.join(',')
         })
         if (res.状态码 === 200 && res.数据 && res.数据.task_id) {
           // 刷新用户信息（更新免费次数）
@@ -1278,6 +1349,11 @@ export default {
         author_style: ch.author_style || '',
         chapter_template: ch.chapter_template || ''
       })
+      // 多选回填（逗号分隔字符串 → 数组）
+      selEditAuthorStyles.value = (ch.author_style || '').split(',').map(s => s.trim()).filter(Boolean)
+      selEditChapterTemplates.value = (ch.chapter_template || '').split(',').map(s => s.trim()).filter(Boolean)
+      msEditStyleOpen.value = false
+      msEditTemplateOpen.value = false
       showChapterEditModal.value = true
     }
 
@@ -1346,9 +1422,9 @@ export default {
       try {
         const res = await api.post(`/chapters/regenerate/${editingChapterId.value}`, {
           chapter_summary: editChapterForm.chapter_summary,
-          word_count: 2500,
-          author_style: editChapterForm.author_style,
-          chapter_template: editChapterForm.chapter_template
+          word_count: 4000,
+          author_style: selEditAuthorStyles.value.join(','),
+          chapter_template: selEditChapterTemplates.value.join(',')
         })
         if (res.状态码 === 200) {
           const newContent = res.数据?.content
@@ -1539,10 +1615,21 @@ export default {
       fetchTodayPublished()
     }
 
+    // 点击下拉外部时收起所有多选下拉
+    const closeAllMultiSelect = (e) => {
+      if (!e.target.closest('.multi-select')) {
+        msStyleOpen.value = false
+        msTemplateOpen.value = false
+        msEditStyleOpen.value = false
+        msEditTemplateOpen.value = false
+      }
+    }
+
     onMounted(() => {
       // 页面挂载时拉取最新用户状态（VIP开通后回来是最新）
       syncUserFromServer().then(() => fetchTodayPublished())
       window.addEventListener('user-info-changed', onUserChanged)
+      document.addEventListener('click', closeAllMultiSelect)
       fetchMyNovels()
       fetchAuthorStyles()
       fetchChapterTemplates()
@@ -1550,6 +1637,7 @@ export default {
 
     onUnmounted(() => {
       window.removeEventListener('user-info-changed', onUserChanged)
+      document.removeEventListener('click', closeAllMultiSelect)
     })
 
     return { tab, isVip, isSvip, vipLevel, freeQuota, publishedToday, maxDailyQuota, quotaRemaining, quotaPercent, levelLabel, levelDesc, fetchTodayPublished, novelForm, createError, createSuccess, handleCreateNovel,
@@ -1557,6 +1645,8 @@ export default {
       showChapterModal, chapterNovel, novelChapters, chapterForm, generating,
       openChapterModal, generateChapter, authorStyles, fetchAuthorStyles,
       chapterTemplates, fetchChapterTemplates, chapterTemplateGroups,
+      selAuthorStyles, selChapterTemplates, selEditAuthorStyles, selEditChapterTemplates,
+      msStyleOpen, msTemplateOpen, msEditStyleOpen, msEditTemplateOpen, toggleMulti,
       chapterPage, chapterPageSize, chapterPaged, chapterPageCount, chapterPageNums,
       drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, editChapter, saveChapterEdit, regenerateChapter, continueChapter, continuing, deleteNovel, downloadNovel, formatTime, saving, regenerating, showChapterEditModal, editChapterForm,
       extracting, extractDraftInfo, publishing, publishOverlay,
@@ -1857,6 +1947,48 @@ export default {
   height: 71px;
 }
 .edit-row input:focus, .edit-row textarea:focus { outline: none; border-color: var(--border-focus); }
+
+/* 多选下拉：作家风格 / 章节模板 */
+.multi-tip { font-size: 11px; color: var(--text-muted); font-weight: 400; margin-left: 6px; }
+.multi-select { position: relative; }
+.multi-select-trigger {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-input); color: var(--text-secondary); font-size: 14px;
+  cursor: pointer; transition: border-color 0.2s;
+}
+.multi-select-trigger:hover, .multi-select.open .multi-select-trigger { border-color: var(--border-focus); }
+.ms-trigger-label { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-trigger-arrow { font-size: 12px; color: var(--text-muted); transition: transform 0.2s; }
+.ms-trigger-arrow.up { transform: rotate(180deg); }
+.multi-select-panel {
+  position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 50;
+  max-height: 260px; overflow-y: auto; padding: 6px;
+  background: var(--bg-card); border: 1px solid var(--border-hover); border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.35);
+}
+.ms-group {
+  font-size: 12px; font-weight: 600; color: var(--text-secondary);
+  padding: 6px 8px 4px; margin-top: 4px;
+}
+.ms-group:first-child { margin-top: 0; }
+.ms-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; border-radius: 7px; cursor: pointer;
+  font-size: 13px; color: var(--text-primary); transition: background 0.15s;
+}
+.ms-item:hover:not(.disabled) { background: var(--bg-input); }
+.ms-item.checked {
+  background: rgba(107, 114, 128, 0.35);
+  color: var(--text-muted);
+  cursor: default;
+  text-decoration: line-through;
+}
+.ms-item.checked .ms-check { color: #22c55e; font-weight: 700; margin-left: auto; }
+.ms-item.disabled { opacity: 0.45; cursor: not-allowed; }
+.ms-name { flex: 1; }
+.ms-brief { font-size: 11px; color: var(--text-muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-panel-hint { font-size: 11px; color: var(--text-muted); padding: 6px 8px 2px; border-top: 1px dashed var(--border); margin-top: 4px; }
 .btn-copy-content {
   display: inline-block;
   margin-left: 8px;
