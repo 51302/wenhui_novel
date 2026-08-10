@@ -82,6 +82,7 @@ services:
     image: crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com/wenhui_novel/redis:7-alpine
     container_name: wenhui-redis
     restart: unless-stopped
+    command: redis-server --appendonly yes
     ports:
       - "6379:6379"
     volumes:
@@ -124,6 +125,7 @@ services:
       WEBSITE_URL: "https://wenhui.nat100.top"
       ALIPAY_NOTIFY_URL: "https://wenhui.nat100.top/api/vip/notify"
       ALIPAY_RETURN_URL: "https://wenhui.nat100.top/vip"
+      TZ: "Asia/Shanghai"
     volumes:
       - ./backend/app:/app/app
       - ./data/backend/novel_structure_data:/app/app/novel_structure_data

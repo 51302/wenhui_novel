@@ -79,7 +79,6 @@ backend/
 │   │   ├── logger.py           # 日志配置
 │   │   ├── redis_cache.py      # Redis 缓存工具
 │   │   ├── seaweedfs_client.py # SeaweedFS 客户端
-│   │   └── chroma_client.py    # ChromaDB 客户端
 │   ├── sql/                     # SQL 脚本
 │   │   └── init.sql            # 数据库初始化脚本
 │   ├── application/             # 应用基础设施

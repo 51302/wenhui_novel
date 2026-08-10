@@ -9,7 +9,7 @@ from app.api.deps import get_current_user, check_generate_permission, require_sv
 from fastapi.responses import StreamingResponse
 from app.utils.response import fail, success
 from app.utils.logger import system_logger
-from app.utils.task_queue import TaskQueue
+from app.utils.task_queue import TaskQueue, run_async
 from pydantic import BaseModel
 from urllib.parse import quote
 import io
@@ -30,6 +30,140 @@ def get_task_status(task_id: str):
     """
     status = TaskQueue.get_status(task_id)
     return success(status, "查询成功")
+
+
+# ============================================================
+# 作家风格（章节写作技法模板，供前端下拉框选择）
+# ============================================================
+
+@router.get("/author-styles")
+def list_author_styles():
+    """返回作家风格下拉框选项 [{id, name, brief}]"""
+    from app.prompts.chapter_prompts import get_author_style_list
+    return success(get_author_style_list(), "查询成功")
+
+
+@router.get("/chapter-templates")
+def list_chapter_templates():
+    """返回章节写作模板下拉框选项 [{id, name, category}]"""
+    from app.prompts.chapter_prompts import get_chapter_template_list
+    return success(get_chapter_template_list(), "查询成功")
+
+
+class OutlineGenerateBody(BaseModel):
+    novel_unique_id: str
+    story_direction: str = ""
+    chapter_count: int = 5
+
+
+@router.post("/outline/generate")
+def generate_outline(
+    body: OutlineGenerateBody,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(check_generate_permission),
+):
+    """章节概要规划：根据作品已有章节概要 + 用户剧情大框，生成后续 N 章概要（异步，不自动入库）
+
+    提交队列返回 task_id，前端轮询 /chapters/tasks/{task_id} 获取结果。
+    """
+    if body.chapter_count < 1:
+        return fail("章节数至少为1", code=400)
+    if body.chapter_count > 50:
+        return fail("单次最多生成50章概要", code=400)
+
+    task_id = TaskQueue.push("ai:outline", {
+        "novel_unique_id": body.novel_unique_id,
+        "user_id": current_user["user_id"],
+        "story_direction": body.story_direction or "",
+        "chapter_count": body.chapter_count,
+    }, ttl=1800)
+    if not task_id:
+        return fail("系统繁忙，请稍后重试", code=503)
+    system_logger.info(f"[队列] 提交概要规划任务: {body.novel_unique_id} x{body.chapter_count} → task_id={task_id}")
+    return success({"task_id": task_id, "queue_name": "ai:outline"},
+                   "概要规划任务已提交，请稍后查询结果")
+
+
+class OutlineSaveBody(BaseModel):
+    novel_unique_id: str
+    chapters: list = None
+
+
+class OutlineCacheDeleteBody(BaseModel):
+    novel_unique_id: str
+    chapter_number: int = None
+
+
+class OutlineCacheUpdateBody(BaseModel):
+    novel_unique_id: str
+    chapter_number: int
+    chapter_name: str = None
+    chapter_summary: str = None
+
+
+@router.put("/outline/cache")
+def update_outline_cache(
+    body: OutlineCacheUpdateBody,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """更新概要临时缓存中某章的概要内容（章节名/概要）"""
+    novel = db.query(Novel).filter(Novel.novel_unique_id == body.novel_unique_id).first()
+    if not novel:
+        return fail("作品不存在", code=404)
+    if novel.author_user_id != current_user["user_id"]:
+        return fail("无权操作该作品", code=403)
+    return ChapterService.update_cached_outline(
+        body.novel_unique_id, body.chapter_number, body.chapter_name, body.chapter_summary)
+
+
+@router.get("/outline/cache")
+def get_outline_cache(
+    novel_unique_id: str = Query(..., description="作品唯一ID"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """读取作品未消费的概要临时缓存（Redis，24h过期，不落库）"""
+    novel = db.query(Novel).filter(Novel.novel_unique_id == novel_unique_id).first()
+    if not novel:
+        return fail("作品不存在", code=404)
+    if novel.author_user_id != current_user["user_id"]:
+        return fail("无权操作该作品", code=403)
+    return ChapterService.get_cached_outlines(novel_unique_id)
+
+
+@router.delete("/outline/cache")
+def delete_outline_cache(
+    body: OutlineCacheDeleteBody,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """删除概要临时缓存：chapter_number 为空则清空整个缓存"""
+    novel = db.query(Novel).filter(Novel.novel_unique_id == body.novel_unique_id).first()
+    if not novel:
+        return fail("作品不存在", code=404)
+    if novel.author_user_id != current_user["user_id"]:
+        return fail("无权操作该作品", code=403)
+    return ChapterService.delete_cached_outline(body.novel_unique_id, body.chapter_number)
+
+
+@router.post("/outline/save")
+def save_outline(
+    body: OutlineSaveBody,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """把前端确认的章节概要批量入库（创建草稿章节，同步）"""
+    if not body.chapters:
+        return fail("缺少要保存的概要数据", code=400)
+    result = run_async(
+        ChapterService.save_outline_chapters,
+        db,
+        novel_unique_id=body.novel_unique_id,
+        user_id=current_user["user_id"],
+        chapters=body.chapters,
+    )
+    return result
 
 
 # ============================================================
@@ -70,8 +204,10 @@ class GenerateChapterBody(BaseModel):
     organizations: str = None
     locations: str = None
     skills: str = None
-    word_count: int = 2000
+    word_count: int = 2500
     chapter_summary: str = None
+    author_style: str = ""
+    chapter_template: str = ""
 
 
 @router.post("/generate")
@@ -80,14 +216,14 @@ def generate_chapter(
     db: Session = Depends(get_db),
     current_user: dict = Depends(check_generate_permission),
 ):
-    """调用AI生成章节正文内容（异步：提交队列后返回 task_id，前端轮询结果）"""
-    # 草稿箱检测：生成新章节前必须保证草稿箱为空
-    from app.dao.chapter_dao import ChapterDAO
-    drafts = ChapterDAO.get_drafts(db, current_user["user_id"])
-    if drafts:
-        draft_names = "、".join(d.chapter_name for d in drafts[:5])
-        return fail(f"草稿箱未删除，请先删除草稿箱中的内容（草稿：{draft_names}）后再生成新章节", code=400)
+    """调用AI生成章节正文内容（异步：提交队列后返回 task_id，前端轮询结果）
 
+    新规格：统计 mysql / txt / redis 的章节号数量（第一章、第二章…）：
+    - 一致 → 走章节生成路线（章节概要 + 按需检索记忆 + 上一章末尾500字）
+    - 不一致 → 以本地 txt 为准自动修复（补 mysql 缺失；redis 缺失 AI 提取补全）
+    """
+    # 新规则「每作品仅一个草稿」：生成时自动填充概要草稿 / 覆盖该作品最新正文草稿，
+    # 不再要求草稿箱必须为空（草稿不会堆积，无需拦截）
     task_id = TaskQueue.push("ai:generate", {
         "novel_unique_id": body.novel_unique_id,
         "user_id": current_user["user_id"],
@@ -99,19 +235,34 @@ def generate_chapter(
         "word_count": body.word_count,
         "chapter_summary": body.chapter_summary,
         "created_by": current_user["username"],
+        "author_style": body.author_style or "",
+        "chapter_template": body.chapter_template or "",
     }, ttl=1800)
     if not task_id:
         return fail("系统繁忙，请稍后重试", code=503)
+
+    # 三源章节号数量统计（mysql / txt / redis）：一致走生成，不一致 worker 内以txt为准修复
+    from app.service.chapter_gen_service import ChapterGenService
+    counts = ChapterGenService.count_sources(body.novel_unique_id, db)
+    if not counts["consistent"]:
+        system_logger.warning(
+            f"[三源校验] 生成前数量不一致：MySQL={counts['mysql']['count']} TXT={counts['txt']['count']} "
+            f"Redis={counts['redis']['count']}，worker 将以txt为准自动修复"
+        )
     system_logger.info(f"[队列] 提交AI生成任务: {body.chapter_name} → task_id={task_id}")
     return success({
         "task_id": task_id,
         "queue_name": "ai:generate",
+        # 三源章节号统计：{mysql:{count,chapters}, txt:{count,chapters}, redis:{count,chapters}, consistent}
+        "memory_sources": counts,
     }, "AI生成任务已提交，请稍后查询结果")
 
 
 class RegenerateBody(BaseModel):
     chapter_summary: str = None
     word_count: int = 2000
+    author_style: str = ""
+    chapter_template: str = ""
 
 
 @router.post("/regenerate/{chapter_unique_id}")
@@ -122,11 +273,17 @@ async def regenerate_chapter(
     current_user: dict = Depends(check_generate_permission),
     _svip: dict = Depends(require_svip),
 ):
-    """重新生成指定章节（同步：直接调用 AI 并返回内容，前端不需要轮询）"""
+    """重新生成指定章节（同步：直接调用 AI 并返回内容，前端不需要轮询）
+
+    流程：当前章节号 cur_num → 上一章 = cur_num-1（上一章末尾500字）
+    + 章节概要 + 按需检索记忆（提示词工程内容不变）→ 重新生成
+    """
     from app.service.chapter_service import ChapterService
     result = await ChapterService.regenerate_with_ai(
         db, chapter_unique_id, current_user["user_id"],
         word_count=body.word_count, chapter_summary=body.chapter_summary,
+        author_style=body.author_style or "",
+        chapter_template=body.chapter_template or "",
     )
     if result.get("状态码") == 200:
         ch = result.get("数据", {})
@@ -213,6 +370,7 @@ def publish_chapter(
         organizations=body.get("organizations"),
         locations=body.get("locations"),
         skills=body.get("skills"),
+        events=body.get("events"),
         time_info=body.get("time_info"),
         key_items=body.get("key_items"),
         power_changes=body.get("power_changes"),
@@ -247,6 +405,7 @@ def extract_chapter_info(
     task_id = TaskQueue.push("ai:extract", {
         "content": body.content,
         "chapter_name": body.chapter_name,
+        "novel_unique_id": body.novel_unique_id,
     }, ttl=1800)
     if not task_id:
         return fail("系统繁忙，请稍后重试", code=503)
@@ -300,32 +459,6 @@ def today_published_count(
         import traceback
         traceback.print_exc()
         return fail(f"统计今日发布数量失败: {str(e)}", code=500)
-
-
-@router.post("/reset-memory/{novel_unique_id}")
-def reset_novel_memory(
-    novel_unique_id: str,
-    current_user: dict = Depends(get_current_user),
-    _svip: dict = Depends(require_svip),
-    db: Session = Depends(get_db),
-):
-    """重置指定作品的全部 Redis 记忆体（异步队列）"""
-    novel = db.query(Novel).filter(
-        Novel.novel_unique_id == novel_unique_id,
-        Novel.author_user_id == current_user["user_id"],
-    ).first()
-    if not novel:
-        return fail("无权限操作该作品", code=403)
-    task_id = TaskQueue.push("ai:reset-memory", {
-        "novel_unique_id": novel_unique_id,
-    }, ttl=3600)
-    if not task_id:
-        return fail("系统繁忙，请稍后重试", code=503)
-    system_logger.info(f"用户 {current_user['username']} 提交重置作品 {novel.title} 记忆体任务 → task_id={task_id}")
-    return success({
-        "task_id": task_id,
-        "queue_name": "ai:reset-memory",
-    }, "记忆体重置任务已提交，请稍后查询结果")
 
 
 @router.get("/download/{novel_unique_id}")

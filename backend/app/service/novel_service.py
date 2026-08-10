@@ -271,8 +271,8 @@ class NovelService:
 
     @staticmethod
     def delete_novel(db: Session, novel_unique_id: str) -> dict:
-        """删除作品及其所有关联数据（章节、互动、ES索引、向量数据库）
-        核心删除（DB）同步完成，耗时操作（文件/ES/向量库）后台执行
+        """删除作品及其所有关联数据（章节、互动、ES索引、Redis记忆体）
+        核心删除（DB）同步完成，耗时操作（文件/ES）后台执行
         """
         import shutil, threading, asyncio
         from app.dao.chapter_dao import ChapterDAO

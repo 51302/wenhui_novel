@@ -86,7 +86,14 @@ export default {
         const res = await api.post('/auth/send-email-code', { target: form.email })
         if (res.状态码 === 200) {
           startCountdown('email')
-          tip.value = '验证码已发送至 ' + form.email + '，请查看收件箱（含垃圾箱）'
+          // 演示模式：显示返回的验证码
+          if (res.数据 && res.数据.code) {
+            tip.value = '📝 演示模式验证码：' + res.数据.code + '（请填入下方输入框）'
+            // 自动填入验证码
+            form.email_code = res.数据.code
+          } else {
+            tip.value = '验证码已发送至 ' + form.email + '，请查看收件箱（含垃圾箱）'
+          }
         } else error.value = res.消息
       } catch (e) { error.value = '发送失败，请重试' }
     }

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Body
 from sqlalchemy.orm import Session
 from typing import Optional
 from app.models.base import get_db
@@ -10,12 +10,12 @@ router = APIRouter(prefix="/api/novels", tags=["小说"])
 
 @router.post("/create")
 def create_novel(
-    title: str, target_reader: str,
-    description: str = "", story_background: str = "",
-    world_setting: str = "", realm_setting: str = None,
-    characters: str = None, genre: str = None,
-    cover_image: str = None, plot_development: str = None,
-    sign_type: str = Query("non_exclusive", description="签约类型：exclusive(独家)/non_exclusive(非独家)"),
+    title: str = Body(...), target_reader: str = Body(...),
+    description: str = Body(""), story_background: str = Body(""),
+    world_setting: str = Body(""), realm_setting: str = Body(None),
+    characters: str = Body(None), genre: str = Body(None),
+    cover_image: str = Body(None), plot_development: str = Body(None),
+    sign_type: str = Body("non_exclusive", description="签约类型：exclusive(独家)/non_exclusive(非独家)"),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
     _perm=Depends(check_creation_access),

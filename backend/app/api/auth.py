@@ -5,6 +5,7 @@ from app.models.base import get_db
 from app.service.auth_service import AuthService
 from app.api.deps import get_current_user
 from app.utils.response import success
+from app.config import get as cfg_get
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
 
@@ -96,16 +97,22 @@ def send_email_code(req: SendCodeRequest = Body(...), background_tasks: Backgrou
     if result.get("状态码") != 200:
         return result
 
+    code = result.get("数据", {}).get("code", "")
+    api_key = cfg_get("email.resend_api_key", "")
+
+    # 如果没有配置有效的 API Key，直接返回验证码（演示模式）
+    if not api_key or api_key.startswith("${"):
+        system_logger.info(f"[邮件-演示] {req.target} 验证码: {code}（未配置API Key，直接返回）")
+        return success({"code": code}, "演示模式：验证码已生成，请查看")
+
     # 后台异步发送邮件
     if background_tasks:
-        code = result.get("数据", {}).get("code", "")
         background_tasks.add_task(AuthService.send_email_async, req.target, code)
         system_logger.info(f"[邮件] 已加入后台任务: {req.target}")
+        return success(None, "验证码已发送至您的邮箱，请查收")
     else:
         # 无BackgroundTasks时走同步
         return AuthService.send_email_code(req.target)
-
-    return success(None, "验证码已发送至您的邮箱，请查收")
 
 
 @router.post("/logout")
