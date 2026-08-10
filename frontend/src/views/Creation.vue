@@ -808,7 +808,7 @@ export default {
           cover_image: editForm.cover_image,
           sign_type: editForm.sign_type
         }
-        const res = await api.put(`/novels/update/${editForm.novel_unique_id}`, null, { params })
+        const res = await api.put(`/novels/update/${editForm.novel_unique_id}`, params)
         if (res.状态码 === 200) {
           editSuccess.value = '作品更新成功！'
           fetchMyNovels()
