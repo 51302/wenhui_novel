@@ -132,6 +132,12 @@ export default {
     onMounted(async () => {
       // 先获取公开配置
       fetchConfig()
+      // 登录/注册页不需要会话校验，避免旧 token 触发 /auth/me 返回 401
+      if (['/login', '/register'].includes(route.path)) {
+        user.value = null
+        authChecking.value = false
+        return
+      }
       // 先检查 localStorage 是否有 token 存在的痕迹
       const stored = localStorage.getItem('novel_user')
       if (!stored) {
@@ -163,7 +169,7 @@ export default {
       try { await api.post('/auth/logout') } catch (e) { /* ignore */ }
       user.value = null
       localStorage.removeItem('novel_user')
-      router.push('/')
+      router.push('/login')
     }
 
     return { user, authChecking, showAllWorks, sidebarCollapsed, hideSidebar, onLoginSuccess, logout }

@@ -8,24 +8,24 @@
         <!-- 用户名 -->
         <div class="input-group">
           <span class="input-icon">👤</span>
-          <input v-model="form.username" placeholder="用户名" required />
+          <input v-model="form.username" type="text" placeholder="用户名" autocomplete="username" required />
         </div>
 
         <!-- 密码 -->
         <div class="input-group">
           <span class="input-icon">🔒</span>
-          <input v-model="form.password" type="password" placeholder="密码(至少8位)" required />
+          <input v-model="form.password" type="password" placeholder="密码(至少8位)" autocomplete="new-password" required />
         </div>
 
         <!-- 邮箱 + 发送验证码 -->
         <div class="input-group">
           <span class="input-icon">📧</span>
-          <input v-model="form.email" placeholder="邮箱(必填)" required />
+          <input v-model="form.email" type="email" placeholder="邮箱(必填)" autocomplete="email" required />
         </div>
         <div class="code-row">
           <div class="input-group flex-1">
             <span class="input-icon">✉️</span>
-            <input v-model="form.email_code" placeholder="邮箱验证码" required maxlength="6" />
+            <input v-model="form.email_code" placeholder="邮箱验证码" autocomplete="one-time-code" required maxlength="6" />
           </div>
           <button type="button" class="btn-send" :disabled="emailCountdown > 0" @click="sendEmailCode">
             {{ emailCountdown > 0 ? emailCountdown + 's 后重发' : '发送验证码' }}
@@ -35,7 +35,7 @@
         <!-- 手机号（选填，仅格式校验） -->
         <div class="input-group">
           <span class="input-icon">📱</span>
-          <input v-model="form.phone" placeholder="手机号(选填)" maxlength="11" />
+          <input v-model="form.phone" placeholder="手机号(选填)" autocomplete="tel" maxlength="11" />
         </div>
 
         <p v-if="error" class="error">{{ error }}</p>
