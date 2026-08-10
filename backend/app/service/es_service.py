@@ -40,6 +40,7 @@ class ESService:
                             "genre": {"type": "keyword"},
                             "description": {"type": "text", "analyzer": "ik_max_word"},
                             "cover_image": {"type": "keyword"},
+                            "sign_type": {"type": "keyword"},
                             "created_at": {"type": "date"}
                         }
                     }
@@ -59,28 +60,54 @@ class ESService:
         except Exception:
             return False
 
-    def search_novels(self, keyword: str, page: int = 1, page_size: int = 12) -> Optional[dict]:
+    def search_novels(self, keyword: str, page: int = 1, page_size: int = 12, exclude_exclusive: bool = False) -> Optional[dict]:
         """在ES中按关键词全文搜索作品
         :param keyword: 搜索关键词
         :param page: 页码
         :param page_size: 每页数量
+        :param exclude_exclusive: 是否排除独家作品
         :return: ES原始搜索结果，失败返回None
         """
         if not self.client:
             return None
         try:
+            body = {
+                "query": {
+                    "multi_match": {
+                        "query": keyword,
+                        "fields": ["title^2", "author_name^2", "description"]
+                    }
+                },
+                "from": (page - 1) * page_size,
+                "size": page_size
+            }
+            if exclude_exclusive:
+                body["query"] = {
+                    "bool": {
+                        "must": [
+                            {
+                                "multi_match": {
+                                    "query": keyword,
+                                    "fields": ["title^2", "author_name^2", "description"]
+                                }
+                            }
+                        ],
+                        # 兼容存量文档：sign_type=non_exclusive 或 无 sign_type 字段（视为非独家）
+                        "filter": [
+                            {
+                                "bool": {
+                                    "should": [
+                                        {"term": {"sign_type": "non_exclusive"}},
+                                        {"bool": {"must_not": [{"exists": {"field": "sign_type"}}]}}
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                }
             result = self.client.search(
                 index=INDEX_NOVELS,
-                body={
-                    "query": {
-                        "multi_match": {
-                            "query": keyword,
-                            "fields": ["title^2", "author_name^2", "description"]
-                        }
-                    },
-                    "from": (page - 1) * page_size,
-                    "size": page_size
-                }
+                body=body
             )
             return result
         except Exception:

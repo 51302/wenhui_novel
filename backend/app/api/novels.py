@@ -106,12 +106,12 @@ def delete_novel(
 @router.put("/update/{novel_unique_id}")
 def update_novel(
     novel_unique_id: str,
-    title: str = None, target_reader: str = None,
-    description: str = None, story_background: str = None,
-    world_setting: str = None, realm_setting: str = None,
-    characters: str = None, genre: str = None,
-    cover_image: str = None, plot_development: str = None,
-    sign_type: str = Query(None, description="签约类型：exclusive(独家)/non_exclusive(非独家)"),
+    title: str = Body(None), target_reader: str = Body(None),
+    description: str = Body(None), story_background: str = Body(None),
+    world_setting: str = Body(None), realm_setting: str = Body(None),
+    characters: str = Body(None), genre: str = Body(None),
+    cover_image: str = Body(None), plot_development: str = Body(None),
+    sign_type: str = Body(None, description="签约类型：exclusive(独家)/non_exclusive(非独家)"),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
     _vip=Depends(check_creation_access),

@@ -87,11 +87,20 @@ HALF_EXPLAIN_MAX = 1           # "某种X""说不清的X"半解释：全文最�
 FORMAL_CONJ_MAX = 1            # 书面连词（不仅/既又/与其不如）：全文最多1处
 IDION_QUAD_DENSITY_MAX = 3     # 单段四字格≥3个触发（成语堆砌=AI书面感）
 NEG_HAVE3_MAX = 0              # "没有X，没有Y，只有Z"三连否定：全文0处（交LLM改写）
+FAKE_SENSORY_MAX = 1           # "得发X"假感官词（干得发涩/疼得发抖）：全文最多1处
 # ---- 句子残缺/悬空检测（AI 输出最显眼的断句bug） ----
 SENTENCE_BROKEN_MAX = 1        # 句子残缺（"X的、。""X、。"顿号/逗号后直接句号）：全文≤1处
 SENTENCE_FUSED_MAX = 1         # 句子粘连（两句无标点直接连，"涌出来不是渗"）：全文≤1处
 ADJ_CHAIN_DASH_MAX = 1         # 顿号形容词链悬空（"X的、Y的、"结尾）：全文≤1处
 SHORT_PARA_RUN_MAX = 2         # 连续短句独立段排比（≥3连触发，全文最多2处）
+AUX_BROKEN_MAX = 2             # 助词残缺（"每吐一个字都。"都/会/能直接断句）：全文≤2处
+ADJ_INDEP_DANGLING_MAX = 2     # "XX的，"悬空形容词独立成分：全文≤2处
+FUSED_CHAR_REPEAT_MAX = 2      # 字重复粘连（"落落在地上"落+落）：全文≤2处
+NEG_TRIPLE_MIX_MAX = 0         # 混合标点否定三连（不是X。不是Y，不是Z）：全文0处
+RANGE_SCAN_MAX = 2             # "从A到B，到C，到D"部位范围扫描：全文≤2处
+VERB_TRIPLE_SCAN_MAX = 2       # 同动词三连排比扫描（落在A，落在B，落在C）：全文≤2处
+IS_IS_STACK_MAX = 1            # 判断句堆叠（是X，是Y）：全文≤1处
+REDUP_ABAB_MAX = 3             # ABAB式多字叠词（太久太久/一根一根）：全文≤3处
 # ---- _NOT_IS_RE 修复：X 最小长度从 2 改 1，覆盖"不是渗，是涌" ----
 
 # ==================== 正则 ====================
@@ -101,8 +110,12 @@ _QUOTE_RE = re.compile(r'“[^”\n]*”|“[^”\n]*$|"[^"\n]*"')
 _SENT_END_RE = re.compile(r'[^。！？；!?;\n]*[。！？；!?;]')
 # "不是X，是Y" 解释句式（逗号版；X 最短1字覆盖"不是渗，是涌"）
 _NOT_IS_RE = re.compile(r'不是([^，。；！？]{1,24})[，,](?:而是|却是|就是|是)([^，。；！？]{1,40})')
-# "不是X。是Y。" 句号短句版（两连：不是三年五年。是三百年。；不跨段落）
-_NOT_IS_DOT2_RE = re.compile(r'不是([^。，；！？\n]{1,10})[。！](?:而是|就是|是)([^。，；！？\n]{1,20})[。！]')
+# "不是X，(也)不是Y" 双重否定（"不是第一次画，也不是第十次"或"不是兴奋，不是紧张"=AI 双重否定强调）
+# 也字可选：覆盖"不是X，不是Y"无也字版（AI 同样用双重否定制造假精确感）
+_NOT_IS_DUAL_RE = re.compile(r'不是([^，。；！？]{1,20})[，,]\s*(也?)不是([^，。；！？]{1,20})')
+# "不是X。是Y[。！，,]" 句号短句版（两连：不是三年五年。是三百年。；不跨段落）
+# Y 末尾可为句号/感叹号/逗号（覆盖"不是刷屏。是零星的几条，"混合标点版）
+_NOT_IS_DOT2_RE = re.compile(r'不是([^。，；！？\n]{1,10})[。！](?:而是|就是|是)([^。，；！？\n]{1,20})[。！，,]')
 # "不是X。不是Y。是Z。" 短句排比版（三连：不是白色。不是红色。是金色。；允许跨单行，匹配区间含 \n\n 段落边界时跳过）
 _NOT_IS_DOT3_RE = re.compile(r'不是([^。，；！？\n]{1,10})[。！]\s*不是([^。，；！？\n]{1,10})[。！]\s*(?:而是|就是|是)([^。，；！？\n]{1,20})[。！]')
 # "不是X，不是Y，是Z。" 逗号版三连否定排比（不是霉，不是灰，是更淡的什么）
@@ -119,8 +132,13 @@ _SPEECH_TAIL_RE = re.compile(r'[说说道问喊叫念应叹答]$')
 _ABRUPT_WORDS = ("忽然", "突然", "骤然", "猛地", "倏地", "陡然", "冷不防")
 # 句首连接词（超出即删除；检测器红牌项）
 _CONJ_WORDS = ("于是", "因此", "然后", "接着", "随即", "继而")
-# "那种…像/仿佛"引导句式（检测器红牌项）
-_GUIDE_RE = re.compile(r'那种(?=像是|像|仿佛|如同|好像)')
+# "那种…像/仿佛"引导句式 + "那种X"模糊限定词（检测器红牌项）
+# 原仅匹配"那种"后跟"像/仿佛"，扩展为也匹配"那种亮""那种东西""那种笑"等
+# （"那种"做模糊限定词是 AI 回避精确描述的高频套路）
+# 排除正常搭配：那种情况/时候/地方/问题/方式/方法/态度/理由/可能/意思/道理/事情/感觉(非情绪)
+_GUIDE_RE = re.compile(r'那种(?=像是|像|仿佛|如同|好像|'
+                       r'亮|笑|东西|眼神|气息|味道|声音|光|感觉|安静|沉默|'
+                       r'平|静|冷|热|疼|紧|重|轻|干|湿|黏|涩|颤|抖|软|硬)')
 # "像"字（排除"好像"及复合词内的像）
 _LIKE_ISOLATED_RE = re.compile(r'(?<!好)像(?<!想)(?<!雕)(?<!画)(?<!图)(?<!影)(?<!模)(?<!照)')
 # 句尾补丁比喻（，像X。/ 像是X。→ 跟X似的）
@@ -148,6 +166,10 @@ _SHORT_SENT_RE = re.compile(r'(?<![^。！？；!?;\n])[^。！？；!?;\n]{1,7}
 # 顿号4+连（扫描式列举：A、B、C、D → A、B、C，还有D）
 _LONGLIST_RE = re.compile(
     r'([\u4e00-\u9fff]{1,4}、[\u4e00-\u9fff]{1,4}、)([\u4e00-\u9fff]{1,4})(、)([\u4e00-\u9fff]{1,4}(?:、[\u4e00-\u9fff]{1,4})*)(?=[，。；！？])')
+# 顿号3连身体/部位/衣物入口扫描（"头发上、肩膀上、断臂的截面上"或"领口、袖口、鞋里"=AI 系统覆盖所有部位）
+# 匹配含"上/下/里/外/前/后/口/边"方位/入口词的3项顿号列举，前缀限制1-4字覆盖单字前缀（领口/袖口）
+_BODY_SCAN_RE = re.compile(
+    r'([\u4e00-\u9fff]{1,4}[上下里外前后口边])、([\u4e00-\u9fff]{1,4}[上下里外前后口边])、([\u4e00-\u9fff]{1,6}[上下里外前后口边])(?=[，。；！？])')
 # ---- 新增清洗正则（阶段一/阶段二） ----
 # 标点连用（"。，""，。""。。""！。"）：终止标点后紧跟其他终止/逗号标点 → 保留首个
 _PUNCT_BUG_RE = re.compile(r'[。！？；]([，。！？；])')
@@ -163,6 +185,8 @@ _ADJ_INDEP_RE = re.compile(
     r'(?m)^[ \t]*[\u4e00-\u9fff]{1,4}的[。．！]?[ \t]*$')
 # 短动作连排（"碎了。塌了。散了。"动词+了+句号连续≥3 → 前两改逗号）
 _SHORT_ACTION_BURST_RE = re.compile(r'((?:[\u4e00-\u9fff]{1,3}了[。！]){3,})')
+# 混合标点短动作连排（"赤月暗了。亮了，暗了。亮了。"动词+了+[。，！]连续≥3 → 合并为逗号）
+_SHORT_ACTION_BURST_MIXED_RE = re.compile(r'((?:[\u4e00-\u9fff]{1,3}了[，。！]){3,})')
 # 句首连接词补充（在原 _CONJ_WORDS 基础上扩展）
 _CONJ_EXTRA_WORDS = ("随后", "旋即", "不多时", "紧接着")
 # ---- 句子残缺/悬空检测正则 ----
@@ -171,9 +195,16 @@ _CONJ_EXTRA_WORDS = ("随后", "旋即", "不多时", "紧接着")
 _SENTENCE_BROKEN_RE = re.compile(r'[、，][\s]*[。．！]')
 # 句子粘连（两句无标点直接连："涌出来不是渗"=动词+不是，缺逗号）
 # 匹配"动词/形容词 + 不是X" 且前文非标点（缺分隔符）
-_SENTENCE_FUSED_RE = re.compile(r'(?<![，。；！？、\n])([^\s，。；！？、\n]{2,8})不是([^\s，。；！？、\n]{1,8})')
+# 排除「」『』“”引号字符：弹幕「它不是X」中「不会被误判为粘连前缀
+_SENTENCE_FUSED_RE = re.compile(r'(?<![，。；！？、\n「」『』“”\"\'])([^\s，。；！？、\n「」『』“”\"\']{2,8})不是([^\s，。；！？、\n「」『』“”\"\']{1,8})')
 # 顿号形容词链悬空（"X的、Y的、"以顿号结尾，无后续内容=残缺）
 _ADJ_CHAIN_DASH_RE = re.compile(r'([\u4e00-\u9fff]{1,6}的、[\u4e00-\u9fff]{1,6}的、)(?=[，。；！？\n]|$)')
+# 叠词形容词（"极细极细的""很小很小的"=AI 双叠强调，人类用单次+程度副词）
+# 仅匹配2字叠词（排除"长长的""慢慢的"等正常单字叠词）
+_REDUPLICATIVE_ADJ_RE = re.compile(r'([\u4e00-\u9fff]{2})\1的')
+# "得发X"假感官词（"干得发涩""疼得发抖""冷得发僵"=AI 程度补语模板，机械感官描写）
+# 匹配"汉字+得发+1-2字感官词"，排除"觉得发""记得发"等合法词
+_FAKE_SENSORY_RE = re.compile(r'([\u4e00-\u9fff])(?<![觉记获])得发([\u4e00-\u9fff]{1,2})')
 # "X得。" / "X得，"残缺句（"声音干得。""干瘪得，""清晰得，"=形容词+得+标点，AI 输出残缺）
 # 匹配"汉字+得+句号/感叹号/逗号"，lookbehind 紧贴"得"前，排除"觉得""记得""获得"
 # 正常用法"跑得快，"不匹配（"得"后面是"快"不是标点）
@@ -183,8 +214,52 @@ _DE_BROKEN_RE = re.compile(r'([\u4e00-\u9fff])(?<![觉记获])得[。．！，,]
 _SINGLE_CHAR_BROKEN_RE = re.compile(r'(?m)(?:^|\n)[ \t]*([\u4e00-\u9fff])[。．！][ \t]*(?:\n|$)')
 # 名词+代词粘连（"心跳他开口了""嘴唇动了动又"=两句无标点粘连）
 # 匹配"名词+他/她/它+动词"，缺逗号分隔
+# 排除「」『』“”引号字符：弹幕连续「X」「Y」「它说Z」中"」「Y」「"会被误判为名词
 _NOUN_PRONOUN_FUSED_RE = re.compile(
-    r'([^\s，。；！？、\n]{2,6})(他|她|它)(开口|闭眼|低头|抬头|转身|回头|看见|听见|感觉|知道|想|说|问|笑|哭|叹|皱|盯|看|望|站|坐|走|跑|停|动)')
+    r'([^\s，。；！？、\n「」『』“”\"\']{2,6})(他|她|它)(开口|闭眼|低头|抬头|转身|回头|看见|听见|感觉|知道|想|说|问|笑|哭|叹|皱|盯|看|望|站|坐|走|跑|停|动)')
+# ---- 新增 6 条 AI 特征正则 ----
+# 助词残缺句："每吐一个字都。"（都/会/能/敢/要 + 句号/感叹号/逗号 = 缺补语）
+# 前字必须是实义内容（排除"都都""会不会"等叠词合法用法），后面无紧随内容直接断
+_AUX_BROKEN_RE = re.compile(r'([\u4e00-\u9fff]{2,8})(都|会|能|敢|要)([。！，,])(?![，。！？\u4e00-\u9fff])')
+# 悬空"XX的，"独立成分（"暗红色的，看得见走向"/"裂开一道的口子"中"一道的"=残缺；
+# 排除"总的来说/似的/目的"等合法词；优先匹配句中"XX的，"+前后断开的形容词悬空）
+_ADJ_DANGLING_RE = re.compile(r'(?<![总目似有])的，(?=[\u4e00-\u9fff]{0,6}[，。！？]|$)')
+# 字重复粘连（"落落在地上"=落+落在=两句衔接缺字，实际是"往下落 落在"缺了断字）
+# 单字AA型且紧接后字（落落/碎碎/紧紧/睁睁；排除合法叠词：慢慢/轻轻/渐渐/天天/久久/往往/明明/偏偏）
+_FUSED_CHAR_REPEAT_RE = re.compile(r'(?<![，。！？、\s])([松碎跌落撞碰抓攥握贴爬抖])\1(?=[\u4e00-\u9fff])')
+# 混合标点否定三连"不是X。不是Y，不是Z"（第一项句号分隔，后两项逗号）
+_NEG_TRIPLE_MIX_RE = re.compile(r'不是([^。！\n]{1,10})[。！]\s*不是([^，\n]{1,10})[，,]\s*不是([^，。；！？\n]{1,12})')
+# "从A到B，到C，到D" 部位/范围系统性扫描（三"到"以上，含部位词=AI全覆盖式描写）
+# 允许"从A开始到B，到C，到D"（起头可有"开始/起/头"），前缀从限制2-6字放宽到1-10字
+_RANGE_SCAN_RE = re.compile(
+    r'从[\u4e00-\u9fff]{1,10}(?:开始|起|头)?(到[\u4e00-\u9fff]{1,10}[，,])(到[\u4e00-\u9fff]{1,12}[，,])(到[\u4e00-\u9fff]{1,16})(?=[，。；！？])')
+# 同动词三连排比扫描（"落在A，落在B，落在C"或"盯着A，盯着B，盯着C"）
+# 限定常见及物动词（落/盯/看/走/站/蹲/握/摸/拍/敲/擦/碰/撞/捏/咬），避免误匹配"是A，是B，是C"
+_VERB_TRIPLE_SCAN_RE = re.compile(
+    r'(落在[\u4e00-\u9fff]{1,12}[，,])(落在[\u4e00-\u9fff]{1,12}[，,])(落在[\u4e00-\u9fff]{1,16})(?=[，。；！？])')
+# 判断句堆叠（逗号版："铁牌是凉的，是另一种凉"；句号版："是凉的。是另一种凉。"= 连续双判断贴标签）
+# 排除引语前缀（说/道/问/喊/叫前的直接是）
+_IS_IS_STACK_RE = re.compile(
+    r'(?<![说道问喊叫答叹])([\u4e00-\u9fff]{2,8})是([^，。；！？\n]{1,12})[，,]是([^，。；！？\n]{1,14})(?=[。！])')
+# 句号版跨短句判断堆叠（"是陈述。是等了很久...。" / "铁牌是凉的。是另一种凉。"）
+# 只要"是X断句+空白后是Y断句"，无论X是否句首都算；
+# 后接另一个"是"为特征=AI推理展开链教科书写法
+_IS_IS_DOT_STACK_RE = re.compile(
+    r'是([^，。；！？\n]{1,12})[。！]\s*是([^，。；！？\n]{4,40})[。！]')
+# ABAB 式多字叠词（太久太久/一根一根/一颤一颤/一片一片/一段一段 = AI机械式重复强调）
+# 排除合法叠词（一天一天/一个一个/一步一步/一点一点/一层一层/一年一年）
+_REDUP_ABAB_RE = re.compile(
+    r'([\u4e00-\u9fff]{2})\1(?!的)')
+_REDUP_ABAB_SAFE = {"一天一天", "一个一个", "一步一步", "一点一点", "一层一层", "一年一年", "一次一次", "一阵一阵", "一分一分", "一秒一秒"}
+# ---- 弹幕格式规范化（「」为弹幕专用括号，AI 输出常见四种错乱） ----
+# 1) 对白内部混入弹幕："……「X」……" → 弹幕拆出独立成行（对白必须同在一行内）
+_DANMU_IN_DIALOGUE_RE = re.compile(r'“([^”\n]*?)「([^」\n]{1,40})」([^”\n]*?)”')
+# 2) 双重右引号：「X」」 → 「X」
+_DANMU_DOUBLE_CLOSE_RE = re.compile(r'」{2,}')
+# 3) 弹幕行尾悬挂右双引号：「X」” → 「X」
+_DANMU_HANGING_QUOTE_RE = re.compile(r'」[”"]')
+# 4) 弹幕黏在叙述句尾（句号/叹号/问号/省略号后紧跟「X」，到行尾为止）→ 拆独立行；未闭合的补」
+_DANMU_GLUED_RE = re.compile(r'(?<=[。！？…])(「[^」\n]{1,60}」?)(?=\n|$)')
 
 
 
@@ -423,6 +498,37 @@ def _fix_not_is_dot(text: str, stats: dict) -> str:
     out.append(text[last:])
     if replaced:
         stats["not_is_dot"] = stats.get("not_is_dot", 0) + replaced
+    return "".join(out)
+
+
+def _fix_not_is_dual(text: str, stats: dict) -> str:
+    """双重否定压减："不是X，(也)不是Y" → "(也)不是Y"（删前半否定补丁，留后半）
+    与 _fix_not_is 互补：_NOT_IS_RE 只匹配"不是X，是Y"，
+    此函数处理"不是X，也不是Y"和"不是X，不是Y"双重否定版
+    （AI 用双重否定制造"排除了所有选项"的假精确感）。
+    全文最多保留 NOT_IS_KEEP_MAX 处。"""
+    matches = list(_NOT_IS_DUAL_RE.finditer(text))
+    if not matches:
+        return text
+    quota = NOT_IS_KEEP_MAX
+    if len(matches) <= quota:
+        return text
+    replaced = 0
+    out = []
+    last = 0
+    for idx, m in enumerate(matches):
+        out.append(text[last:m.start()])
+        if idx < quota:
+            out.append(m.group(0))
+        else:
+            ye = m.group(2)  # 可选"也"字
+            y = m.group(3)
+            out.append(ye + "不是" + y)
+            replaced += 1
+        last = m.end()
+    out.append(text[last:])
+    if replaced:
+        stats["not_is_dual"] = stats.get("not_is_dual", 0) + replaced
     return "".join(out)
 
 
@@ -771,6 +877,47 @@ def _fix_adj_chain_dash(text: str, stats: dict) -> str:
     return "".join(out)
 
 
+# "X得[。！]"残缺句修复阈值："烫得。""速度快得。"这类 AI 把程度补语写丢的断句，全文最多修5处
+DE_BROKEN_FIX_MAX = 5
+# 排除"动词+得"合法词的前字（觉得/记得/晓得/懂得/值得/舍得/认得/获得/了得/怪不得/显得/免得/说得），
+# 避免误伤"这一切值得。""他说得。"式合法句；集合=觉记获晓舍得值懂认了怪显免得说
+_DE_BROKEN_SAFE_PREV = "觉得记得晓得懂得值得舍得认得获得了怪显免得说"
+
+
+def _fix_de_broken(text: str, stats: dict) -> str:
+    """"X得[。！]"残缺句修复：AI 写"烫得。""速度快得。"（程度补语写丢）→ 补"得厉害"
+    只修句号/感叹号版（"X得，"逗号版可能是合法停顿如"他说得，再好听也没用"，不修）；
+    另处理"X得不[。！]"粘连（"力气大得不。"→"力气大得厉害。"）。
+    排除合法"动词+得"词，避免误伤"这一切值得。"式结尾。"""
+    # 句号/感叹号版：X得[。！]
+    m_re = re.compile(r'([\u4e00-\u9fff])(?<![' + _DE_BROKEN_SAFE_PREV + r'])(?:得)([。．！])')
+    matches = list(m_re.finditer(text))
+    # "得不[。！]"粘连版：力气大得不。 → 力气大得厉害。
+    m_re2 = re.compile(r'([\u4e00-\u9fff])(?<![' + _DE_BROKEN_SAFE_PREV + r'])得不([。．！])')
+    matches2 = list(m_re2.finditer(text))
+    if not matches and not matches2:
+        return text
+    # 两批匹配按位置合并
+    all_m = sorted(matches + matches2, key=lambda x: x.start())
+    fixed = 0
+    out = []
+    last = 0
+    for m in all_m:
+        if fixed >= DE_BROKEN_FIX_MAX:
+            break
+        # 保留"得"前的形容词（捕获组1），补"得厉害"+标点（捕获组2）
+        out.append(text[last:m.start()])
+        out.append(m.group(1))
+        out.append("得厉害")
+        out.append(m.group(2))
+        last = m.end()
+        fixed += 1
+    out.append(text[last:])
+    if fixed:
+        stats["de_broken"] = stats.get("de_broken", 0) + fixed
+    return "".join(out)
+
+
 def _strip_redundant_subject_in_line(line: str, budget: list) -> str:
     """单行内：连续两句以同一主语开头 → 删除后句主语（制造无主语句/碎片句）。
     budget 为剩余可删除次数（跨行共享）"""
@@ -878,6 +1025,31 @@ def _fix_longlist(text: str, stats: dict) -> str:
     out.append(text[last:])
     if replaced:
         stats["longlist"] = stats.get("longlist", 0) + replaced
+    return "".join(out)
+
+
+def _fix_body_scan(text: str, stats: dict) -> str:
+    """身体/部位扫描3连拆散："头发上、肩膀上、断臂的截面上"→ 只保留前2项，
+    删第3项（AI 系统性覆盖身体各部位=扫描式描写；人类只给1-2个关键细节）。
+    全文最多处理3处（避免过度删减环境细节）。"""
+    matches = list(_BODY_SCAN_RE.finditer(text))
+    if not matches:
+        return text
+    max_fix = 3
+    replaced = 0
+    out = []
+    last = 0
+    for m in matches:
+        out.append(text[last:m.start()])
+        # 保留前2项 + 顿号 → "头发上、肩膀上"（后续标点由 lookahead 保证已存在）
+        out.append(m.group(1) + "、" + m.group(2))
+        replaced += 1
+        last = m.end()
+        if replaced >= max_fix:
+            break
+    out.append(text[last:])
+    if replaced:
+        stats["body_scan"] = stats.get("body_scan", 0) + replaced
     return "".join(out)
 
 
@@ -994,6 +1166,89 @@ def _fix_even_paragraphs(text: str, stats: dict) -> str:
         return text
     paras[idx] = seg[:cut] + "。\n\n" + seg[cut + 1:]
     stats["paragraph"] = stats.get("paragraph", 0) + 1
+    return "\n\n".join(paras)
+
+
+def _fix_short_para_density(text: str, stats: dict) -> str:
+    """短叙事独立段密度压减：≤12字独立段占比 > SHORT_PARA_DENSITY_MAX 时，
+    将多余的短段并入相邻长段（用句号衔接，不丢内容）。
+    迭代最多3次：一次合并后总段数减少、密度再核算仍超阈值时继续合并。
+    跳过：纯对话行（引号包裹/占位/弹幕）、纯缓冲词、纯情绪标签、纯形容词独立段。"""
+    def _is_dialogue(p: str) -> bool:
+        p = p.strip()
+        if p.startswith("__Q") and p.endswith("__"):
+            return True
+        # 引号占位符（\x00N\x00）：阶段二对话已被占位保护，占位段=对话
+        if p.startswith("\x00") and p.endswith("\x00"):
+            return True
+        # 以各种引号开头的整段对话（含中文引号「」『』「」、半角引号""''）
+        for q in ('"', "'", '\u300c', '\u300d', '\u300e', '\u300f', '\uff02',
+                  '\u201c', '\u201d', '\u2018', '\u2019'):
+            if p.startswith(q):
+                return True
+        return False
+
+    def _is_short_narrative(p: str) -> bool:
+        p = p.strip()
+        if not p or len(p) > 12:
+            return False
+        if _is_dialogue(p):  # ⭐ 对话整段跳过（台词短是正常的，不是AI节奏）
+            return False
+        if p in ("沉默。", "安静。", "寂静。", "安静，", "沉默，"):
+            return False
+        has_verb = any(c in p for c in "了着过个动走说看停碎坐站来去笑哭打拍抓顿醒收写回转起落"
+                                         "扔拿放闭睁举伸推拉开门关裂塌倒退跑跳跪趴靠躺弯握低"
+                                         "听见知道见想问答喊叫念叹费劲紧松")
+        has_judge_pattern = bool(re.search(r'(?:^|[^是])是[^，。！？]|[一二三四五六七八九十百千\d]+[个次块]', p))
+        has_noun_label = bool(re.match(r'^[\u4e00-\u9fff]{1,6}[。！]$', p)) and \
+                          not p.rstrip('。！').isdigit()
+        return has_verb or has_judge_pattern or has_noun_label
+
+    import math
+    paras = text.split("\n\n")
+    if len(paras) < 4:
+        return text
+    total_merged = 0
+    # 最多迭代3次，密度超限就继续合并（第一次合并后总段数变少，密度可能还超）
+    for _round in range(3):
+        short_indices = [i for i, p in enumerate(paras) if _is_short_narrative(p)]
+        if not short_indices:
+            break
+        # 核算密度时基数也是非对话段（对话不参与密度计算，保持与 check_ai_features 一致）
+        narrative_count = sum(1 for p in paras if not _is_dialogue(p.strip()))
+        total = max(1, narrative_count)
+        density = len(short_indices) / total
+        if density <= SHORT_PARA_DENSITY_MAX:
+            break
+        need_merge = math.ceil((len(short_indices) - SHORT_PARA_DENSITY_MAX * total) / (1 - SHORT_PARA_DENSITY_MAX))
+        need_merge = max(0, need_merge)
+        merged = 0
+        for i in reversed(short_indices):
+            if merged >= need_merge:
+                break
+            prev_idx = i - 1
+            while prev_idx >= 0 and _is_short_narrative(paras[prev_idx]):
+                prev_idx -= 1
+            if prev_idx >= 0:
+                short_content = paras[i].strip()
+                paras[prev_idx] = paras[prev_idx].rstrip() + short_content
+                paras[i] = ""
+                merged += 1
+            else:
+                next_idx = i + 1
+                while next_idx < len(paras) and _is_short_narrative(paras[next_idx]):
+                    next_idx += 1
+                if next_idx < len(paras):
+                    short_content = paras[i].strip()
+                    paras[next_idx] = short_content + paras[next_idx].lstrip()
+                    paras[i] = ""
+                    merged += 1
+        total_merged += merged
+        if merged == 0:
+            break
+        paras = [p for p in paras if p.strip()]
+    if total_merged:
+        stats["short_para_merge"] = stats.get("short_para_merge", 0) + total_merged
     return "\n\n".join(paras)
 
 
@@ -1221,22 +1476,386 @@ def _fix_adj_independent(text: str, stats: dict) -> str:
     return text
 
 
-def _fix_short_action_burst(text: str, stats: dict) -> str:
-    """短动作连排合并："碎了。塌了。散了。"（动词+了+句号连续≥3）→ "碎了，塌了，散了。"
-    （AI 节奏模板：连续短动作独立成句制造紧凑感，人类会用逗号一气呵成）
-    全文最多处理 SHORT_ACTION_BURST_MAX 处。"""
-    matches = list(_SHORT_ACTION_BURST_RE.finditer(text))
+def _fix_aux_broken(text: str, stats: dict) -> str:
+    """助词残缺句修复："每吐一个字都[。！，]" → 补最常见补语"像被掐住"或补"都费劲"，
+    根据前文字数选短款：3字内补"都费劲"，长句补"都像被勒住"（不丢原文残缺感，只补成完整句）。
+    全文最多修 AUX_BROKEN_MAX 处。"""
+    matches = list(_AUX_BROKEN_RE.finditer(text))
     if not matches:
         return text
     fixed = 0
     out = []
     last = 0
     for m in matches:
+        if fixed >= AUX_BROKEN_MAX:
+            break
+        prev_content = m.group(1)  # 助词前的实义内容："每吐一个字"
+        aux = m.group(2)  # 都/会/能/敢/要
+        punct = m.group(3)
+        out.append(text[last:m.start()])
+        # 短款补"都费劲"，长款补"都发紧"，保留语气助词与断句标点
+        if len(prev_content) <= 4:
+            out.append(prev_content + aux + "发紧" + punct)
+        else:
+            out.append(prev_content + aux + "费劲" + punct)
+        last = m.end()
+        fixed += 1
+    out.append(text[last:])
+    if fixed:
+        stats["aux_broken"] = stats.get("aux_broken", 0) + fixed
+    return "".join(out)
+
+
+def _fix_adj_dangling(text: str, stats: dict) -> str:
+    """悬空"XX的，"独立成分修复：把句中"的，"拆为"的。"做硬断（形容词独立成短句），
+    避免AI输出的"暗红色的，看得见走向"这类形容词与谓语粘连的别扭句法。
+    全文最多修 ADJ_INDEP_DANGLING_MAX 处。"""
+    matches = list(_ADJ_DANGLING_RE.finditer(text))
+    if not matches:
+        return text
+    fixed = 0
+    out = []
+    last = 0
+    for m in matches:
+        if fixed >= ADJ_INDEP_DANGLING_MAX:
+            break
+        # "的，" → "的。" 让形容词自成一短句
+        out.append(text[last:m.start()])
+        out.append("的。")
+        last = m.end()
+        fixed += 1
+    out.append(text[last:])
+    if fixed:
+        stats["adj_dangling"] = stats.get("adj_dangling", 0) + fixed
+    return "".join(out)
+
+
+def _fix_fused_char_repeat(text: str, stats: dict) -> str:
+    """字重复粘连修复："落落在地上"→"落，落在地上"（中间补逗号断句）；
+    "碎碎成粉"→"碎，碎成粉"。 用逗号断开叠词重复，保留原动作节奏不丢语义。
+    全文最多修 FUSED_CHAR_REPEAT_MAX 处。"""
+    matches = list(_FUSED_CHAR_REPEAT_RE.finditer(text))
+    if not matches:
+        return text
+    fixed = 0
+    out = []
+    last = 0
+    for m in matches:
+        if fixed >= FUSED_CHAR_REPEAT_MAX:
+            break
+        ch = m.group(1)
+        out.append(text[last:m.start()])
+        out.append(ch + "，" + ch)  # 落落 → 落，落
+        last = m.end()
+        fixed += 1
+    out.append(text[last:])
+    if fixed:
+        stats["fused_char_repeat"] = stats.get("fused_char_repeat", 0) + fixed
+    return "".join(out)
+
+
+def _fix_neg_triple_mix(text: str, stats: dict) -> str:
+    """混合标点否定三连压缩："不是X。不是Y，不是Z" → "不是Z"（只留最后一项否定）。
+    全文 NEG_TRIPLE_MIX_MAX=0 处（彻底消除，AI否定三连排比最扎眼）。"""
+    matches = list(_NEG_TRIPLE_MIX_RE.finditer(text))
+    if not matches:
+        return text
+    # 反向替换避免索引偏移
+    replaced = 0
+    out = text
+    for m in reversed(matches):
+        z = m.group(3)
+        out = out[:m.start()] + "不是" + z + out[m.end():]
+        replaced += 1
+    if replaced:
+        stats["neg_triple_mix"] = stats.get("neg_triple_mix", 0) + replaced
+    return out
+
+
+def _fix_range_scan(text: str, stats: dict) -> str:
+    """部位/范围系统性扫描压缩："从A到B，到C，到D" → "从A到C"（只保留起点和终点，跳过中间覆盖项）。
+    AI最爱的"从巨眼到脖子，到肩膀，到躯干，到下半身"类全覆盖式列举=机械感。
+    人类写法只给关键两点。 全文最多修 RANGE_SCAN_MAX 处。"""
+    matches = list(_RANGE_SCAN_RE.finditer(text))
+    if not matches:
+        return text
+    fixed = 0
+    out = []
+    last = 0
+    for m in matches:
+        if fixed >= RANGE_SCAN_MAX:
+            break
+        # m.group(0) = "从A开始到B，到C，到D"
+        # m.group(1) = "到B，"   m.group(2) = "到C，"   m.group(3) = "到D"
+        # 找到 "从" 的位置到 "到B，" 的开头 = 起点段；最后加 "到D"
+        to_d = m.group(3)  # "到D"（无尾标点）
+        # 提取起点（从X开始/从X）：从 "从" 到 第一个"到"字前
+        prefix_end = m.group(0).find(m.group(1))  # 第一个"到B，"位置
+        start = m.group(0)[:prefix_end]  # "从巨眼开始"
+        out.append(text[last:m.start()])
+        out.append(start + to_d)  # "从巨眼开始到埋在墙里的下半身"
+        last = m.end()
+        fixed += 1
+    out.append(text[last:])
+    if fixed:
+        stats["range_scan"] = stats.get("range_scan", 0) + fixed
+    return "".join(out)
+
+
+def _fix_verb_triple_scan(text: str, stats: dict) -> str:
+    """同动词三连排比扫描压缩："落在A，落在B，落在C" → "落在A、B，还有C"（先顿号+还有，拆排比节奏）。
+    与_longlist三连顿号拆散逻辑同型，消除3连同动作对象的机械节奏感。
+    全文最多修 VERB_TRIPLE_SCAN_MAX 处。"""
+    matches = list(_VERB_TRIPLE_SCAN_RE.finditer(text))
+    if not matches:
+        return text
+    fixed = 0
+    out = []
+    last = 0
+    for m in matches:
+        if fixed >= VERB_TRIPLE_SCAN_MAX:
+            break
+        # "落在A，落在B，落在C" → "落在A、B，还有C"
+        # 提取 A=落在[X，]的X（剥"落在"前缀和尾标点）
+        a = m.group(1)[len("落在"):-1]  # 去尾"，"
+        b = m.group(2)[len("落在"):-1]
+        c = m.group(3)[len("落在"):]
+        out.append(text[last:m.start()])
+        out.append(f"落在{a}、{b}，还有{c}")
+        last = m.end()
+        fixed += 1
+    out.append(text[last:])
+    if fixed:
+        stats["verb_triple_scan"] = stats.get("verb_triple_scan", 0) + fixed
+    return "".join(out)
+
+
+def _fix_is_is_stack(text: str, stats: dict) -> str:
+    """判断句堆叠压缩：
+    - 逗号版："XX是A，是B[。！]" → "XX是B"（最多保留 IS_IS_STACK_MAX 处）
+    - 句号版："是A[。！] 是B[。！]" → "是B"（0配额=彻底清除，直接命中推理展开链红牌）"""
+    replaced = 0
+    out = text
+    # ---- 逗号版：XX是A，是B ----
+    matches = list(_IS_IS_STACK_RE.finditer(out))
+    if len(matches) > IS_IS_STACK_MAX:
+        need = len(matches) - IS_IS_STACK_MAX
+        for m in reversed(matches):
+            if replaced >= need:
+                break
+            subj = m.group(1)
+            b = m.group(3)
+            out = out[:m.start()] + subj + "是" + b + out[m.end():]
+            replaced += 1
+    # ---- 句号版：是A。是B。= 推理展开链（检测器红牌，0配额彻底清除） ----
+    dot_matches = list(_IS_IS_DOT_STACK_RE.finditer(out))
+    for m in reversed(dot_matches):
+        b = m.group(2)
+        out = out[:m.start()] + "是" + b + "。" + out[m.end():]
+        replaced += 1
+    if replaced:
+        stats["is_is_stack"] = stats.get("is_is_stack", 0) + replaced
+    return out
+
+
+def _fix_redup_abab(text: str, stats: dict) -> str:
+    """ABAB式多字叠词压减："太久太久"→"太久"、"一根一根"→"一根根"。
+    排除 _REDUP_ABAB_SAFE 白名单（时间递进类叠词合法）。
+    全文最多压 REDUP_ABAB_MAX 处（默认3处，避免过度改写节奏感强的动作叠词）。"""
+    matches_all = list(_REDUP_ABAB_RE.finditer(text))
+    if not matches_all:
+        return text
+    # 过滤白名单
+    matches = [m for m in matches_all if m.group(0) not in _REDUP_ABAB_SAFE]
+    if len(matches) <= REDUP_ABAB_MAX:
+        return text
+    need = len(matches) - REDUP_ABAB_MAX
+    replaced = 0
+    out = text
+    for m in reversed(matches):
+        if replaced >= need:
+            break
+        pair = m.group(1)
+        # pair 第二个字是量词 → 一根根；否则只留一次：太久
+        if pair[-1] in "根片段落条颗粒秒帧寸":
+            sub = pair + pair[-1]  # 一根 → 一根根
+        else:
+            sub = pair
+        out = out[:m.start()] + sub + out[m.end():]
+        replaced += 1
+    if replaced:
+        stats["redup_abab"] = stats.get("redup_abab", 0) + replaced
+    return out
+
+
+SENTENCE_FUSED_FIX_MAX = 2
+NOUN_PRONOUN_FUSED_FIX_MAX = 2
+
+
+def _fix_sentence_fused(text: str, stats: dict) -> str:
+    """句子粘连修复："XX不是Y"型粘连（缺逗号分隔两句）→ "XX，不是Y"。
+    例："暗红色的液体不是血" → "暗红色的液体，不是血"。
+    全文最多修 SENTENCE_FUSED_FIX_MAX 处。"""
+    matches = list(_SENTENCE_FUSED_RE.finditer(text))
+    if not matches:
+        return text
+    fixed = 0
+    out = []
+    last = 0
+    for m in matches:
+        if fixed >= SENTENCE_FUSED_FIX_MAX:
+            break
+        # "前内容不是Y" → "前内容，不是Y"
+        prefix = m.group(1)  # e.g. "一种暗红色的液体"
+        out.append(text[last:m.start()])
+        out.append(prefix + "，不是" + m.group(2))
+        last = m.end()
+        fixed += 1
+    out.append(text[last:])
+    if fixed:
+        stats["sentence_fused"] = stats.get("sentence_fused", 0) + fixed
+    return "".join(out)
+
+
+def _fix_noun_pronoun_fused(text: str, stats: dict) -> str:
+    """名词+代词粘连修复："心跳他开口了"→"心跳，他开口了"（名/动名词后缺逗号）。
+    例："嘴唇动了动又" → "嘴唇动了动，又"。
+    全文最多修 NOUN_PRONOUN_FUSED_FIX_MAX 处。"""
+    matches = list(_NOUN_PRONOUN_FUSED_RE.finditer(text))
+    if not matches:
+        return text
+    fixed = 0
+    out = []
+    last = 0
+    for m in matches:
+        if fixed >= NOUN_PRONOUN_FUSED_FIX_MAX:
+            break
+        noun = m.group(1)
+        pron = m.group(2)
+        verb = m.group(3)
+        out.append(text[last:m.start()])
+        out.append(f"{noun}，{pron}{verb}")
+        last = m.end()
+        fixed += 1
+    out.append(text[last:])
+    if fixed:
+        stats["noun_pronoun_fused"] = stats.get("noun_pronoun_fused", 0) + fixed
+    return "".join(out)
+
+
+def _fix_reduplicative_adj(text: str, stats: dict) -> str:
+    """叠词形容词去重："极细极细的"→"极细的"（AI 双叠强调=机械节奏）
+    全文最多处理3处，避免过度改写。排除正常叠词如"长长的""慢慢的"（单字叠）。"""
+    matches = list(_REDUPLICATIVE_ADJ_RE.finditer(text))
+    if not matches:
+        return text
+    max_fix = 3
+    replaced = 0
+    out = []
+    last = 0
+    for m in matches:
+        if replaced >= max_fix:
+            break
+        out.append(text[last:m.start()])
+        # 保留单次：XX→X
+        out.append(m.group(1) + "的")
+        replaced += 1
+        last = m.end()
+    out.append(text[last:])
+    if replaced:
+        stats["redup_adj"] = stats.get("redup_adj", 0) + replaced
+    return "".join(out)
+
+
+def _fix_fake_sensory(text: str, stats: dict) -> str:
+    """假感官词清洗："干得发涩""疼得发抖""冷得发僵"超 FAKE_SENSORY_MAX 处时，
+    将多余的"得发X"替换为"得厉害"（通用程度补语，不丢强度语义，去机械模板感）。
+    如"嗓子干得发涩"→"嗓子干得厉害"。"""
+    matches = list(_FAKE_SENSORY_RE.finditer(text))
+    if len(matches) <= FAKE_SENSORY_MAX:
+        return text
+    need = len(matches) - FAKE_SENSORY_MAX
+    replaced = 0
+    # 反向遍历避免位置偏移
+    out = text
+    for m in reversed(matches):
+        if replaced >= need:
+            break
+        # "X得发Y" → "X得厉害"
+        out = out[:m.start()] + m.group(1) + "得厉害" + out[m.end():]
+        replaced += 1
+    if replaced:
+        stats["fake_sensory"] = stats.get("fake_sensory", 0) + replaced
+    return out
+
+
+def _fix_half_explain(text: str, stats: dict) -> str:
+    """半解释骑墙清洗："某种X""说不清的X""说不出的X" 超 HALF_EXPLAIN_MAX 处时，
+    删除多余的"某种"/"说不清的"/"说不出的"前缀（保留后续内容，语义不丢）。
+    如"某种被压得很平的东西"→"被压得很平的东西"。
+    阶段一执行（含对话），因为台词里也有"某种"骑墙。
+    删除"某种"后可能暴露内嵌的"说不清的"（如"某种X...说不清的Y"删"某种"后剩"说不清的Y"），
+    所以做二次扫描确保不残留。"""
+    for _ in range(2):  # 最多两轮：第二轮清理第一轮暴露的"说不清/出的"
+        all_hits = list(_HALF_EXPLAIN_RE.finditer(text))
+        if len(all_hits) <= HALF_EXPLAIN_MAX:
+            break
+        need = len(all_hits) - HALF_EXPLAIN_MAX
+        removed = 0
+        to_delete = []  # [(start, length), ...]
+        for m in reversed(all_hits):
+            if removed >= need:
+                break
+            matched = m.group(0)
+            if matched.startswith("某种说不"):
+                prefix_len = len("某种说不") + 1  # +1 for 清/出
+                if matched[prefix_len:prefix_len + 1] in "的了":
+                    prefix_len += 1
+                to_delete.append((m.start(), prefix_len))
+                removed += 1
+            elif matched.startswith("某种"):
+                to_delete.append((m.start(), 2))  # 删"某种"
+                removed += 1
+            elif matched.startswith("说不"):
+                prefix_len = len("说不") + 1  # +1 for 清/出
+                if matched[prefix_len:prefix_len + 1] in "的了":
+                    prefix_len += 1
+                to_delete.append((m.start(), prefix_len))
+                removed += 1
+        if not to_delete:
+            break
+        for start, length in to_delete:
+            text = text[:start] + text[start + length:]
+        stats["half_explain"] = stats.get("half_explain", 0) + removed
+    return text
+
+
+def _fix_short_action_burst(text: str, stats: dict) -> str:
+    """短动作连排合并："碎了。塌了。散了。"（动词+了+句号连续≥3）→ "碎了，塌了，散了。"
+    同时处理混合标点版："赤月暗了。亮了，暗了。亮了。"（动词+了+[。，！]连续≥3）
+    （AI 节奏模板：连续短动作独立成句制造紧凑感，人类会用逗号一气呵成）
+    全文最多处理 SHORT_ACTION_BURST_MAX 处。"""
+    # 优先匹配纯句号版（更严格），再匹配混合标点版
+    matches = list(_SHORT_ACTION_BURST_RE.finditer(text))
+    # 收集已匹配区间，避免混合版重复匹配
+    matched_ranges = [(m.start(), m.end()) for m in matches]
+    mixed_matches = []
+    for m in _SHORT_ACTION_BURST_MIXED_RE.finditer(text):
+        # 跳过与纯句号版重叠的区间
+        if not any(m.start() >= s and m.end() <= e for s, e in matched_ranges):
+            mixed_matches.append(m)
+    all_matches = sorted(matches + mixed_matches, key=lambda x: x.start())
+    if not all_matches:
+        return text
+    fixed = 0
+    out = []
+    last = 0
+    for m in all_matches:
         if fixed >= SHORT_ACTION_BURST_MAX:
             break
         out.append(text[last:m.start()])
         chunk = m.group(1)
-        # 把内部的句号换成逗号，末尾句号保留
+        # 把内部的句号/感叹号换成逗号，末尾标点保留
         inner = chunk[:-1].replace("。", "，").replace("！", "，")
         out.append(inner + chunk[-1])
         last = m.end()
@@ -1245,6 +1864,44 @@ def _fix_short_action_burst(text: str, stats: dict) -> str:
     if fixed:
         stats["short_action_burst"] = stats.get("short_action_burst", 0) + fixed
     return "".join(out)
+
+
+def _fix_danmu_format(text: str, stats: dict) -> str:
+    """弹幕格式规范化（「」为弹幕专用括号，AI 输出常见四种错乱）：
+    1) 对白内部混入弹幕："……「X」……" → 弹幕拆出独立成行
+    2) 双重右引号：「X」」 → 「X」
+    3) 弹幕行尾悬挂右双引号：「X」” → 「X」
+    4) 弹幕黏在叙述句尾（含未闭合）→ 拆独立行并补「」
+    必须放在阶段一（引号占位保护之前）执行，否则对白内的弹幕看不到。"""
+    changed = 0
+    # 1) 对白内弹幕拆出（subn 循环最多3轮，覆盖同句多条弹幕）
+    for _ in range(3):
+        def _extract(m):
+            inner = m.group(1) + m.group(3)
+            if not inner.strip():
+                return f'「{m.group(2)}」'
+            return f'“{inner}”\n\n「{m.group(2)}」'
+        text, n = _DANMU_IN_DIALOGUE_RE.subn(_extract, text)
+        changed += n
+        if not n:
+            break
+    # 2) 双重右引号
+    text, n = _DANMU_DOUBLE_CLOSE_RE.subn('」', text)
+    changed += n
+    # 3) 行尾悬挂右双引号
+    text, n = _DANMU_HANGING_QUOTE_RE.subn('」', text)
+    changed += n
+    # 4) 黏在叙述句尾的弹幕拆独立行（未闭合自动补」）
+    def _split_glued(m):
+        g = m.group(1)
+        if not g.endswith('」'):
+            g += '」'
+        return '\n\n' + g
+    text, n = _DANMU_GLUED_RE.subn(_split_glued, text)
+    changed += n
+    if changed:
+        stats["danmu_format"] = stats.get("danmu_format", 0) + changed
+    return text
 
 
 # ==================== 入口 ====================
@@ -1263,15 +1920,22 @@ def clean_generated_text(text: str) -> tuple:
     # ---- 阶段一：全文级（含对话）标点/句式规则 ----
     # AI 特征大量藏在台词里（"我记住了——那些不说话的""不是三年五年。是三百年。"），
     # 必须先于引号占位保护执行，否则对话内的破折号/"不是X"全部漏洗
+    # 弹幕格式错乱也藏在对白内部（"……「X」……"），必须最先执行
+    text = _fix_danmu_format(text, stats)
     text = _fix_dash(text, stats)
     text = _fix_not_is(text, stats)
+    text = _fix_not_is_dual(text, stats)
     text = _fix_not_is_dot(text, stats)
     text = _fix_triple(text, stats)
     text = _fix_longlist(text, stats)
+    text = _fix_body_scan(text, stats)
     text = _fix_simile(text, stats)
     text = _fix_like_density(text, stats)
     text = _fix_abrupt_adverbs(text, stats)
     text = _fix_simile_guides(text, stats)
+    text = _fix_half_explain(text, stats)
+    text = _fix_reduplicative_adj(text, stats)
+    text = _fix_fake_sensory(text, stats)
     # 新增阶段一规则（标点修复/逗号三连/双重比喻/双框比喻/句子残缺/形容词链悬空）
     text = _fix_punct_bug(text, stats)
     text = _fix_comma_triple(text, stats)
@@ -1279,6 +1943,18 @@ def clean_generated_text(text: str) -> tuple:
     text = _fix_frame_simile(text, stats)
     text = _fix_sentence_broken(text, stats)
     text = _fix_adj_chain_dash(text, stats)
+    text = _fix_de_broken(text, stats)
+    # 新增阶段一规则：助词残缺/形容词悬空/字重复/否定三连/部位扫描/同动排比/判断堆叠/ABAB叠词
+    text = _fix_aux_broken(text, stats)
+    text = _fix_adj_dangling(text, stats)
+    text = _fix_fused_char_repeat(text, stats)
+    text = _fix_sentence_fused(text, stats)
+    text = _fix_noun_pronoun_fused(text, stats)
+    text = _fix_neg_triple_mix(text, stats)
+    text = _fix_range_scan(text, stats)
+    text = _fix_verb_triple_scan(text, stats)
+    text = _fix_is_is_stack(text, stats)
+    text = _fix_redup_abab(text, stats)
     # ---- 阶段二：引号保护后，句法/段落级规则（不伤对话） ----
     protected, placeholders = _protect_quotes(text)
     protected = _fix_colon(protected, stats)
@@ -1290,6 +1966,7 @@ def clean_generated_text(text: str) -> tuple:
     protected = _fix_buffer_paragraphs(protected, stats)
     protected = _fix_emotion_label(protected, stats)
     protected = _fix_even_paragraphs(protected, stats)
+    protected = _fix_short_para_density(protected, stats)
     protected = _fix_even_sentences(protected, stats)
     protected = _fix_duplicate_paragraphs(protected, stats)
     protected = _fix_repeated_sentences(protected, stats)
@@ -1311,8 +1988,8 @@ def clean_generated_text(text: str) -> tuple:
 # 纯代码检测，无 LLM 依赖。
 # "比X+形容词"比较句（"比我的大""比我们都旧"；口语"总比饿死强"也会计入，占比小可容忍）
 _BI_RE = re.compile(r'比[^，。；！？\n]{1,8}(?:大|旧|早|强|高|深|宽|重|快|慢|多|少|远|近|久|新|小|短|好|差|热|冷|亮|暗|长|粗|细)')
-# "跟X似的"比喻（内容层红牌：全章最多1处）
-_GENXI_RE = re.compile(r'跟[^。，；！？\n]{1,20}似的')
+# "跟X似的"/"跟X一样"比喻（内容层红牌：全章最多1处）
+_GENXI_RE = re.compile(r'跟[^。，；！？\n]{1,20}(?:似的|一样)')
 # 否定排队（"不知道。不知道。"连续短句 ≥2 次）
 _NEG_QUEUE_RE = re.compile(r'(?:不知道[。！]){2,}')
 # 比喻句式扩展检测：像X/跟X一样/仿佛X/犹如X/好似X（用于段落级密度统计，区别于 _GENXI_RE 的总量口径）
@@ -1327,12 +2004,21 @@ _REASONING_CHAIN_RE = re.compile(r'是[^，。；！？\n]{1,12}[。．]\s*是[^
 # ---- 新增检测正则（交 LLM 改写） ----
 # "没有X，没有Y，只有Z" 三连否定排比（"没有恐惧，没有厌恶，只有熟悉感"=AI 情绪层次模板）
 _NEG_HAVE3_RE = re.compile(r'没有([^，。；！？\n]{1,10})[，,]\s*没有([^，。；！？\n]{1,10})[，,]\s*(?:只有|就是|是)([^，。；！？\n]{1,30})')
-# "某种X""说不清的X" 半解释（骑墙描写=AI 怕说死又怕说太死的特征）
-_HALF_EXPLAIN_RE = re.compile(r'某种[^，。；！？\n]{1,20}|说不清[的了]?[^，。；！？\n]{0,20}|某种说不清的[^，。；！？\n]{1,20}')
+# 纯三连否定（"没有血没有骨头，没有内脏"=AI 三重否定堆砌，无"只有Z"结尾变体）
+# 匹配"没有X没有Y，没有Z"（前两项无逗号分隔，第三项以逗号/句号结尾）
+_NEG_PURE_TRIPLE_RE = re.compile(r'没有([^，。；！？\n]{1,8})没有([^，。；！？\n]{1,8})[，,]\s*没有([^，。；！？\n]{1,8})(?=[。；！？\n])')
+# "某种X""说不清的X""说不出的X" 半解释（骑墙描写=AI 怕说死又怕说太死的特征）
+_HALF_EXPLAIN_RE = re.compile(r'某种[^，。；！？\n]{1,20}|说不[清出][的了]?[^，。；！？\n]{0,20}|某种说不[清出]的[^，。；！？\n]{1,20}')
+# 仅匹配"某种"前缀（用于程序化清洗：超阈值时删"某种"二字，保留后续内容）
+_HALF_EXPLAIN_PREFIX_RE = re.compile(r'某种(?!不[清出])')
 # 书面连词超频（不仅X而且Y / 既X又Y / 与其X不如Y / 与其说X不如说Y）
 _FORMAL_CONJ_RE = re.compile(r'不仅[^，。；！？\n]{1,20}[，,]?\s*(?:而且|还|也)|既[^，。；！？\n]{1,15}又[^，。；！？\n]{1,15}|与其(?:说)?[^，。；！？\n]{1,20}(?:不如|莫如)(?:说)?')
-# 四字格密度（单段内"[\u4e00-\u9fff]{4}，/、"≥3 个=成语堆砌）
-_IDIOM_QUAD_RE = re.compile(r'[\u4e00-\u9fff]{4}[，、]')
+# 四字格堆砌（单段内顿号连接的连续3+个四字短语块=成语堆砌）
+# 只匹配"XXXX、YYYY、ZZZZ"连续并列结构，避免误报普通叙事中4字+顿号
+_IDIOM_QUAD_RE = re.compile(r'[\u4e00-\u9fff]{4}(?:、[\u4e00-\u9fff]{4}){2,}')
+# 枚举式列举（"第一条线往西…第二条线往东北…第三条线往东…"=AI 系统性逐条覆盖）
+# 匹配"第N[条个层种步]"连续出现≥3次（跨句/跨行，中间可有任何内容）
+_ENUM_ITEM_RE = re.compile(r'第[一二三四五六七八九十百千万\d]+[条个层种步座道处]')
 
 
 def check_ai_features(text: str) -> dict:
@@ -1470,8 +2156,10 @@ def check_ai_features(text: str) -> dict:
     # "没有X，没有Y，只有Z" 三连否定排比检测（AI 情绪层次模板）
     try:
         neg3 = _NEG_HAVE3_RE.findall(text)
-        if len(neg3) > NEG_HAVE3_MAX:
-            report["三连否定排比"] = len(neg3)
+        neg3_pure = _NEG_PURE_TRIPLE_RE.findall(text)
+        total_neg3 = len(neg3) + len(neg3_pure)
+        if total_neg3 > NEG_HAVE3_MAX:
+            report["三连否定排比"] = total_neg3
     except Exception:
         pass
     # "某种X""说不清的X" 半解释检测（AI 骑墙描写）
@@ -1488,25 +2176,36 @@ def check_ai_features(text: str) -> dict:
             report["书面连词超频"] = len(formal)
     except Exception:
         pass
-    # 四字格密度检测（单段内≥3个"XXXX，/、"=成语堆砌）
+    # 四字格堆砌检测（单段内含"XXXX、YYYY、ZZZZ"连续3+四字短语块=成语堆砌）
     try:
         paras_idiom = [p for p in re.split(r'\n\s*\n', text) if p.strip()]
         dense_idiom_cnt = 0
         for p in paras_idiom:
-            if len(_IDIOM_QUAD_RE.findall(p)) >= IDION_QUAD_DENSITY_MAX:
+            if _IDIOM_QUAD_RE.search(p):
                 dense_idiom_cnt += 1
         if dense_idiom_cnt:
             report["四字格堆砌"] = dense_idiom_cnt
     except Exception:
         pass
     # 短句独立段密度检测（≤12字独立段占比>15%=AI 节奏模板）
+    # 排除纯对话行（引号包裹的弹幕/台词），对话短是正常的不是 AI 特征
     try:
         paras_short = [p.strip() for p in text.split("\n\n") if p.strip()]
         if paras_short:
-            short_cnt = sum(1 for p in paras_short if len(p) <= 12)
-            ratio = short_cnt / len(paras_short)
-            if ratio > SHORT_PARA_DENSITY_MAX:
-                report["短句独立段密度"] = round(ratio, 2)
+            # 排除纯对话行：以「」""''包裹或 __Q占位
+            def _is_dialogue(p: str) -> bool:
+                if p.startswith("__Q") and p.endswith("__"):
+                    return True
+                for q in ("“", "”", "「", "」", "『", "』", '"', "'", "\uff02"):
+                    if p.startswith(q):
+                        return True
+                return False
+            narrative = [p for p in paras_short if not _is_dialogue(p)]
+            if narrative:
+                short_cnt = sum(1 for p in narrative if len(p) <= 12)
+                ratio = short_cnt / len(narrative)
+                if ratio > SHORT_PARA_DENSITY_MAX:
+                    report["短句独立段密度"] = round(ratio, 2)
     except Exception:
         pass
     # 句子残缺检测（"X的、。"顿号/逗号后直接句号=AI 输出 bug）
@@ -1567,6 +2266,79 @@ def check_ai_features(text: str) -> dict:
             report["连续短句排比"] = run_cnt
     except Exception:
         pass
+    # "得发X"假感官词检测（"干得发涩""疼得发抖"=AI 程度补语模板）
+    try:
+        fake_sensory = _FAKE_SENSORY_RE.findall(text)
+        if len(fake_sensory) > FAKE_SENSORY_MAX:
+            report["假感官词"] = len(fake_sensory)
+    except Exception:
+        pass
+    # 枚举式列举检测（"第一条线…第二条线…第三条线…"=AI 系统性逐条覆盖）
+    # 同一量词的"第N[量词]"出现≥3次=结构性枚举，交 LLM 改写打散结构
+    try:
+        enum_hits = _ENUM_ITEM_RE.findall(text)
+        if len(enum_hits) >= 3:
+            report["枚举式列举"] = len(enum_hits)
+    except Exception:
+        pass
+    # ---- 新增 8 项 AI 特征检测 ----
+    # 助词残缺（每吐一个字都。= 都/会/能直接断句缺补语）
+    try:
+        aux_broken = _AUX_BROKEN_RE.findall(text)
+        if len(aux_broken) > AUX_BROKEN_MAX:
+            report["助词残缺句"] = len(aux_broken)
+    except Exception:
+        pass
+    # 悬空形容词独立（"暗红色的，看得见走向"="的，"句中悬空）
+    try:
+        adj_dangling = _ADJ_DANGLING_RE.findall(text)
+        if len(adj_dangling) > ADJ_INDEP_DANGLING_MAX:
+            report["悬空形容词独立"] = len(adj_dangling)
+    except Exception:
+        pass
+    # 字重复粘连（"落落在地上"=落+落缺分隔）
+    try:
+        char_repeat = _FUSED_CHAR_REPEAT_RE.findall(text)
+        if len(char_repeat) > FUSED_CHAR_REPEAT_MAX:
+            report["字重复粘连"] = len(char_repeat)
+    except Exception:
+        pass
+    # 混合标点否定三连（不是X。不是Y，不是Z）
+    try:
+        neg_mix = _NEG_TRIPLE_MIX_RE.findall(text)
+        if len(neg_mix) > NEG_TRIPLE_MIX_MAX:
+            report["混合标点否定三连"] = len(neg_mix)
+    except Exception:
+        pass
+    # "从A到B，到C，到D" 部位范围系统性扫描
+    try:
+        range_scan = _RANGE_SCAN_RE.findall(text)
+        if len(range_scan) >= 1:
+            report["部位范围系统扫描"] = len(range_scan)
+    except Exception:
+        pass
+    # 同动词三连排比扫描（落在A，落在B，落在C）
+    try:
+        verb_scan = _VERB_TRIPLE_SCAN_RE.findall(text)
+        if len(verb_scan) >= 1:
+            report["同动词三连排比"] = len(verb_scan)
+    except Exception:
+        pass
+    # 判断句堆叠（XX是A，是B）
+    try:
+        is_stack = _IS_IS_STACK_RE.findall(text)
+        if len(is_stack) > IS_IS_STACK_MAX:
+            report["判断句堆叠"] = len(is_stack)
+    except Exception:
+        pass
+    # ABAB式多字叠词（太久太久/一根一根，排除白名单）
+    try:
+        abab_all = _REDUP_ABAB_RE.findall(text)
+        abab_cnt = sum(1 for m in _REDUP_ABAB_RE.finditer(text) if m.group(0) not in _REDUP_ABAB_SAFE)
+        if abab_cnt > REDUP_ABAB_MAX:
+            report["ABAB多字叠词"] = abab_cnt
+    except Exception:
+        pass
     return report
 
 
@@ -1585,7 +2357,8 @@ def collect_feature_sentences(text: str) -> list:
         # 命中任一特征即收集
         if (_BI_RE.search(s2) or _GENXI_RE.search(s2) or _NEG_QUEUE_RE.search(s2)
                 or _METAPHOR_RE.search(s2) or _IS_JUDGE_RE.search(s2)
-                or _HALF_EXPLAIN_RE.search(s2) or _FORMAL_CONJ_RE.search(s2)):
+                or _HALF_EXPLAIN_RE.search(s2) or _FORMAL_CONJ_RE.search(s2)
+                or _FAKE_SENSORY_RE.search(s2)):
             seen.add(s2)
             out.append(s2)
     # 推理展开链：跨句命中，按链收集（取链的首句）
@@ -1599,6 +2372,14 @@ def collect_feature_sentences(text: str) -> list:
     # 三连否定排比：跨逗号命中，收集完整句
     for m in _NEG_HAVE3_RE.finditer(text):
         # 扩展到包含整句（从上一个句号到下一个句号）
+        start = text.rfind('。', 0, m.start())
+        end = text.find('。', m.end())
+        full = text[start + 1:end + 1].strip() if end != -1 else m.group(0).strip()
+        if full and full not in seen:
+            seen.add(full)
+            out.append(full)
+    # 纯三连否定（"没有X没有Y，没有Z"）：收集完整句
+    for m in _NEG_PURE_TRIPLE_RE.finditer(text):
         start = text.rfind('。', 0, m.start())
         end = text.find('。', m.end())
         full = text[start + 1:end + 1].strip() if end != -1 else m.group(0).strip()
@@ -1629,4 +2410,14 @@ def collect_feature_sentences(text: str) -> list:
         if full and full not in seen:
             seen.add(full)
             out.append(full)
+    # 枚举式列举：收集含"第N[量词]"的句子（交 LLM 改写打散结构）
+    enum_hits = _ENUM_ITEM_RE.findall(text)
+    if len(enum_hits) >= 3:
+        for m in _ENUM_ITEM_RE.finditer(text):
+            start = text.rfind('。', 0, m.start())
+            end = text.find('。', m.end())
+            full = text[start + 1:end + 1].strip() if end != -1 else m.group(0).strip()
+            if full and full not in seen:
+                seen.add(full)
+                out.append(full)
     return out

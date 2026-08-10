@@ -79,8 +79,9 @@ ai:
   text_clean:
     enabled: true
     # 内容层特征超标 → LLM 定向改写兜底（true=启用；每次超标章节约多一次 v4 调用，
-    # 只改比字/对仗/跟X似的/否定排队命中的句子，其余不动，改完复洗复检）
-    llm_rewrite: false
+    # 只改比字/对仗/跟X似的/否定排队/判断句排比/句子粘连/得字残缺命中的句子，
+    # 其余不动，改完复洗复检）
+    llm_rewrite: true
 
 email:
   provider: "resend"

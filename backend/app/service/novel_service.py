@@ -97,6 +97,7 @@ class NovelService:
             "genre": genre or "",
             "description": description,
             "cover_image": cover_image or "",
+            "sign_type": sign_type,
             "created_at": novel.created_at.isoformat() if novel.created_at else ""
         }
         es_service.index_novel(es_doc)
@@ -104,6 +105,7 @@ class NovelService:
         if r:
             r.delete_pattern("novels:list:*")
             r.delete_pattern("novels:search:*")
+            r.delete_pattern("interactions:feed:*")
         return success({"novel_unique_id": novel_unique_id, "title": title}, "作品创建成功")
 
     @staticmethod
@@ -180,7 +182,7 @@ class NovelService:
                 if cached:
                     return success(cached)
 
-            es_results = es_service.search_novels(keyword, page, page_size)
+            es_results = es_service.search_novels(keyword, page, page_size, exclude_exclusive=exclude_exclusive)
             if es_results and es_results.get("hits", {}).get("total", {}).get("value", 0) > 0:
                 items = []
                 for hit in es_results["hits"]["hits"]:
@@ -287,11 +289,13 @@ class NovelService:
         # 删除数据库作品记录
         NovelDAO.delete_by_unique_id(db, novel_unique_id)
         db.commit()
-        # 清除 Redis 缓存
+        # 清除 Redis 缓存（先精确删除该作品详情缓存，再清理全局 novels 缓存）
         r = _redis()
         if r:
+            r.delete(f"novels:detail:{novel_unique_id}")
             r.delete_pattern("novels:*")
             r.delete_pattern("chapters:*")
+            r.delete_pattern("interactions:feed:*")
 
         # 耗时操作放到后台线程
         _nid = novel_unique_id
@@ -391,13 +395,16 @@ class NovelService:
             "genre": novel.genre or "",
             "description": novel.description,
             "cover_image": novel.cover_image or "",
+            "sign_type": novel.sign_type,
             "created_at": novel.created_at.isoformat() if novel.created_at else ""
         }
         es_service.index_novel(es_doc)
         
-        # 清除 Redis 缓存
+        # 清除 Redis 缓存（先精确删除该作品详情缓存，再清理全局 novels 缓存与作品圈动态流缓存）
         r = _redis()
         if r:
+            r.delete(f"novels:detail:{novel_unique_id}")
             r.delete_pattern("novels:*")
+            r.delete_pattern("interactions:feed:*")
         
         return success({"novel_unique_id": novel_unique_id, "title": novel.title}, "作品更新成功")

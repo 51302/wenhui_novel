@@ -20,9 +20,9 @@ from app.prompts.chapter_prompts import (
     MEMORY_DIMENSION_DEFS, MEMORY_EXTRACT_PROMPT, MEMORY_INCREMENTAL_PROMPT,
     get_memory_category_names, get_frontend_to_dimension_map,
     match_ai_label_to_dimension, get_dimension_dedup_map,
-    HUMAN_EMOTION_GUIDE, COMBAT_WRITING_GUIDE, MEME_STYLE_GUIDE,
+    HUMAN_EMOTION_GUIDE, COMBAT_WRITING_GUIDE,
     COGNITION_BOUNDARY_GUIDE,
-    GENERATE_SYSTEM_PROMPT, GENERATE_CREATIVE_DIRECTION,
+    GENERATE_SYSTEM_PROMPT, EXPANDED_SYSTEM_PROMPT, GENERATE_CREATIVE_DIRECTION,
     GENERATION_FRAMEWORK, SELF_CHECK_LIST,
     OUTLINE_SYSTEM_PROMPT, OUTLINE_USER_PROMPT_TEMPLATE,
 )
@@ -2238,10 +2238,9 @@ class ChapterService:
                     json={
                         "model": gen_model,
                         "messages": [
-                            {"role": "system", "content": GENERATE_SYSTEM_PROMPT},
+                            {"role": "system", "content": EXPANDED_SYSTEM_PROMPT},
                             {"role": "user", "content": prompt},
                         ],
-                        # 关闭思考模式：模型默认多想，思考会消耗大量 max_tokens 并拖慢生成
                         "thinking": {"type": "disabled"},
                         "max_tokens": max_tokens,
                         "temperature": 0.7,
@@ -2830,7 +2829,7 @@ class ChapterService:
             memory_body, chapter_summary, current_chapter_num=next_num, max_chars=15000)
 
         # ===== 4. 上一章节末尾 500 字（封装方法；生成场景取已发布最后一章） =====
-        last_ending, _dup_text, _last_name = ChapterGenService.get_prev_ending(db, novel_unique_id)
+        last_ending, dup_text, _last_name = ChapterGenService.get_prev_ending(db, novel_unique_id)
 
         # ===== 5. 作品设定 + 提示词组装（提示词工程内容不变） =====
         settings = ChapterService._get_novel_settings(novel_unique_id)
@@ -2852,14 +2851,13 @@ class ChapterService:
             author_style=author_style,
             chapter_template=chapter_template,
             character_cards=character_cards,
+            recent_duplicate_text=dup_text,
         )
         system_logger.info(
             f"[章节生成] 请求输入统计: 记忆体={len(memory_body)}字符 | 概要={len(chapter_summary or '')}字 "
             f"| 锚点={len(last_ending or '')}字 | 提示词总长={len(prompt)}字符")
 
         # ===== 6. 调用 AI 生成（只调用一次，不重试不扩写）+ 后处理截断 =====
-        # min_acceptable 仅用于概要边界截断后的字数判断（生成多少就是多少，不做补齐）
-        min_acceptable = max(int(word_count * 0.8), 800)
         # max_tokens 覆盖目标上限（4000字×4=16000 token），排除 max_tokens 不足导致的提前截断
         gen_max_tokens = max(int(word_count * 4), 16000)
         generated_text, err = await ChapterService._call_generation_api(
@@ -2869,14 +2867,11 @@ class ChapterService:
         system_logger.info(f"[章节生成] max_tokens={gen_max_tokens} 目标字数={word_count}")
 
         # 概要边界截断（生成内容不得超过概要覆盖的事件范围；自然收尾保留，不砍结尾）
+        # _trim_to_summary_boundary 内部已有保护：截断点后残留 ≤500 字视为自然收尾保留全文；
+        # 因此直接采用其结果即可——截断后字数少是因为概要本身规模小（prompt 已要求"清单写完即停笔"），
+        # 不能因"字数少"再放行概要外超纲内容（历史 bug：第3章概要外新增3329字因截断后<3200被保留）
         if chapter_summary:
-            trimmed = ChapterService._trim_to_summary_boundary(generated_text, chapter_summary)
-            # 截断后字数骤降：说明落点匹配失败或后文是有效内容，保留完整生成文本避免字数缩水
-            if len(trimmed) < min_acceptable:
-                system_logger.warning(
-                    f"[章节生成] 截断后字数不足({len(trimmed)}字<{min_acceptable})，保留完整生成文本")
-            else:
-                generated_text = trimmed
+            generated_text = ChapterService._trim_to_summary_boundary(generated_text, chapter_summary)
         # 超长上限截断（目标4000字 → 最多约8000字），避免生成超长；
         # 上限放宽到 2.0 倍且不低于 +3000，并按段落/句号边界截断，避免句中硬切导致结尾残缺
         hard_cap = max(int(word_count * 2.0), word_count + 3000)
@@ -3062,7 +3057,7 @@ class ChapterService:
             memory_body, summary, current_chapter_num=cur_num, max_chars=15000)
 
         # ===== 3. 上一章节（cur_num-1）末尾 500 字（封装方法） =====
-        last_ending, _dup_text, _last_name = ChapterGenService.get_prev_ending(
+        last_ending, dup_text, _last_name = ChapterGenService.get_prev_ending(
             db, novel_unique_id, exclude_chapter_id=chapter_unique_id,
             current_chapter_num=cur_num,
         )
@@ -3090,14 +3085,13 @@ class ChapterService:
             author_style=author_style,
             chapter_template=chapter_template,
             character_cards=character_cards,
+            recent_duplicate_text=dup_text,
         )
         system_logger.info(
             f"[AI重新生成] 请求输入统计: 记忆体={len(memory_body)}字符 | 概要={len(summary or '')}字 "
             f"| 锚点={len(last_ending or '')}字 | 提示词总长={len(prompt)}字符")
 
         # ===== 5. 调用 AI 生成（只调用一次，不重试不扩写）+ 后处理截断 =====
-        # min_acceptable 仅用于概要边界截断后的字数判断（生成多少就是多少，不做补齐）
-        min_acceptable = max(int(word_count * 0.8), 800)
         # max_tokens 覆盖目标上限（4000字×4=16000 token），排除 max_tokens 不足导致的提前截断
         gen_max_tokens = max(int(word_count * gen_max_tokens_multiplier()), gen_max_tokens_min())
         generated_text, err = await ChapterService._call_generation_api(
@@ -3106,14 +3100,10 @@ class ChapterService:
             return fail(f"AI重新生成失败: {err}", code=500)
         system_logger.info(f"[AI重新生成] max_tokens={gen_max_tokens} 目标字数={word_count}")
 
+        # 概要边界截断（同 generate_with_ai：直接采用截断结果，_trim_to_summary_boundary 内部
+        # 已有"残留≤500字视为自然收尾保留全文"保护，不再因截断后字数少而放行概要外超纲内容）
         if summary:
-            trimmed = ChapterService._trim_to_summary_boundary(generated_text, summary)
-            # 截断后字数骤降：说明落点匹配失败或后文是有效内容，保留完整生成文本避免字数缩水
-            if len(trimmed) < min_acceptable:
-                system_logger.warning(
-                    f"[AI重新生成] 截断后字数不足({len(trimmed)}字<{min_acceptable})，保留完整生成文本")
-            else:
-                generated_text = trimmed
+            generated_text = ChapterService._trim_to_summary_boundary(generated_text, summary)
         # 超长上限截断（目标字数 → 最多约 hard_cap_ratio 倍），避免生成超长；
         # 上限放宽到 hard_cap_ratio 倍且不低于 +hard_cap_min_extra，并按段落/句号边界截断，避免句中硬切导致结尾残缺
         hard_cap = max(int(word_count * gen_hard_cap_ratio()), word_count + gen_hard_cap_min_extra())
@@ -3273,13 +3263,13 @@ class ChapterService:
                         "Content-Type": "application/json"
                     },
                     json={
-                    "model": deepseek_long_model(),
-                    "messages": [
-                        {"role": "system", "content": GENERATE_SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt + "\n\n" + GENERATION_FRAMEWORK + "\n\n" + HUMAN_EMOTION_GUIDE + "\n\n" + COGNITION_BOUNDARY_GUIDE + "\n\n" + SELF_CHECK_LIST}
-                    ],
-                    "thinking": {"type": "disabled"},
-                    "max_tokens": word_count * 4,
+                        "model": deepseek_long_model(),
+                        "messages": [
+                            {"role": "system", "content": EXPANDED_SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt + "\n\n" + SELF_CHECK_LIST}
+                        ],
+                        "thinking": {"type": "disabled"},
+                        "max_tokens": word_count * 4,
                         "temperature": 0.85,
                         "top_p": 0.92,
                         "frequency_penalty": 0.3,
@@ -3314,6 +3304,12 @@ class ChapterService:
 
                 # 更新数据库字数
                 ChapterDAO.update(db, chapter, word_count=len(new_content))
+
+                # 清理单章正文缓存，确保章节编辑/列表读取到续写后的最新内容
+                rr = _redis()
+                if rr:
+                    rr.delete(f"chapter:content:{chapter_unique_id}")
+                    rr.delete_pattern(f"chapters:novel:{chapter.novel_unique_id}:*")
 
                 await ChapterService._refresh_memory_after_generate(
                     chapter.novel_unique_id, db, new_content, chapter.chapter_name,
@@ -3661,6 +3657,7 @@ class ChapterService:
         if r:
             try:
                 r.delete_pattern("chapters:*")
+                r.delete_pattern("chapter:content:*")
                 r.delete_pattern("interactions:*")
             except Exception:
                 pass
@@ -3747,6 +3744,7 @@ class ChapterService:
         r3 = _redis()
         if r3:
             r3.delete_pattern(f"chapters:*")
+            r3.delete_pattern("chapter:content:*")
         return success(None, "章节更新成功")
 
     @staticmethod
@@ -3793,6 +3791,7 @@ class ChapterService:
         r4 = _redis()
         if r4:
             r4.delete_pattern("chapters:*")
+            r4.delete_pattern("chapter:content:*")
             r4.delete_pattern("interactions:*")
 
         # 4. 从 Redis记忆体 记忆体中定点删除该章节条目

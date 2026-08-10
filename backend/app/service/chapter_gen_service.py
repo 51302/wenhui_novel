@@ -13,10 +13,8 @@ import re
 
 from app.dao.chapter_dao import ChapterDAO
 from app.prompts.chapter_prompts import (
-    GENERATE_SYSTEM_PROMPT, GENERATE_CREATIVE_DIRECTION,
-    GENERATION_FRAMEWORK, SELF_CHECK_LIST, CHARACTER_NAMING_GUIDE,
-    HUMAN_EMOTION_GUIDE, COMBAT_WRITING_GUIDE, MEME_STYLE_GUIDE,
-    COGNITION_BOUNDARY_GUIDE, VULGAR_DIALOGUE_GUIDE,
+    GENERATE_CREATIVE_DIRECTION,
+    SELF_CHECK_LIST, COMBAT_WRITING_GUIDE,
     get_author_style_guide, get_chapter_template_guide,
 )
 from app.utils.logger import system_logger
@@ -74,6 +72,23 @@ class ChapterGenService:
         """按章节号排序（支持阿拉伯/中文数字），解析失败返回 9999"""
         n = ChapterGenService.chapter_no(ch)
         return n if n > 0 else 9999
+
+    @staticmethod
+    def _estimate_event_count(chapter_summary: str) -> int:
+        """估算章节概要中的事件数量：按句末标点（。！？；）和箭头（→）切分
+
+        概要格式为"剧情发展路线"，用箭头/句号串联关键事件
+        （如："主角偷袭天道教宗→夺取镇教之宝→被追杀→坠崖获机缘"）。
+        统计结果用于动态计算本章参考字数（事件数×500，随概要规模浮动），
+        避免概要事件少时 AI 被固定字数硬下限逼着编造新剧情。
+        """
+        if not chapter_summary:
+            return 0
+        parts = re.split(r'[。！？；;→➜\n]', chapter_summary)
+        # 过滤纯标点/纯连接词/过短片段（如"偷袭→夺宝→追杀"中2字事件也要计入）
+        parts = [p.strip() for p in parts if len(p.strip()) >= 2
+                 and not re.match(r'^[的了着呢吗啊吧嗄是还有在就便亦且~]*$', p.strip())]
+        return len(parts)
 
     # ==================== 1. 三源章节数量统计 ====================
 
@@ -239,16 +254,10 @@ class ChapterGenService:
             if full:
                 ending = full[-500:]
                 system_logger.info(f"[章节生成] 续写锚点：上一章末尾500字（开头: {ending[:80]}...）")
-            # 取最近 3 章用于去重检测
-            recent = published[-3:] if len(published) >= 3 else published
-            parts = []
-            for ch in recent:
-                content = ChapterService._read_chapter_content_from_file(
-                    novel_unique_id, ch.chapter_name, ch.chapter_unique_id
-                )
-                if content:
-                    parts.append(content)
-            dup_text = "\n".join(parts)
+            # 取上一章末尾 200 字用于跨章查重（跨章重复集中在结尾收束句；
+            # 注入过长会让 AI 注意力分散、把查重文本当"风格样本"照抄）
+            if full:
+                dup_text = full[-200:]
         return ending, dup_text, last_name
 
     # ==================== 5. Prompt 组装（提示词工程内容固定，不允许变更） ====================
@@ -257,7 +266,8 @@ class ChapterGenService:
     def build_prompt(*, chapter_name: str, memory_body: str, settings_text: str,
                      last_chapter_ending: str, chapter_summary: str, word_count: int,
                      include_combat_meme: bool = True, author_style: str = "",
-                     chapter_template: str = "", character_cards: list = None) -> str:
+                     chapter_template: str = "", character_cards: list = None,
+                     recent_duplicate_text: str = "") -> str:
         """组装章节生成 Prompt（提示词工程内容不变）
 
         :param include_combat_meme: 是否包含 战斗写作指南 + 网梗风格指南
@@ -274,6 +284,7 @@ class ChapterGenService:
         # 渐进式结果，刚开头前几章几乎没有人设信息，导致主角言行像路人。
         # 这里把 novels.characters 原始设定（用户填的 personality/intro/台词）在 L1 铁律之后立刻注入，
         # 用高权重约束主角人设、台词风格、底线。
+        # 字数服从概要：目标字数仅作参考，清单事件写完即停笔，禁止为凑字数编新剧情
         protagonist_guide = ""
         side_roles_guide = ""
         if isinstance(character_cards, list) and character_cards:
@@ -359,53 +370,54 @@ class ChapterGenService:
                     "大段背景揭秘/前史讲述/动机说明必须交给设定里「清醒、健谈、有动机讲述」的角色，不得塞给非人角色。"
                 )
 
-        # 章节概要 → 事件清单（给 AI 的硬边界）
-        summary_narrative = ""
-        if chapter_summary:
-            sentences = re.split(r'[，,。.！!？?；;]', chapter_summary)
-            sentences = [s.strip() for s in sentences if len(s.strip()) > 3]
-            if sentences:
-                summary_narrative = "；".join(sentences) + "。"
-
         prompt = GENERATE_CREATIVE_DIRECTION.format(
             memory_body=memory_body or "暂无已写章节记忆体",
             truth_context="无",
             settings_text=settings_text or "未设定",
             context_summary=f"上一章末尾（从这里接着写）：\n{last_chapter_ending}" if last_chapter_ending else "这是第一章，无需承接",
             event_checklist=chapter_summary or "根据前文自然推进剧情",
-            summary_narrative=summary_narrative or "根据前文自然推进剧情",
         )
         # 主角人设硬约束：紧贴「最高优先级」之后注入（权重最高）
         if protagonist_guide:
             prompt += "\n\n" + protagonist_guide
         if side_roles_guide:
             prompt += "\n\n" + side_roles_guide
+        # 跨章查重铁律：紧跟人设硬约束注入（高权重区域），只注入上一章结尾，
+        # 明确点名禁止复用的句子，防止 AI 把查重文本当"风格样本"照抄
+        # （历史问题：注入最近3章各400字过长 + 位置靠后，AI 无视禁令，导致
+        #  "左肋的断骨还在疼。右手的金线疤还在发亮。他继续走。"连续3章一字不差）
+        if recent_duplicate_text:
+            prompt += (
+                "\n\n🔴 跨章查重铁律（最高优先级，违反即整章作废）：\n"
+                "1. 以下文本是【上一章结尾】，本章【结尾收束句】禁止出现其中任何句子的原句或同义变体"
+                "（换词重写也算违规）。\n"
+                "2. 禁止连续两章以『身体状态+动作+继续走/离开』式三连句收尾"
+                "（如'XX还在疼。XX还在亮。他继续走。'），收尾句式必须与前章完全不同。\n"
+                "3. 本章与上一章的任何描写重复不得超过一处，同一意象/动作/比喻全章≤2次且必须有状态变化。\n"
+                "【上一章结尾（禁止复用）】：\n" + recent_duplicate_text
+            )
         # 提示词工程组装：约束分层/冲突裁决/写作流程）→ 各风格指南 → 字数要求 → 自查清单
-        # 开头先强调字数目标（首尾双强调，防止模型过早停笔）
-        # 字数区间=目标~目标*1.6（默认2500 → 2500~4000字），后端硬截断上限更宽（1.8倍+2000，默认4500字），
-        # 让模型在区间内自然收尾，避免写超后被后端截断破坏结尾
-        min_words = word_count
+        # 字数服从概要：目标字数仅作参考上限，清单事件写完即停笔，禁止为凑字数编新剧情
+        # （修复历史问题：原"必须写X~Y字"硬下限 + "字数未达标补充内容"暗示，导致AI在概要事件少时
+        #   突破清单边界编造新剧情凑字数。现改为字数服从概要边界，事件少则少写）
+        # 动态字数参考（随概要规模浮动）：目标字数 = min(用户目标字数, 概要事件数×500)，
+        # 事件少则参考字数自动下浮（如3个事件→1500字，而非硬逼4000字），
+        # 避免"字数硬下限 > 概要可写量"时 AI 突破概要边界编造新剧情凑字数
+        target_words = word_count
+        event_count = ChapterGenService._estimate_event_count(chapter_summary)
+        if event_count > 0:
+            # 每个事件约展开400-600字，按中值500字/事件估算本章可写量
+            event_based = event_count * 500
+            if event_based < target_words:
+                target_words = event_based
+                system_logger.info(
+                    f"[章节生成] 概要事件数={event_count}，参考字数由 {word_count} 下浮为 {target_words}"
+                )
         max_words = int(word_count * 1.6)
-        prompt += f"\n\n🔴 本章目标字数：{min_words}~{max_words} 字。"
-        # 长文衰减提醒锚点：反 AI 规则在 5000 字后会被模型稀释，此处强制提醒
-        # 作用时机：模型读到字数要求时正处于写作起点，提醒会随上下文持续生效到中后段
-        prompt += (
-            "\n\n🔴【长文防衰减提醒】写到 60% 篇幅后回头自查，违反任一项立即调整后续写法："
-            "\n- 比喻密度：全章「像X/跟X似的/仿佛X」不超过 3 处，同一段落不超过 1 处，句式必须错开"
-            "\n- 五感扫描：单个场景禁止视觉+听觉+嗅觉+触觉+味觉全覆盖，只聚焦 1-2 个感官，其余不写"
-            "\n- 推理枚举：人物推理只给结论+1 依据，禁止「结论+反例①②③」枚举式展开"
-            "\n- 判断句排比：禁止连续段落以「是X。」独立成句开头，制造冷峻模板感"
-            "\n- 场景扫描：禁止把房间/空间每个角落都描写一遍，只给 1-2 个关键细节+体感"
-        )
-        prompt += "\n\n" + GENERATION_FRAMEWORK
-        # 人物具名规则紧贴 L1 生死线：新出场角色必须有名有姓，组织/事件必须带出人名
-        prompt += "\n\n" + CHARACTER_NAMING_GUIDE
-        # 人味与情感指南（合并原 情感/降AI味/真人感 三份，去重精简后仍保留全部规则点）
-        prompt += "\n\n" + HUMAN_EMOTION_GUIDE
+        prompt += f"\n\n🔴 本章字数参考：约 {target_words} 字（上限 {max_words} 字，概要事件少则少写、事件多则多写，不是硬性下限）。"
+        # 固定指南（GENERATION_FRAMEWORK/NAMING/EMOTION/VULGAR/COGNITION/长文防衰减）已移入 system message 以提升前缀缓存命中率
         if include_combat_meme:
             prompt += "\n\n" + COMBAT_WRITING_GUIDE
-        prompt += "\n\n" + VULGAR_DIALOGUE_GUIDE
-        prompt += "\n\n" + COGNITION_BOUNDARY_GUIDE
         # 作家风格模板（近因效应：紧贴字数硬性要求之前注入，让"本章技法"离正文指令最近）
         # 支持逗号分隔多选：如 "chendong,xiaohei" 逐个注入，多个风格可叠加
         for style_id in [s.strip() for s in (author_style or "").split(",") if s.strip()]:
@@ -419,9 +431,19 @@ class ChapterGenService:
             if template_guide:
                 prompt += "\n\n" + template_guide
 
-        # 追加字数指令到 prompt 末尾（硬性要求）：目标 word_count ~ word_count*1.6 字
-        # （默认2500 → 2500~4000字：下限=目标字数，保证重试阈值 word_count 之上还有余量）
-        prompt += f"\n\n🔴 字数硬性要求：本章必须写 {min_words}~{max_words} 字。每个事件至少展开400-600字的生动描写！开头第一句就是正文，事件全部写完但字数未达标时，可在最后一个事件中补充新的细节、延长对话、增加环境或心理描写来充实篇幅。【绝对禁止复述、换词重写已经写过的内容！】每段必须有新信息，不得与前面任何段落内容雷同或语义重复——平台会检测「相邻或跨段大段雷同/复述」并直接驳回签约。绝对禁止凑字数或水文字，但每个事件必须写饱写透！"
+        # 追加字数+边界铁律到 prompt 末尾（最高优先级，近因效应）
+        # 核心修复：字数服从概要边界。清单事件写完即停笔，禁止为凑字数编新剧情
+        prompt += (
+            f"\n\n🔴 字数与边界铁律（最高优先级，违反即整章作废）：\n"
+            f"1. 概要=唯一边界：清单事件全写完即可停笔。清单外的新事件/新剧情/新对话/新场景一律不写。\n"
+            f"2. 字数是参考值不是硬下限：写完清单事件后字数不足 {target_words} 字，立即用1-2句话自然收尾停笔。"
+            f"禁止为凑字数编造新剧情、推进新事件、延长对话、新增场景。\n"
+            f"3. 每个事件展开400-600字（环境+动作+对话+内心+感官+情绪六要素交织），把清单事件写饱写透即可。\n"
+            f"4. 只有在「清单事件尚未写完」时才允许继续展开；清单事件全部写完=本章结束，立即收尾。\n"
+            f"开头第一句就是正文。【绝对禁止复述、换词重写已经写过的内容！】每段必须有新信息，"
+            f"不得与前面任何段落内容雷同或语义重复——平台会检测「相邻或跨段大段雷同/复述」并直接驳回签约。"
+            f"绝对禁止凑字数或水文字。"
+        )
         prompt += f"\n章节标题：「{chapter_name}」"
         # 自查清单放最末尾（近因效应）：停笔前逐项核对
         prompt += "\n\n" + SELF_CHECK_LIST
