@@ -59,11 +59,11 @@
         <form @submit.prevent="handleLogin">
           <div class="input-group">
             <span class="input-icon">👤</span>
-            <input v-model="form.username" placeholder="用户名" required />
+            <input v-model="form.username" type="text" placeholder="用户名" autocomplete="username" required />
           </div>
           <div class="input-group">
             <span class="input-icon">🔒</span>
-            <input v-model="form.password" type="password" placeholder="密码" required />
+            <input v-model="form.password" type="password" placeholder="密码" autocomplete="current-password" required />
           </div>
 
           <!-- 滑块验证码 -->
