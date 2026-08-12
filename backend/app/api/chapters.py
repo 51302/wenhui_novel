@@ -266,31 +266,34 @@ class RegenerateBody(BaseModel):
 
 
 @router.post("/regenerate/{chapter_unique_id}")
-async def regenerate_chapter(
+def regenerate_chapter(
     chapter_unique_id: str,
     body: RegenerateBody,
     db: Session = Depends(get_db),
     current_user: dict = Depends(check_generate_permission),
     _svip: dict = Depends(require_svip),
 ):
-    """重新生成指定章节（同步：直接调用 AI 并返回内容，前端不需要轮询）
+    """重新生成指定章节（异步：提交队列后返回 task_id，前端轮询 /chapters/tasks/{task_id}）
 
     流程：当前章节号 cur_num → 上一章 = cur_num-1（上一章末尾500字）
     + 章节概要 + 按需检索记忆（提示词工程内容不变）→ 重新生成
+    异步化原因：同步请求耗时 2~5 分钟，经公网隧道/浏览器会被掐断（499/Network Error）
     """
-    from app.service.chapter_service import ChapterService
-    result = await ChapterService.regenerate_with_ai(
-        db, chapter_unique_id, current_user["user_id"],
-        word_count=body.word_count, chapter_summary=body.chapter_summary,
-        author_style=body.author_style or "",
-        chapter_template=body.chapter_template or "",
-    )
-    if result.get("状态码") == 200:
-        ch = result.get("数据", {})
-        system_logger.info(f"AI重新生成成功: {ch.get('chapter_name','')} ({ch.get('word_count',0)}字) ID={chapter_unique_id}")
-    else:
-        system_logger.warning(f"AI重新生成失败: ID={chapter_unique_id} → {result.get('消息', '')}")
-    return result
+    task_id = TaskQueue.push("ai:regenerate", {
+        "chapter_unique_id": chapter_unique_id,
+        "user_id": current_user["user_id"],
+        "word_count": body.word_count,
+        "chapter_summary": body.chapter_summary,
+        "author_style": body.author_style or "",
+        "chapter_template": body.chapter_template or "",
+    }, ttl=1800)
+    if not task_id:
+        return fail("系统繁忙，请稍后重试", code=503)
+    system_logger.info(f"[队列] 提交AI重新生成任务: {chapter_unique_id} → task_id={task_id}")
+    return success({
+        "task_id": task_id,
+        "queue_name": "ai:regenerate",
+    }, "AI重新生成任务已提交，请稍后查询结果")
 
 
 @router.post("/continue/{chapter_unique_id}")

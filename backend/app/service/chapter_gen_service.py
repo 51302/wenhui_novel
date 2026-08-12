@@ -11,10 +11,11 @@
 import os
 import re
 
+from app.config import gen_word_count_ratio
 from app.dao.chapter_dao import ChapterDAO
 from app.prompts.chapter_prompts import (
     GENERATE_CREATIVE_DIRECTION,
-    SELF_CHECK_LIST, COMBAT_WRITING_GUIDE,
+    SELF_CHECK_LIST,
     get_author_style_guide, get_chapter_template_guide,
 )
 from app.utils.logger import system_logger
@@ -93,6 +94,23 @@ class ChapterGenService:
     # ==================== 1. 三源章节数量统计 ====================
 
     @staticmethod
+    def _txt_file_id(fname: str) -> str:
+        """从章节 TXT 文件名提取唯一 ID（_<32位hex>.txt），提取失败返回空串"""
+        m = re.search(r'_([0-9a-f]{32})\.txt$', fname)
+        return m.group(1) if m else ""
+
+    @staticmethod
+    def _dedupe_chapters(items, num_fn, id_fn) -> list:
+        """章节号去重收集：逐项解析章节号（num_fn），相同章节号只保留第一条
+        （id 取 id_fn 结果），按章节号升序。返回 [{"num": 章节号, "id": 唯一ID}, ...]"""
+        num_map = {}
+        for item in items:
+            n = num_fn(item)
+            if n > 0:
+                num_map.setdefault(n, {"num": n, "id": id_fn(item)})
+        return [num_map[k] for k in sorted(num_map)]
+
+    @staticmethod
     def count_sources(novel_unique_id: str, db) -> dict:
         """统计 MySQL / TXT / Redis 三个数据源的章节号（第一章、第二章…）
 
@@ -105,17 +123,13 @@ class ChapterGenService:
         mysql_info = {"count": 0, "chapters": []}
         try:
             all_chapters = ChapterDAO.get_by_novel_id(db, novel_unique_id) or []
-            num_map = {}
-            for c in all_chapters:
-                # 排除"无正文草稿"（概要规划保存的概要草稿等：未发布且字数为0），
-                # 避免纯概要草稿撑高 MySQL 数量，导致三源误判不一致、生成章节号错位
-                if not c.is_published and not (c.word_count or 0):
-                    continue
-                n = ChapterGenService.chapter_no(c)
-                if n > 0:
-                    # 章节号去重（不允许重复），保留第一条
-                    num_map.setdefault(n, {"num": n, "id": c.chapter_unique_id})
-            chapters = [num_map[k] for k in sorted(num_map)]
+            # 排除"无正文草稿"（概要规划保存的概要草稿等：未发布且字数为0），
+            # 避免纯概要草稿撑高 MySQL 数量，导致三源误判不一致、生成章节号错位
+            chapters = ChapterGenService._dedupe_chapters(
+                (c for c in all_chapters if c.is_published or (c.word_count or 0)),
+                ChapterGenService.chapter_no,
+                lambda c: c.chapter_unique_id,
+            )
             mysql_info = {"count": len(chapters), "chapters": chapters}
         except Exception as e:
             system_logger.error(f"[三源统计] MySQL 章节统计失败: {e}")
@@ -125,17 +139,12 @@ class ChapterGenService:
         novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
         if os.path.isdir(novel_dir):
             try:
-                num_map = {}
-                for f in os.listdir(novel_dir):
-                    if not f.endswith(".txt") or "设定" in f:
-                        continue
-                    n = ChapterGenService._extract_chapter_num(f)
-                    if n <= 0:
-                        continue
-                    m = re.search(r'_([0-9a-f]{32})\.txt$', f)
-                    fid = m.group(1) if m else ""
-                    num_map.setdefault(n, {"num": n, "id": fid})
-                chapters = [num_map[k] for k in sorted(num_map)]
+                files = [f for f in os.listdir(novel_dir)
+                         if f.endswith(".txt") and "设定" not in f]
+                chapters = ChapterGenService._dedupe_chapters(
+                    files, ChapterGenService._extract_chapter_num,
+                    ChapterGenService._txt_file_id,
+                )
                 txt_info = {"count": len(chapters), "chapters": chapters}
             except Exception as e:
                 system_logger.error(f"[三源统计] TXT 章节统计失败: {e}")
@@ -261,6 +270,16 @@ class ChapterGenService:
         return ending, dup_text, last_name
 
     # ==================== 5. Prompt 组装（提示词工程内容固定，不允许变更） ====================
+
+    @staticmethod
+    def _append_multi_guides(prompt: str, ids: str, getter) -> str:
+        """按逗号分隔的多个 ID（如 "chendong,xiaohei"）逐个注入对应指南，
+        ID 存在且指南非空才追加（近因效应注入位置由调用方决定）"""
+        for gid in [s.strip() for s in (ids or "").split(",") if s.strip()]:
+            guide = getter(gid)
+            if guide:
+                prompt += "\n\n" + guide
+        return prompt
 
     @staticmethod
     def build_prompt(*, chapter_name: str, memory_body: str, settings_text: str,
@@ -413,23 +432,28 @@ class ChapterGenService:
                 system_logger.info(
                     f"[章节生成] 概要事件数={event_count}，参考字数由 {word_count} 下浮为 {target_words}"
                 )
-        max_words = int(word_count * 1.6)
+        max_words = int(word_count * gen_word_count_ratio())
         prompt += f"\n\n🔴 本章字数参考：约 {target_words} 字（上限 {max_words} 字，概要事件少则少写、事件多则多写，不是硬性下限）。"
-        # 固定指南（GENERATION_FRAMEWORK/NAMING/EMOTION/VULGAR/COGNITION/长文防衰减）已移入 system message 以提升前缀缓存命中率
-        if include_combat_meme:
-            prompt += "\n\n" + COMBAT_WRITING_GUIDE
+        # 长文衰减提醒锚点：反 AI 规则在 5000 字后会被模型稀释，此处强制提醒
+        # 作用时机：模型读到字数要求时正处于写作起点，提醒会随上下文持续生效到中后段
+        prompt += (
+            "\n\n🔴【长文防衰减提醒】写到 60% 篇幅后回头自查，违反任一项立即调整后续写法："
+            "\n- 比喻密度：全章「像X/跟X似的/仿佛X」不超过 3 处，同一段落不超过 1 处，句式必须错开"
+            "\n- 五感扫描：单个场景禁止视觉+听觉+嗅觉+触觉+味觉全覆盖，只聚焦 1-2 个感官，其余不写"
+            "\n- 推理枚举：人物推理只给结论+1 依据，禁止「结论+反例①②③」枚举式展开"
+            "\n- 判断句排比：禁止连续段落以「是X。」独立成句开头，制造冷峻模板感"
+            "\n- 场景扫描：禁止把房间/空间每个角落都描写一遍，只给 1-2 个关键细节+体感"
+        )
+        # 固定写作指南（GENERATION_FRAMEWORK / 人物具名 / 人味情感 / 认知边界）
+        # 已并入 system prompt 恒定核心，战斗/静态/网感按需指南按概要推荐注入
+        # （build_generate_system_prompt），不再注入 user 正文——避免双份注入浪费
+        # token，且 system 前缀恒定可稳定命中 DeepSeek 前缀缓存
         # 作家风格模板（近因效应：紧贴字数硬性要求之前注入，让"本章技法"离正文指令最近）
         # 支持逗号分隔多选：如 "chendong,xiaohei" 逐个注入，多个风格可叠加
-        for style_id in [s.strip() for s in (author_style or "").split(",") if s.strip()]:
-            author_guide = get_author_style_guide(style_id)
-            if author_guide:
-                prompt += "\n\n" + author_guide
+        prompt = ChapterGenService._append_multi_guides(prompt, author_style, get_author_style_guide)
         # 章节写作模板（场景/情绪/字数结构/语言风格，与作家风格可叠加使用）
         # 支持逗号分隔多选：如 "crush_fight,bloody_fight" 逐个注入
-        for template_id in [t.strip() for t in (chapter_template or "").split(",") if t.strip()]:
-            template_guide = get_chapter_template_guide(template_id)
-            if template_guide:
-                prompt += "\n\n" + template_guide
+        prompt = ChapterGenService._append_multi_guides(prompt, chapter_template, get_chapter_template_guide)
 
         # 追加字数+边界铁律到 prompt 末尾（最高优先级，近因效应）
         # 核心修复：字数服从概要边界。清单事件写完即停笔，禁止为凑字数编新剧情

@@ -87,8 +87,8 @@ def deepseek_long_model() -> str:
     """获取 DeepSeek 长文本模型名称（章节正文生成专用）
 
     flash 模型生成的句子过于平滑，AI 检测工具（困惑度+突发性统计）容易标记；
-    正文生成改用 deepseek-v4-pro，对"人味"规则执行更彻底、AI 味更淡。
-    其余轻量功能（概要/提取/续写）仍用 deepseek.model。
+    正文生成/续写/重新生成改用 deepseek-v4-pro，对"人味"规则执行更彻底、AI 味更淡。
+    其余轻量功能（记忆体提取/剧本/概要）仍用 deepseek.model。
     :return: 长文本模型名称，默认 deepseek-v4-pro
     """
     return get("deepseek.model_long", "deepseek-v4-pro")

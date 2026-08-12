@@ -14,17 +14,18 @@ from app.config import gen_max_tokens_multiplier, gen_max_tokens_min, gen_hard_c
 from app.utils.logger import system_logger
 from app.utils.task_queue import run_async
 from app.service.chapter_gen_service import ChapterGenService
-from app.service.text_cleaner import clean_generated_text, check_ai_features, collect_feature_sentences
+from app.service.text_cleaner import clean_generated_text
 from app.prompts.chapter_prompts import (
     LIGHT_EXTRACT_PROMPT, FULL_EXTRACT_PROMPT,
     MEMORY_DIMENSION_DEFS, MEMORY_EXTRACT_PROMPT, MEMORY_INCREMENTAL_PROMPT,
     get_memory_category_names, get_frontend_to_dimension_map,
     match_ai_label_to_dimension, get_dimension_dedup_map,
-    HUMAN_EMOTION_GUIDE, COMBAT_WRITING_GUIDE,
-    COGNITION_BOUNDARY_GUIDE,
-    GENERATE_SYSTEM_PROMPT, EXPANDED_SYSTEM_PROMPT, GENERATE_CREATIVE_DIRECTION,
-    GENERATION_FRAMEWORK, SELF_CHECK_LIST,
+    SELF_CHECK_LIST,
+    build_generate_system_prompt,
     OUTLINE_SYSTEM_PROMPT, OUTLINE_USER_PROMPT_TEMPLATE,
+    EXTRACT_SYSTEM_PROMPT, EXTRACT_FULL_SYSTEM_PROMPT,
+    EXTRACT_FULL_STRICT_SYSTEM_PROMPT, EXTRACT_INCREMENTAL_SYSTEM_PROMPT,
+    CONTINUE_CHAOT_RULES, CONTINUE_PROMPT,
 )
 from app.prompts.screenplay_prompts import (
     SCREENPLAY_SYSTEM_PROMPT, GENERATE_SCREENPLAY_DIRECTION,
@@ -251,21 +252,6 @@ class ChapterService:
         return result
 
     @staticmethod
-    def _event_chapter_num(line: str) -> int:
-        """从关键事件条目解析所属章节号：
-        - [第31章] 1. xxx → 31
-        - [第三十一章 名称] 1. xxx → 31（兼容 _pipe_to_natural 增量格式）
-        - 无前缀/无法解析 → -1（未知章节，不参与章节筛选）
-        """
-        m = re.match(r'\[第\s*([\d零一二三四五六七八九十百]+)\s*章', line)
-        if not m:
-            return -1
-        num_str = m.group(1)
-        if num_str.isdigit():
-            return int(num_str)
-        return ChapterService._cn_num_to_int(num_str)
-
-    @staticmethod
     def _chapter_num_from_name(chapter_name: str):
         """从章节名解析章节号（支持阿拉伯/中文数字），失败返回 None"""
         if not chapter_name:
@@ -273,25 +259,20 @@ class ChapterService:
         m = re.match(r'第\s*([\d零一二三四五六七八九十百]+)\s*章', chapter_name)
         if not m:
             return None
-        num_str = m.group(1)
-        if num_str.isdigit():
-            return int(num_str)
-        return ChapterService._cn_num_to_int(num_str)
+        return ChapterService._cn_num_str_to_int(m.group(1))
 
     @staticmethod
     def _retrieve_relevant_memory(memory_body: str, summary: str, max_chars: int = None,
                                   current_chapter_num: int = None) -> str:
         """按需检索注入：从全量记忆体中检索与本章概要相关的条目注入。
-        - 实体命中：从人物/组织/功法维度提取实体名，在概要中命中的实体
-          → 章节级整章抽取：定位实体出现过的章节（限当前章节前 10 章窗口，防主角
-          高频扩散），该章所有维度条目整章取来；更早章节的关键事件由行级补全兜底
-        - 最近连续：关键事件固定带当前章节前 3 章的事件（按章节号筛选，避免重新生成中段
-          章节时取到全书末尾；条目无章节号时回退全量末尾 3 行）
-        - 核心兜底：命中失败时注入主要人物 top-15 状态 + 时间线
-        - 设定常驻：作品设定全量保留
-        注：max_chars 默认 None —— 不截断。按需检索已限定为相关实体/最近章节条目，
-            注入量可控（远小于历史全量注入）。此前默认 10000 是为避免 prompt > 24k
-            字符时空回复概率上升；若实体命中多导致注入超长、空正文回升，可重新收紧。
+        - 实体命中：从人物/组织/功法/物品/地点维度提取实体名，概要中出现的实体
+          → 全维度行级精确匹配：记忆体各维度（人物/组织/功法/事件/时间线/地点/
+          伏笔/物品/实力）中，凡条目行内包含命中实体名的行全部注入。
+          做到"概要提到谁/什么，就取谁的记忆"，百分百对应章节概要
+        - 兜底：概要无实体可匹配时，注入主要人物 top-15 + 时间线
+        - 设定常驻：作品设定全量保留（激进档下做行级去重压缩）
+        注：max_chars 默认 None —— 不截断。按需检索已限定为概要相关条目，
+            注入量可控（远小于历史全量注入）。
         """
         if not memory_body:
             return ""
@@ -307,15 +288,27 @@ class ChapterService:
             lines = [ln.strip() for ln in sec.split("\n")[1:] if ln.strip()]
             dims[name] = lines
 
-        # 1. 实体名提取（行首字段，去掉 [第X章] 前缀）
+        # 1. 实体名提取（行首字段，去掉 [第X章 标题] 前缀）
+        #    注意章号可能是汉字数字（第一章/第二章…），必须用 [^\]]* 兼容标题；
+        #    提取维度覆盖"行首是名称"的人物/组织/功法/物品/地点，保证概要提到
+        #    的物与地点也能精确命中
         entity_names = set()
-        for dim in ("人物", "组织势力", "功法技能法宝"):
+        for dim in ("人物", "组织势力", "功法技能法宝", "关键物品", "地点"):
             for line in dims.get(dim, []):
-                name = re.sub(r'^\[第\d+章\]\s*', '', line)
-                name = re.split(r'[，,|:：\s]', name, 1)[0].strip()
+                name = re.sub(r'^\[[^\]]*\]\s*', '', line)
+                name = re.split(r'[，,|:：/。\s]', name, 1)[0].strip()
+                name = re.sub(r'[（(].*$', '', name).strip()  # 去括号修饰（筛选场（二级））
                 name = name.strip('"“”《》')
                 if name and 1 < len(name) <= 20:
                     entity_names.add(name)
+        # 补充：伏笔/事件/时间线行内引号、书名号包裹的专名（如'神明'、《九转元功》），
+        # 让概要提到的伏笔概念也能精确命中对应条目
+        for dim in ("伏笔悬念", "关键事件", "时间线"):
+            for line in dims.get(dim, []):
+                for m in re.finditer(r"['\"“”‘’《》]([^'\"“”‘’《》]{2,8})['\"“”‘’《》]", line):
+                    name = m.group(1).strip()
+                    if name and 1 < len(name) <= 20:
+                        entity_names.add(name)
 
         # 2. 概要命中实体
         hit = {n for n in entity_names if n and n in (summary or "")}
@@ -323,7 +316,7 @@ class ChapterService:
         # 3. 组装注入
         out, used = [], 0
 
-        def _add(title, lines, truncate=False):
+        def _add(title, lines, truncate=False, from_end=False):
             nonlocal used
             if not lines:
                 return
@@ -332,61 +325,64 @@ class ChapterService:
                 out.append(block)
                 used += len(block)
             elif truncate and len(lines) > 1:
-                # 放不下且允许截断：从最旧行淘汰，保留最新，直到能放下
+                # 放不下且允许截断：逐行淘汰直到能放下。
+                # from_end=False（默认）：从最旧行淘汰，保留最新（按章节序的块）；
+                # from_end=True：从末尾淘汰（命中路径下末尾是低相关行），保留前面的高相关行
                 lines = list(lines)
                 while lines and (max_chars is None or used + len(f"【{title}】\n" + "\n".join(lines)) > max_chars):
-                    lines.pop(0)
+                    if from_end:
+                        lines.pop()
+                    else:
+                        lines.pop(0)
                 if lines:
                     out.append(f"【{title}】\n" + "\n".join(lines))
                     used += len(f"【{title}】\n" + "\n".join(lines))
 
         # 3.1 作品设定常驻（体积小、优先级最高）
-        _add("作品设定", dims.get("作品设定", []))
+        #     激进档压缩：行级去重（作品简介与开篇描述完全重复）+ 去掉空字段行
+        settings = dims.get("作品设定", [])
+        settings = [ln for ln in settings
+                    if not re.match(r'^[\w\u4e00-\u9fa5]{1,12}[：:]\s*$', ln)]
+        seen, dedup = set(), []
+        for ln in settings:
+            if ln not in seen:
+                seen.add(ln)
+                dedup.append(ln)
+        _add("作品设定", dedup)
 
-        # 3.2 最近3章事件（剧情连续性，强制注入；按当前章节号取前3章）
-        events = dims.get("关键事件", [])
-        recent_events = []
-        if events:
-            if current_chapter_num:
-                recent_events = [ln for ln in events
-                                 if (num := ChapterService._event_chapter_num(ln)) != -1
-                                 and current_chapter_num - 3 < num <= current_chapter_num]
-            if not recent_events:
-                recent_events = events[-3:]
-            _add("关键事件(最近3章)", recent_events, truncate=True)
-
-        # 3.3 命中实体：章节级整章抽取（实体所在章节，该章所有维度条目整章取来）
-        #     窗口限制：仅取当前章节前 10 章内出现的命中章节——主角/高频实体几乎全书
-        #     出现，若不加窗口会扩散成全量注入；更早章节的重要事件由 3.4 行级补全兜底
-        #     无章节号前缀的条目（增量提取"本章新增"格式）全量保留，防止漏掉
+        # 3.2 概要命中实体 → 全维度行级精确匹配（按需检索核心）
+        #     概要提到的人/物/事/时间/地点/组织/功法/伏笔，在记忆体各维度中按
+        #     "条目行内含实体名"精确匹配注入，做到"概要提谁，就取谁的记忆"，
+        #     不再无差别整章抽取，也不强制携带最近3章（命中即说明概要相关）。
+        #     命中行按"命中实体数"降序逐行注入：同时含多个概要实体的行最贴合
+        #     概要，绝对优先占用预算；主角高频导致命中行多时，最贴合的行先保住，
+        #     各维度的高相关条目都能进来，而不是被某一维度堆量行挤掉
         if hit:
-            hit_chapters = set()
-            for ln_list in dims.values():
-                for ln in ln_list:
-                    if any(n in ln for n in hit):
-                        num = ChapterService._event_chapter_num(ln)
-                        if num != -1:
-                            hit_chapters.add(num)
-            if current_chapter_num:
-                hit_chapters = {n for n in hit_chapters
-                                if current_chapter_num - 10 < n <= current_chapter_num}
-            for dim in ("人物", "组织势力", "功法技能法宝", "关键物品", "伏笔悬念", "实力变化", "地点"):
-                lines = [ln for ln in dims.get(dim, [])
-                         if ChapterService._event_chapter_num(ln) in hit_chapters
-                         or ChapterService._event_chapter_num(ln) == -1]
-                _add(dim, lines, truncate=True)
+            dim_order = {d: i for i, d in enumerate(
+                ("人物", "组织势力", "功法技能法宝", "关键事件", "时间线",
+                 "地点", "伏笔悬念", "关键物品", "实力变化"))}
+            cands = []  # (dim, line, hit_count)
+            for dim in dim_order:
+                for ln in dims.get(dim, []):
+                    hc = sum(1 for n in hit if n in ln)
+                    if hc:
+                        cands.append((dim, ln, hc))
+            cands.sort(key=lambda t: (-t[2], dim_order[t[0]]))
+            cur_dim, cur_lines = None, []
+            def flush():
+                nonlocal cur_dim, cur_lines
+                if cur_lines:
+                    _add(cur_dim, cur_lines, truncate=True, from_end=True)
+                cur_dim, cur_lines = None, []
+            for dim, ln, hc in cands:
+                if dim != cur_dim:
+                    flush()
+                    cur_dim = dim
+                cur_lines.append(ln)
+            flush()
         else:
-            # 命中失败兜底：主要人物 top-15（按条目长度，保留状态信息多的）
+            # 兜底（概要无实体可精确匹配）：主要人物 top-15 + 时间线（全局脉络）
             _add("人物", sorted(dims.get("人物", []), key=len, reverse=True)[:15])
-
-        # 3.4 命中实体的历史事件（补充上下文；排除最近3章已注入的）
-        if events and hit:
-            recent_set = set(recent_events)
-            rel = [ln for ln in events if any(n in ln for n in hit) and ln not in recent_set]
-            _add("关键事件(相关章节)", rel, truncate=True)
-
-        # 3.5 兜底：时间线（全局脉络）
-        if not hit:
             _add("时间线", dims.get("时间线", []))
 
         result = "\n".join(out)
@@ -446,7 +442,7 @@ class ChapterService:
                 json={
                     "model": deepseek_model(),
                     "messages": [
-                        {"role": "system", "content": "你是一位资深小说编辑，擅长从文本中提取结构化信息。"},
+                        {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
                         {"role": "user", "content": full_prompt}
                     ],
                     "thinking": {"type": "disabled"},
@@ -893,7 +889,7 @@ class ChapterService:
                     f"{deepseek_base_url()}/v1/chat/completions",
                     headers={"Authorization": f"Bearer {deepseek_api_key()}", "Content-Type": "application/json"},
                     json={"model": deepseek_model(), "messages": [
-                        {"role": "system", "content": "你是一位资深小说编辑，擅长从文本中提取结构化信息，输出详尽完整的章节分析报告。"},
+                        {"role": "system", "content": EXTRACT_FULL_SYSTEM_PROMPT},
                         {"role": "user", "content": prompt}
                     ], "thinking": {"type": "disabled"}, "max_tokens": 8000, "temperature": 0.2},
                 )
@@ -927,7 +923,7 @@ class ChapterService:
                     f"{deepseek_base_url()}/v1/chat/completions",
                     headers={"Authorization": f"Bearer {deepseek_api_key()}", "Content-Type": "application/json"},
                     json={"model": deepseek_model(), "messages": [
-                        {"role": "system", "content": "你是一位资深小说编辑，擅长从文本中提取结构化信息，输出详尽完整的章节分析报告。关键事件必须逐件列出，不要遗漏。"},
+                        {"role": "system", "content": EXTRACT_FULL_STRICT_SYSTEM_PROMPT},
                         {"role": "user", "content": prompt}
                     ], "thinking": {"type": "disabled"}, "max_tokens": 8000, "temperature": 0.2},
                 )
@@ -1079,7 +1075,7 @@ class ChapterService:
                     json={
                         "model": deepseek_model(),
                         "messages": [
-                            {"role": "system", "content": "你是一位资深小说编辑，只提取文本中的新增关键信息。"},
+                            {"role": "system", "content": EXTRACT_INCREMENTAL_SYSTEM_PROMPT},
                             {"role": "user", "content": full_prompt}
                         ],
                         "thinking": {"type": "disabled"},
@@ -1332,6 +1328,21 @@ class ChapterService:
         return total + num
 
     @staticmethod
+    def _cn_num_str_to_int(num_str: str) -> int:
+        """章节号数字串转 int：纯数字直接 int，中文数字（如 三十一）走 _cn_num_to_int"""
+        if num_str.isdigit():
+            return int(num_str)
+        return ChapterService._cn_num_to_int(num_str)
+
+    @staticmethod
+    def _extract_chapter_num(fname: str) -> int:
+        """从章节文件名解析章节号（支持阿拉伯/中文数字），无"第X章"返回 9999（排序排最后）"""
+        match = re.search(r'第([\d零一二三四五六七八九十百]+)章', fname)
+        if not match:
+            return 9999
+        return ChapterService._cn_num_str_to_int(match.group(1))
+
+    @staticmethod
     async def _rebuild_memory_from_files_with_progress(novel_unique_id: str, db, task_id: str, total_chapters: int) -> str:
         """并发提取+逐章入库：20并发同时提取，每完成一章立即增量保存到 Redis 并上报进度"""
         from app.utils.task_queue import TaskQueue
@@ -1344,17 +1355,9 @@ class ChapterService:
             return ""
 
         # 按章节号排序（支持中文数字，保证关键事件按剧情顺序）
-        def _extract_chapter_num(fname):
-            match = re.search(r'第([\d零一二三四五六七八九十百]+)章', fname)
-            if not match:
-                return 9999
-            num_str = match.group(1)
-            if num_str.isdigit():
-                return int(num_str)
-            return ChapterService._cn_num_to_int(num_str)
         txt_files = sorted(
             [f for f in os.listdir(novel_dir) if f.endswith(".txt") and not f.startswith("settings") and "作品设定" not in f],
-            key=_extract_chapter_num,
+            key=ChapterService._extract_chapter_num,
         )
         if not txt_files:
             system_logger.warning(f"[记忆体] {novel_dir} 下无 txt 文件")
@@ -1561,7 +1564,7 @@ class ChapterService:
                     info_data = {}
                     try:
                         async with httpx.AsyncClient(timeout=120) as client:
-                            prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-8000:]).replace("{novel_genre}", _novel_genre)
+                            prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-5000:]).replace("{novel_genre}", _novel_genre)
                             resp = await client.post(
                                 f"{deepseek_base_url()}/v1/chat/completions",
                                 headers={
@@ -1571,11 +1574,11 @@ class ChapterService:
                                 json={
                                     "model": deepseek_model(),
                                     "messages": [
-                                        {"role": "system", "content": "你是一位资深小说编辑，擅长从文本中提取结构化信息。"},
+                                        {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
                                         {"role": "user", "content": prompt}
                                     ],
                                     "thinking": {"type": "disabled"},
-                                    "max_tokens": 4000, "temperature": 0.2
+                                    "max_tokens": 3000, "temperature": 0.2
                                 },
                             )
                             if resp.status_code == 200:
@@ -1643,7 +1646,7 @@ class ChapterService:
         _genre = novel_genre or "小说"
         try:
             async with httpx.AsyncClient(timeout=120) as client:
-                prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-8000:]).replace("{novel_genre}", _genre)
+                prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-5000:]).replace("{novel_genre}", _genre)
                 resp = await client.post(
                     f"{deepseek_base_url()}/v1/chat/completions",
                     headers={
@@ -1653,11 +1656,11 @@ class ChapterService:
                     json={
                         "model": deepseek_model(),
                         "messages": [
-                            {"role": "system", "content": "你是一位资深小说编辑，擅长从文本中提取结构化信息。"},
+                            {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
                             {"role": "user", "content": prompt}
                         ],
                         "thinking": {"type": "disabled"},
-                        "max_tokens": 4000, "temperature": 0.2
+                        "max_tokens": 3000, "temperature": 0.2
                     },
                 )
                 if resp.status_code == 200:
@@ -2055,7 +2058,7 @@ class ChapterService:
         }
         novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
         os.makedirs(novel_dir, exist_ok=True)
-        chapter_file = os.path.join(novel_dir, f"{chapter_name}_{chapter_unique_id}.txt")
+        chapter_file = ChapterService._get_chapter_txt_path(novel_unique_id, chapter_name, chapter_unique_id)
         with open(chapter_file, "w", encoding="utf-8") as f:
             f.write(json.dumps(chapter_data, ensure_ascii=False, indent=2))
         r = _redis()
@@ -2212,13 +2215,16 @@ class ChapterService:
         return f"第{ChapterService._int_to_cn(num)}章 {base}" if base else f"第{ChapterService._int_to_cn(num)}章"
 
     @staticmethod
-    async def _call_generation_api(prompt: str, max_tokens: int) -> tuple:
+    async def _call_generation_api(prompt: str, max_tokens: int,
+                                   summary: str = "", genre: str = "") -> tuple:
         """调用 DeepSeek 生成正文（只调用一次：不重试、不扩写）。
 
         生成结果无论字数多少（含低于目标字数）都直接返回，由调用方原样保存。
         接口级错误（认证/余额/参数/网络/超时）直接返回失败信息。
         :param prompt: 生成提示词
         :param max_tokens: 单次调用最大输出 token
+        :param summary: 本章概要（按需推荐场景指南注入 system prompt）
+        :param genre: 作品题材（网感题材常驻网感指南）
         :return: (content, error_message)；content 为空表示调用失败
         """
         # Mock 模式（压测用，config.yaml ai.mock_generate=true）：不调用真实 DeepSeek
@@ -2238,15 +2244,19 @@ class ChapterService:
                     json={
                         "model": gen_model,
                         "messages": [
-                            {"role": "system", "content": EXPANDED_SYSTEM_PROMPT},
-                            {"role": "user", "content": prompt},
+                            # system 前缀 = 恒定核心 + 按需场景指南（战斗/静态/网感按概要推荐）
+                            {"role": "system", "content": build_generate_system_prompt(summary, genre)},
+                            # SELF_CHECK_LIST 统一收口注入 user 末尾（近因效应）：
+                            # 生成/重生成路径此前漏拼，导致 AI 检测硬性执行令完全未生效，
+                            # 这里统一拼上（续写路径已单独拼接，两处口径一致）
+                            {"role": "user", "content": prompt + "\n\n" + SELF_CHECK_LIST},
                         ],
                         "thinking": {"type": "disabled"},
                         "max_tokens": max_tokens,
                         "temperature": 0.7,
                         "top_p": 0.92,
-                        "frequency_penalty": 0.3,
-                        "presence_penalty": 0.4,
+                        "frequency_penalty": cfg("ai.generation.frequency_penalty", 0.5),
+                        "presence_penalty": cfg("ai.generation.presence_penalty", 0.5),
                     },
                 )
             data = resp.json()
@@ -2274,102 +2284,6 @@ class ChapterService:
         except Exception as e:
             system_logger.warning(f"AI生成 异常: {e}")
             return "", str(e)
-
-    @staticmethod
-    async def _rewrite_ai_features(text: str) -> str:
-        """内容层 AI 特征超标 → LLM 定向改写（config.yaml ai.text_clean.llm_rewrite=true 启用）。
-
-        程序化清洗管不了比字比较句/台词对仗/"跟X似的"/否定排队（删了伤语义），
-        这一步用一次 v4 调用兜底：只改写命中的句子，其余一字不动；
-        改写后按行映射回原文 → 复跑程序化清洗 → 复检特征，超标项显著下降。
-
-        :param text: 已过程序化清洗的章节正文
-        :return: 改写后的正文（改写失败/无超标时原样返回）
-        """
-        from app.config import get as cfg
-        if not cfg("ai.text_clean.llm_rewrite", False):
-            return text
-        report = check_ai_features(text)
-        if not report:
-            return text
-        targets = collect_feature_sentences(text)
-        if not targets:
-            return text
-        system_logger.info(f"[章节生成] 内容层特征超标，触发 LLM 定向改写: {report}（{len(targets)}句）")
-        numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(targets))
-        prompt = (
-            "你是网文改稿编辑，任务是把句子里的 AI 写作特征改掉，让文字更像人手写的。\n"
-            "检测到的特征与改写要求：\n"
-            "- 比字比较句（\"比我的大\"\"比我们都旧\"）：改成口语直述（\"大得多，宽一圈\"\"头一个醒的\"），同句避免第二个比较；\n"
-            "- \"跟X似的\"比喻：换直述（\"跟砂纸磨过似的\"→\"干得发紧\"）；\n"
-            "- 否定排队（\"不知道。不知道。\"）：只留一次，其余删掉或并进叙述；\n"
-            "- 台词对仗（相邻两句等长收尾）：拆成错落长度，一句长一句短；\n"
-            "- 一问一答剧本式（连续\"问？答。问？\"无停顿）：中间插入动作/反应/环境打断，或把答句并进叙述；\n"
-            "- 解释性描写（\"因为A所以B因此C\"式设定解释）：改成人物感受，让读者自己推。\n"
-            "- 比喻密度超标（\"像X一样\"\"仿佛X\"\"犹如X\"扎堆）：整段只留 1 处比喻，其余换直述或动作，句式必须错开；\n"
-            "- 判断句排比（\"是陈述。\"\"是它在动。\"独立成段）：合并进叙述或改成动作描写，禁止\"是X。\"独立成句；\n"
-            "- 推理展开链（\"是陈述。是等了很久很久的语气。\"判断+解释枚举）：只留判断句，删掉后面的解释链，让读者自己推；\n"
-            "- 三连否定排比（\"没有恐惧，没有厌恶，只有熟悉感\"）：改单一结论（\"目光压得很平，看过太多遍的那种平\"），删掉前两个否定项；\n"
-            "- 半解释骑墙（\"某种更深的东西\"\"说不清的甜腥气\"）：要么说死（\"像铁锈混着烂肉\"），要么不解释留白，禁止\"某种/说不清的\"骑墙；\n"
-            "- 书面连词超频（\"不仅X而且Y\"\"既X又Y\"\"与其X不如Y\"）：换成口语承接（\"不但\"→\"不光\"，或直接拆成两句；\"与其…不如\"→\"宁可\"或直述）；\n"
-            "- 五感全覆盖（单场景视觉+听觉+嗅觉+触觉+味觉全写）：砍到1主1辅，挑一个主感官详写+一个辅感官一笔带过，其余删掉；\n"
-            "- 语义重复强调（\"纹路是一样的。…一样的纹路。\"同一意思拆两句复述）：合并成一句，删掉重复表述；\n"
-            "- 句子残缺（\"尖细的、。\"\"湿漉漉的、\"顿号/逗号后直接句号或悬空）：补全残缺内容或删除悬空标点，让句子完整；\n"
-            "- 句子粘连（\"涌出来不是渗\"两句无标点直接连）：在两句之间补逗号或句号，让断句清晰；\n"
-            "- 顿号形容词链悬空（\"那种没来由的、尖细的、\"以顿号结尾无后续）：删除悬空顿号或补全形容词；\n"
-            "- 得字残缺句（\"声音干得。\"\"平得。\"形容词+得+句号）：补全残缺内容（\"干得发紧\"\"平得没有起伏\"），让句子完整；\n"
-            "- 单字残缺句（\"又。\"独立成句）：补全动词或并入前后句；\n"
-            "- 名词代词粘连（\"心跳他开口了\"两句无标点）：在名词和代词之间补逗号。\n"
-            "以下每行是一个需要改写的句子。逐句改写：保持原意、原剧情、原长度（±2字内），"
-            "人名地名一律不变。\n"
-            "只输出改写后的句子，一行对应一句，不要编号、不要解释、不要原文。\n\n"
-            f"{numbered}"
-        )
-        try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                resp = await client.post(
-                    f"{deepseek_base_url()}/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {deepseek_api_key()}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": deepseek_long_model(),
-                        "messages": [
-                            {"role": "system", "content": "你是一个经验丰富的网文编辑，专门做反 AI 检测改写。"},
-                            {"role": "user", "content": prompt},
-                        ],
-                        "thinking": {"type": "disabled"},
-                        "max_tokens": min(int(len("".join(targets)) * 2.5) + 400, 4000),
-                        "temperature": 0.7,
-                    },
-                )
-            data = resp.json()
-            if resp.status_code != 200 or "choices" not in data or not data["choices"]:
-                system_logger.warning(f"[章节生成] 定向改写接口失败: HTTP {resp.status_code}")
-                return text
-            rewritten = (data["choices"][0]["message"].get("content") or "").strip()
-        except Exception as e:
-            system_logger.warning(f"[章节生成] 定向改写异常: {e}，保留原文")
-            return text
-        lines = [ln.strip() for ln in rewritten.splitlines() if ln.strip()]
-        new_text = text
-        replaced = 0
-        for old_s, new_s in zip(targets, lines):
-            # 容错：剥掉模型可能带的编号前缀
-            new_s = re.sub(r'^\d+[\.、）)]\s*', '', new_s)
-            if old_s in new_text and new_s and old_s != new_s:
-                new_text = new_text.replace(old_s, new_s, 1)
-                replaced += 1
-        if replaced == 0:
-            system_logger.warning("[章节生成] 定向改写未命中任何句子，保留原文")
-            return text
-        cleaned, stats = clean_generated_text(new_text)
-        if stats:
-            system_logger.info(f"[章节生成] 定向改写后复洗: {stats}")
-        report2 = check_ai_features(cleaned)
-        system_logger.info(f"[章节生成] 定向改写{replaced}句，复检: {'达标' if not report2 else report2}")
-        return cleaned
 
     # ============================================================
     # 章节概要规划：为作品批量生成后续 N 章概要并批量创建草稿
@@ -2440,9 +2354,45 @@ class ChapterService:
         genres = novel.genre or novel.target_reader or ""
         def _text(v):
             return (v or "").strip() or "（暂无填写）"
+
+        # 注入角色卡 + 记忆体人物维度，防止概要凭空发明角色名（如编造"赵铁柱"而非"赵老四"）
+        character_cards = ChapterService._load_character_cards(db, novel_unique_id)
+        char_lines = []
+        known_names = set()
+        if isinstance(character_cards, list) and character_cards:
+            for c in character_cards[:10]:
+                name = (c.get("name") or "").strip()
+                if not name:
+                    continue
+                known_names.add(name)
+                bits = [f"- {name}"]
+                if (c.get("position") or "").strip():
+                    bits.append(f"定位:{c['position'].strip()[:80]}")
+                if (c.get("personality") or "").strip():
+                    bits.append(f"性格:{c['personality'].strip()[:120]}")
+                if (c.get("intro") or "").strip():
+                    bits.append(f"设定:{c['intro'].strip()[:200]}")
+                char_lines.append(" | ".join(bits))
+        # 记忆体【人物】维度补充角色名清单（角色卡常只含主角，配角名从记忆体兜底提取）
+        memory_body = ChapterService._load_memory(novel_unique_id)
+        for m in re.finditer(r"【人物】\n(.*?)(?=\n【|\Z)", memory_body, re.S):
+            for line in m.group(1).splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                # 行格式：[章节名] 角色名，是…… → 先去掉章节前缀再取名字
+                name = re.sub(r"^\[.*?\]\s*", "", line)
+                name = re.split(r"[：:，,（(]", name)[0].strip()
+                if 2 <= len(name) <= 12 and name not in ("人物", "姓名") and "是" not in name \
+                        and name not in known_names:
+                    known_names.add(name)
+                    char_lines.append(f"- {name}（记忆体角色）")
+        character_cards_block = "\n".join(char_lines[:30]) if char_lines else "（暂无角色卡，只能依据【作品简介】【故事背景】【已有章节概要】中出现的角色规划，禁止发明新角色）"
+
         user_prompt = OUTLINE_USER_PROMPT_TEMPLATE.format(
             novel_title=novel.title,
             genres=genres,
+            character_cards=character_cards_block,
             description=_text(novel.description),
             story_background=_text(novel.story_background),
             plot_development=_text(novel.plot_development),
@@ -2823,8 +2773,8 @@ class ChapterService:
         title = ChapterService._normalize_chapter_title(next_num, chapter_name)
 
         # ===== 3. 按需检索对应章节的记忆（封装方法） =====
-        # max_chars=15000 限制注入量：记忆体注入过长（4万+字符）会显著拖慢生成
-        # 并导致模型输出坍缩（prompt 越大输出越短），需控制在合理范围
+        # max_chars=15000 注入上限：实际字数以检索结果为准（概要命中行按相关度
+        # 截断，未达上限则全量注入；注入过长会显著拖慢生成并导致输出坍缩）
         memory_body = ChapterGenService.retrieve_memory(
             memory_body, chapter_summary, current_chapter_num=next_num, max_chars=15000)
 
@@ -2859,7 +2809,7 @@ class ChapterService:
 
         # ===== 6. 调用 AI 生成（只调用一次，不重试不扩写）+ 后处理截断 =====
         # max_tokens 覆盖目标上限（4000字×4=16000 token），排除 max_tokens 不足导致的提前截断
-        gen_max_tokens = max(int(word_count * 4), 16000)
+        gen_max_tokens = max(int(word_count * gen_max_tokens_multiplier()), gen_max_tokens_min())
         generated_text, err = await ChapterService._call_generation_api(
             prompt, gen_max_tokens)
         if not generated_text:
@@ -2872,9 +2822,9 @@ class ChapterService:
         # 不能因"字数少"再放行概要外超纲内容（历史 bug：第3章概要外新增3329字因截断后<3200被保留）
         if chapter_summary:
             generated_text = ChapterService._trim_to_summary_boundary(generated_text, chapter_summary)
-        # 超长上限截断（目标4000字 → 最多约8000字），避免生成超长；
-        # 上限放宽到 2.0 倍且不低于 +3000，并按段落/句号边界截断，避免句中硬切导致结尾残缺
-        hard_cap = max(int(word_count * 2.0), word_count + 3000)
+        # 超长上限截断（与重生成路径一致：hard_cap_ratio 倍且不低于 +hard_cap_min_extra，默认2.0倍/+3000），
+        # 按段落/句号边界截断，避免句中硬切导致结尾残缺
+        hard_cap = max(int(word_count * gen_hard_cap_ratio()), word_count + gen_hard_cap_min_extra())
         if len(generated_text) > hard_cap:
             cut = generated_text[:hard_cap]
             for sep in ("\n\n", "\n", "。", "！", "？"):
@@ -2892,9 +2842,6 @@ class ChapterService:
             system_logger.info(f"[章节生成] 程序化清洗 {title}: {clean_stats}")
         generated_text = cleaned_text
 
-        # ===== 6.6 内容层特征超标 → LLM 定向改写（config.yaml ai.text_clean.llm_rewrite=true 启用） =====
-        # 比字比较句/台词对仗/"跟X似的"/否定排队程序化删不动，超标时用一次 v4 调用只改超标句
-        generated_text = await ChapterService._rewrite_ai_features(generated_text)
         actual_word_count = len(generated_text)
 
         # ===== 7. 保存：填充概要草稿 / 覆盖旧正文草稿 / 新建草稿；+ TXT 文件 + 清草稿缓存 =====
@@ -2917,8 +2864,8 @@ class ChapterService:
             fill_row.word_count = actual_word_count
             db.commit()
             # 章节名变化时清理旧 TXT，避免残留文件
-            old_file = os.path.join(novel_dir, f"{old_name}_{chapter_unique_id}.txt")
-            new_file = os.path.join(novel_dir, f"{title}_{chapter_unique_id}.txt")
+            old_file = ChapterService._get_chapter_txt_path(novel_unique_id, old_name, chapter_unique_id)
+            new_file = ChapterService._get_chapter_txt_path(novel_unique_id, title, chapter_unique_id)
             if old_name and old_file != new_file and os.path.exists(old_file):
                 try:
                     os.remove(old_file)
@@ -2943,7 +2890,7 @@ class ChapterService:
             db.commit()
             db.refresh(new_chapter)
 
-        chapter_file = os.path.join(novel_dir, f"{title}_{chapter_unique_id}.txt")
+        chapter_file = ChapterService._get_chapter_txt_path(novel_unique_id, title, chapter_unique_id)
         with open(chapter_file, "w", encoding="utf-8") as f:
             f.write(generated_text)
         system_logger.info(f"[章节生成] {title} 生成成功（{actual_word_count}字）→ 草稿箱")
@@ -3052,7 +2999,8 @@ class ChapterService:
         memory_body = await ChapterGenService.repair_and_load_memory(novel_unique_id, db)
 
         # ===== 2. 按需检索对应章节的记忆（排除当前章：current_chapter_num=cur_num） =====
-        # max_chars=15000 限制注入量：记忆体注入过长会显著拖慢生成并导致模型输出坍缩
+        # max_chars=15000 注入上限：实际字数以检索结果为准（概要命中行按相关度
+        # 截断，未达上限则全量注入；注入过长会显著拖慢生成并导致输出坍缩）
         memory_body = ChapterGenService.retrieve_memory(
             memory_body, summary, current_chapter_num=cur_num, max_chars=15000)
 
@@ -3095,7 +3043,9 @@ class ChapterService:
         # max_tokens 覆盖目标上限（4000字×4=16000 token），排除 max_tokens 不足导致的提前截断
         gen_max_tokens = max(int(word_count * gen_max_tokens_multiplier()), gen_max_tokens_min())
         generated_text, err = await ChapterService._call_generation_api(
-            prompt, gen_max_tokens)
+            prompt, gen_max_tokens,
+            summary=summary,
+            genre=ChapterService._get_novel_genre(novel_unique_id))
         if not generated_text:
             return fail(f"AI重新生成失败: {err}", code=500)
         system_logger.info(f"[AI重新生成] max_tokens={gen_max_tokens} 目标字数={word_count}")
@@ -3121,6 +3071,7 @@ class ChapterService:
         if clean_stats:
             system_logger.info(f"[AI重新生成] 程序化清洗: {clean_stats}")
         generated_text = cleaned_text
+
         actual_word_count = len(generated_text)
 
         # ===== 6. 保存：覆盖 TXT + 更新 MySQL 字数 =====
@@ -3128,7 +3079,7 @@ class ChapterService:
         # （retrieve_memory）从 Redis 记忆体注入，足够满足重新生成场景。
         novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
         os.makedirs(novel_dir, exist_ok=True)
-        chapter_file = os.path.join(novel_dir, f"{chapter.chapter_name}_{chapter_unique_id}.txt")
+        chapter_file = ChapterService._get_chapter_txt_path(novel_unique_id, chapter.chapter_name, chapter_unique_id)
         with open(chapter_file, "w", encoding="utf-8") as f:
             f.write(generated_text)
         ChapterDAO.update(db, chapter, word_count=actual_word_count)
@@ -3160,8 +3111,10 @@ class ChapterService:
         # ===== 记忆体：一次加载 =====
         memory_body = await ChapterService._ensure_memory(chapter.novel_unique_id, db)
         cur_num = ChapterService._chapter_num_from_name(chapter.chapter_name)
+        # max_chars=15000 注入上限：实际字数以检索结果为准（概要命中行按相关度
+        # 截断，未达上限则全量注入；注入过长会显著拖慢生成并导致输出坍缩）
         memory_body = ChapterService._retrieve_relevant_memory(
-            memory_body, chapter.chapter_summary, current_chapter_num=cur_num)
+            memory_body, chapter.chapter_summary, current_chapter_num=cur_num, max_chars=15000)
 
         # 加载角色卡（主角+前几位配角）注入 prompt，续写也必须符合人设（疯批/怼神不能续写时变乖巧）
         character_cards = ChapterService._load_character_cards(db, chapter.novel_unique_id)
@@ -3194,65 +3147,22 @@ class ChapterService:
                 pers_all = (character_cards[0].get("personality") or "") + " " + (character_cards[0].get("intro") or "")
                 import re as _re
                 if _re.search(r'疯|疯批|疯癫|癫|偏执|病娇|嘴贱|反骨|狂', pers_all):
-                    chaot_rules = (
-                        "【🔴 疯批主角 续写专属规则（本章主角命中疯/疯批/偏执/嘴贱/反骨等关键词，强制）】\n"
-                        "1. 台词不配合不礼貌：权威/高位者（神明/观众/上级/审判者/观测员）说话时，至少一次打断/反问/抬杠/答非所问，禁止恭敬回应；\n"
-                        "2. 行为反套路：规则让他做的事至少一次不乖乖照做（或问一句「凭什么」），实力不够时做小动作拆台；\n"
-                        "3. 怼神/怼观众：若出现神明/观测员/直播间/弹幕/观礼台，至少一次正面怼（反抗/反问/羞辱/无视四选一），示例台词参考：\n"
-                        "   「你让我往东我就往东？你谁啊？你说句'请'。」「你们看了三百年不腻？你们站里有食堂吗？」「演？我不是你们的戏子。」「掉就掉呗，你们不还在看吗？」；\n"
-                        "4. 直播间互动：设定有弹幕时，至少一次主角对弹幕的反应（吐槽/无视/骂回去/对着空气说风凉话）；\n"
-                        "5. 清醒的疯：每一次「疯行」背后都有目的/算计/要保护的人，禁止真的脑子有病；碰到人设规定的底线（如家人/恩人）立刻安静，反差是爽点。")
+                    chaot_rules = CONTINUE_CHAOT_RULES
             except Exception as e:
                 system_logger.warning(f"[AI续写] 疯批规则注入异常: {e}")
 
-        prompt = f"""你是在续写这部小说。请根据记忆体和已写内容，续写出高质量、生动、字数充足的小说内容。
-
-{protagonist_block}
-{chaot_rules}
-
-【作品记忆体】（必须严格遵循的人物、事件、世界观）
-{memory_body}
-
-【本章信息】
-章节名称：{chapter.chapter_name}
-本章概要：{chapter.chapter_summary or '无'}
-当前已写内容（末尾，必须紧密衔接）：
-{context_content}
-
-【🔴 续写核心要求 —— 每条都必须做到，违反即作废】
-
-一、字数硬性要求：续写 {word_count} 字左右，绝对不能少于 {max(word_count - 500, 800)} 字！
-   - 不是水字数，是每个场景/事件都要展开200-500字的生动描写
-   - 一句话带过 = 不及格！每个事件必须有场景入场、动作细节、对话潜台词、五感描写、内心活动
-
-二、人物塑造：对话要有性格辨识度，用动作/神态/心理活动展示人物特征
-   - 每句对话配合微表情和肢体语言："没事。"她低头看着手指，尾音颤了一下
-   - 嘴里说的≠心里想的，要有潜台词
-
-三、场景环境：用五感（视觉/听觉/嗅觉/触觉/本体觉）渲染场景，让读者有画面感
-   - 每个场景至少调动2种感官：火光在墙上跳了一下（视觉）、柴火噼啪响（听觉）、药味很浓（嗅觉）、手指碰到碗壁烫了一下（触觉）
-
-四、情感描写：写出角色内心感受和情绪变化，用自由间接引语融入叙述
-   - 不用"他想""她觉得"，直接写内心：碗里的粥凉了。凉了也好。凉的喝下去慢，能多坐一会儿
-   - 情绪落到身体：心跳、呼吸、手心、膝盖、嗓子、后背
-
-五、情绪氛围：营造适合当前剧情的氛围，长短句交替控制节奏
-   - 紧张场景用短句：他退了一步。又退了一步。背抵住墙。
-   - 舒缓场景用长句：她把针线活收进笸箩里，顺手抹了把额头的汗，窗外的日头已经偏了
-   - 对话之间穿插动作和环境，不要连续5句以上纯对话
-
-六、剧情张力：有冲突或事件推进，铺垫→冲突→转折→余韵
-
-七、内容丰富：每段都推进剧情或塑造人物，对话与叙述比例约 3:7
-
-八、【🔴 设定至上 —— 续写也必须严格遵守】
-   1. 角色独立性：设定中每个角色都是独立个体，禁止合并角色（把 A 的外貌 + B 的能力揉成一个人）。
-   2. 禁止发明设定：设定文件中没有的力量体系/概念/术语/组织，一律不得出现在续写中。
-   3. 地名/道具名以设定为准：设定里叫什么就写什么，禁止改名；设定列出的随身物品不得遗漏。
-   4. 简介承诺必须兑现：简介中描述的关键场景/台词，续写中对应场景必须按简介呈现。
-   5. 设定 vs 记忆体冲突时以设定为准。
-
-只输出续写内容，不要重复已有文字，不要加标题。直接从续写的第一句开始。"""
+        # 读配置：续写采样参数（frequency_penalty 等从 config.yaml 读取，便于调优）
+        from app.config import get as cfg
+        prompt = CONTINUE_PROMPT.format(
+            protagonist_block=protagonist_block,
+            chaot_rules=chaot_rules,
+            memory_body=memory_body,
+            chapter_name=chapter.chapter_name,
+            chapter_summary=chapter.chapter_summary or '无',
+            context_content=context_content,
+            word_count=word_count,
+            min_words=max(word_count - 500, 800),
+        )
 
         async with httpx.AsyncClient(timeout=180) as client:
             try:
@@ -3263,17 +3173,21 @@ class ChapterService:
                         "Content-Type": "application/json"
                     },
                     json={
-                        "model": deepseek_long_model(),
-                        "messages": [
-                            {"role": "system", "content": EXPANDED_SYSTEM_PROMPT},
-                            {"role": "user", "content": prompt + "\n\n" + SELF_CHECK_LIST}
-                        ],
-                        "thinking": {"type": "disabled"},
-                        "max_tokens": word_count * 4,
+                    "model": deepseek_long_model(),
+                    "messages": [
+                        # system 前缀 = 恒定核心 + 按需场景指南（按本章概要推荐）
+                        {"role": "system", "content": build_generate_system_prompt(
+                            chapter.chapter_summary,
+                            ChapterService._get_novel_genre(chapter.novel_unique_id))},
+                        # 自查清单保留 user 末尾（近因效应）；其余固定指南已在 system 中
+                        {"role": "user", "content": prompt + "\n\n" + SELF_CHECK_LIST}
+                    ],
+                    "thinking": {"type": "disabled"},
+                    "max_tokens": max(int(word_count * gen_max_tokens_multiplier()), gen_max_tokens_min()),
                         "temperature": 0.85,
                         "top_p": 0.92,
-                        "frequency_penalty": 0.3,
-                        "presence_penalty": 0.4
+                        "frequency_penalty": cfg("ai.generation.frequency_penalty", 0.5),
+                        "presence_penalty": cfg("ai.generation.presence_penalty", 0.5)
                     }
                 )
                 data = response.json()
@@ -3298,7 +3212,8 @@ class ChapterService:
                 new_content = existing_content + "\n\n" + generated_text
                 novel_dir = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id)
                 os.makedirs(novel_dir, exist_ok=True)
-                chapter_file = os.path.join(novel_dir, f"{chapter.chapter_name}_{chapter.chapter_unique_id}.txt")
+                chapter_file = ChapterService._get_chapter_txt_path(
+                    chapter.novel_unique_id, chapter.chapter_name, chapter.chapter_unique_id)
                 with open(chapter_file, "w", encoding="utf-8") as f:
                     f.write(new_content)
 
@@ -3347,8 +3262,7 @@ class ChapterService:
         chapters = ChapterDAO.get_drafts(db, user_id)
         result = []
         for ch in chapters:
-            novel_dir = os.path.join(NOVEL_DATA_PATH, ch.novel_unique_id)
-            chapter_file = os.path.join(novel_dir, f"{ch.chapter_name}_{ch.chapter_unique_id}.txt")
+            chapter_file = ChapterService._get_chapter_txt_path(ch.novel_unique_id, ch.chapter_name, ch.chapter_unique_id)
             has_file = os.path.exists(chapter_file)
             # 跳过概要草稿（无正文文件且字数为0），避免草稿列表出现空草稿
             # 概要草稿在「章节概要」Tab 中管理，正文生成填充后再进入草稿列表
@@ -3424,7 +3338,7 @@ class ChapterService:
         try:
             novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
             os.makedirs(novel_dir, exist_ok=True)
-            chapter_file = os.path.join(novel_dir, f"{chapter_name}_{chapter_unique_id}.txt")
+            chapter_file = ChapterService._get_chapter_txt_path(novel_unique_id, chapter_name, chapter_unique_id)
 
             with open(chapter_file, "w", encoding="utf-8") as f:
                 f.write(content_to_save)
@@ -3730,7 +3644,8 @@ class ChapterService:
             target_chapter_name = update_data.get("chapter_name", chapter.chapter_name)
             novel_dir = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id)
             os.makedirs(novel_dir, exist_ok=True)
-            target_file = os.path.join(novel_dir, f"{target_chapter_name}_{chapter.chapter_unique_id}.txt")
+            target_file = ChapterService._get_chapter_txt_path(
+                chapter.novel_unique_id, target_chapter_name, chapter.chapter_unique_id)
             with open(target_file, "w", encoding="utf-8") as f:
                 f.write(content)
             # 后台异步重建本章记忆体（编辑内容已变更，旧提取作废；不阻塞保存返回）
@@ -3839,8 +3754,7 @@ class ChapterService:
                 cached_content = r5.get(content_ck)
                 if cached_content is not None:
                     return ch, cached_content
-            novel_dir = os.path.join(NOVEL_DATA_PATH, ch.novel_unique_id)
-            chapter_file = os.path.join(novel_dir, f"{ch.chapter_name}_{ch.chapter_unique_id}.txt")
+            chapter_file = ChapterService._get_chapter_txt_path(ch.novel_unique_id, ch.chapter_name, ch.chapter_unique_id)
             content = ""
             if os.path.exists(chapter_file):
                 with open(chapter_file, "r", encoding="utf-8") as f:
@@ -3950,6 +3864,31 @@ class ChapterService:
             db.close()
 
     @staticmethod
+    def _worker_regenerate(task_id: str, task_data: dict) -> dict:
+        """Worker handler：AI 重新生成章节（异步化：避免长请求被公网隧道/浏览器掐断）"""
+        from app.models.base import SessionLocal
+        db = SessionLocal()
+        try:
+            result = run_async(
+                ChapterService.regenerate_with_ai,
+                db,
+                chapter_unique_id=task_data["chapter_unique_id"],
+                user_id=task_data["user_id"],
+                word_count=task_data.get("word_count", 2000),
+                chapter_summary=task_data.get("chapter_summary"),
+                author_style=task_data.get("author_style", ""),
+                chapter_template=task_data.get("chapter_template", ""),
+            )
+            if result.get("状态码") == 200:
+                return {"success": True, "data": result.get("数据")}
+            return {"success": False, "error": result.get("消息", "重新生成失败")}
+        except Exception as e:
+            system_logger.error(f"[Worker-regenerate] 异常: {e}")
+            return {"success": False, "error": str(e)}
+        finally:
+            db.close()
+
+    @staticmethod
     def _worker_generate_outline(task_id: str, task_data: dict) -> dict:
         """Worker handler：章节概要规划（生成后续 N 章概要并批量创建草稿）"""
         from app.models.base import SessionLocal
@@ -4003,6 +3942,7 @@ class ChapterService:
     ) -> dict:
         """将选定的小说章节内容转换为剧本格式"""
         import traceback
+        from app.config import get as cfg
 
         # 1. 获取作品信息
         novel = NovelDAO.get_by_unique_id(db, novel_unique_id)
@@ -4039,7 +3979,7 @@ class ChapterService:
         for ch in ordered_chapters:
             # 尝试从 TXT 文件读取（使用标准文件名格式）
             content = ""
-            txt_path = os.path.join(NOVEL_DATA_PATH, novel_unique_id, f"{ch.chapter_name}_{ch.chapter_unique_id}.txt")
+            txt_path = ChapterService._get_chapter_txt_path(novel_unique_id, ch.chapter_name, ch.chapter_unique_id)
             if os.path.exists(txt_path):
                 try:
                     with open(txt_path, "r", encoding="utf-8") as f:
@@ -4096,6 +4036,8 @@ class ChapterService:
                             "max_tokens": 16384,
                             "temperature": 0.7,
                             "top_p": 0.9,
+                            "frequency_penalty": cfg("ai.generation.frequency_penalty", 0.5),
+                            "presence_penalty": cfg("ai.generation.presence_penalty", 0.5),
                         }
                     )
 

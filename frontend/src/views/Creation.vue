@@ -904,7 +904,7 @@ export default {
     })
     const chapterForm = reactive({
       chapter_name: '', characters_involved: '', organizations: '',
-      locations: '', skills: '', word_count: 4000, chapter_summary: '', content: '', author_style: '', chapter_template: ''
+      locations: '', skills: '', word_count: 2500, chapter_summary: '', content: '', author_style: '', chapter_template: ''
     })
     const editChapterForm = reactive({
       chapter_name: '', chapter_summary: '', content: '', author_style: '', chapter_template: ''
@@ -945,9 +945,9 @@ export default {
 
         const generateChapter = async () => {
       if (!chapterForm.chapter_name) return alert('请输入章节名称')
-      if (chapterForm.word_count > 2500) {
-        if (!confirm(`章节字数超过2500字上限（当前${chapterForm.word_count}字），将自动调整为2500字。是否继续？`)) return
-        chapterForm.word_count = 2500
+      if (chapterForm.word_count > 3000) {
+        if (!confirm(`章节字数超过3000字上限（当前${chapterForm.word_count}字），将自动调整为3000字。是否继续？`)) return
+        chapterForm.word_count = 3000
       }
       generating.value = true
       try {
@@ -1422,20 +1422,45 @@ export default {
       try {
         const res = await api.post(`/chapters/regenerate/${editingChapterId.value}`, {
           chapter_summary: editChapterForm.chapter_summary,
-          word_count: 4000,
+          word_count: chapterForm.word_count,
           author_style: selEditAuthorStyles.value.join(','),
           chapter_template: selEditChapterTemplates.value.join(',')
         })
-        if (res.状态码 === 200) {
-          const newContent = res.数据?.content
-          if (newContent) {
-            editChapterForm.content = newContent
-            alert('重新生成成功，内容已更新到编辑区')
-          } else {
-            alert('重新生成成功，但未能获取内容')
+        if (res.状态码 === 200 && res.数据 && res.数据.task_id) {
+          // 异步任务：轮询结果（重新生成耗时可达数分钟，同步请求会被公网隧道/浏览器掐断）
+          const taskId = res.数据.task_id
+          const maxWait = 300000
+          const pollInterval = 3000
+          let waited = 0
+          let done = false
+          while (waited < maxWait) {
+            await new Promise(r => setTimeout(r, pollInterval))
+            waited += pollInterval
+            try {
+              const statusRes = await api.get('/chapters/tasks/' + taskId)
+              if (statusRes.状态码 === 200 && statusRes.数据) {
+                const taskStatus = statusRes.数据.status
+                if (taskStatus === 'done') {
+                  const newContent = statusRes.数据.result?.data?.content
+                  if (newContent) {
+                    editChapterForm.content = newContent
+                    alert('重新生成成功，内容已更新到编辑区')
+                  } else {
+                    alert('重新生成成功，但未能获取内容')
+                  }
+                  done = true
+                  break
+                } else if (taskStatus === 'failed') {
+                  alert('AI重新生成失败: ' + (statusRes.数据.error || '未知错误'))
+                  done = true
+                  break
+                }
+              }
+            } catch { /* ignore polling errors */ }
           }
+          if (!done) alert('AI重新生成超时，请稍后查看章节内容')
         } else {
-          alert('重新生成失败: ' + res.消息)
+          alert('重新生成失败: ' + (res.消息 || '提交失败'))
         }
       } catch (e) {
         const msg = e.response?.data?.detail || e.message || '网络错误'
