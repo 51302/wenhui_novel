@@ -58,6 +58,10 @@ GENERATE_SYSTEM_PROMPT = get_config("GENERATE_SYSTEM_PROMPT", "")
 CHARACTER_NAMING_GUIDE = get_config("CHARACTER_NAMING_GUIDE", "")
 GENERATE_CREATIVE_DIRECTION = get_config("GENERATE_CREATIVE_DIRECTION", "")
 
+# 开写前铁律（最高优先级，置顶注入——模型对 system prompt 开头指令遵守率最高，
+# 与 HUMAN_VOICE_MANDATE 第七条口径一致但更短更硬，专治模型忽视长段规则）
+HARD_RED_LINES = get_config("HARD_RED_LINES", "")
+
 # ============================================================================
 # 第二部分：情感描写指南 —— 136种情绪维度全覆盖（来源：prompts.yaml）
 # ============================================================================
@@ -72,6 +76,12 @@ COMBAT_WRITING_GUIDE = get_config("COMBAT_WRITING_GUIDE", "")
 
 # 静态场景铁律（对话/解释/展示/夜谈类章节的防AI专项）
 STATIC_SCENE_GUIDE = get_config("STATIC_SCENE_GUIDE", "")
+
+# 全类型通用反AI铁律（不分题材/场景，每章必注入，与检测器口径一致）
+UNIVERSAL_ANTI_AI_GUIDE = get_config("UNIVERSAL_ANTI_AI_GUIDE", "")
+
+# 人味强制生成令（人设锚定+白名单句法+正例仿写；与禁止式清单互补，每章必注入）
+HUMAN_VOICE_MANDATE = get_config("HUMAN_VOICE_MANDATE", "")
 
 # ============================================================================
 # 第四部分：网感风格指南 —— 让文字更接地气、更有梗（来源：prompts.yaml）
@@ -106,11 +116,14 @@ SELF_CHECK_LIST = get_config("SELF_CHECK_LIST", "")
 # ============================================================================
 
 GENERATE_CORE_SYSTEM_PROMPT = (
-    GENERATE_SYSTEM_PROMPT
+    HARD_RED_LINES  # 置顶：开写前铁律（最高优先级，模型对开头指令遵守率最高）
+    + "\n\n" + GENERATE_SYSTEM_PROMPT
     + "\n\n" + GENERATION_FRAMEWORK
     + "\n\n" + CHARACTER_NAMING_GUIDE
     + "\n\n" + HUMAN_EMOTION_GUIDE
     + "\n\n" + COGNITION_BOUNDARY_GUIDE
+    + "\n\n" + HUMAN_VOICE_MANDATE
+    + "\n\n" + UNIVERSAL_ANTI_AI_GUIDE
 )
 
 # ============================================================================
@@ -130,6 +143,10 @@ STATIC_SCENE_TRIGGER_KEYWORDS = (
     "对话", "谈判", "商谈", "夜谈", "密谋", "商议", "交易", "拜师", "回忆",
     "祭拜", "审讯", "审问", "答疑", "讲解", "展示", "参观", "游览", "夜聊",
     "闲聊", "诉苦", "和解", "结盟", "会面", "探视", "饭局", "酒局",
+    # 汇报/受命/辞别类（拜见师父、领任务、道别等静态对话场景，AI 易写成规整说明文）
+    "拜见", "请安", "问安", "领命", "受命", "复命", "辞别", "拜别", "道别",
+    "告别", "叮嘱", "交代", "嘱咐", "禀报", "汇报", "请示", "召见", "接见",
+    "会客", "赐", "任务", "告之", "告知",
 )
 
 # 网感触发词：概要出现任一 → 注入 VULGAR_DIALOGUE_GUIDE

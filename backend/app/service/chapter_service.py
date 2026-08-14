@@ -2253,7 +2253,7 @@ class ChapterService:
                         ],
                         "thinking": {"type": "disabled"},
                         "max_tokens": max_tokens,
-                        "temperature": 0.7,
+                        "temperature": cfg("ai.generation.temperature", 0.85),
                         "top_p": 0.92,
                         "frequency_penalty": cfg("ai.generation.frequency_penalty", 0.5),
                         "presence_penalty": cfg("ai.generation.presence_penalty", 0.5),
@@ -2715,215 +2715,30 @@ class ChapterService:
                                word_count: int = 2000, chapter_summary: str = "",
                                created_by: str = "", author_style: str = "",
                                chapter_template: str = "") -> dict:
-        """AI 生成新章节（异步任务入口）
+        """AI 生成新章节（异步任务入口）— LangGraph 图编排
 
-        新规格流程：
-        1. 三源章节号数量统计（mysql / txt / redis）：
-           - 一致 → 走生成路线
-           - 不一致 → 以本地 txt 为准自动修复（txt 有 mysql 无 → 补插 mysql；
-             txt 有 redis 无 → 读 txt → DeepSeek AI 提取写 redis，并发数=memory_extract_threads）
-        2. 生成输入（提示词工程内容不变）：
-           - 章节概要
-           - 按需检索记忆（ChapterGenService.retrieve_memory 封装方法）
-           - 上一章末尾 500 字（ChapterGenService.get_prev_ending 封装方法）
+        流程（与命令式版本一致，迁移到 StateGraph 显式编排）：
+        1. 三源章节号数量统计（mysql / txt / redis）：一致走生成 / 不一致以 txt 为准自动修复
+        2. 章节号分配：填充概要草稿 → 覆盖已有正文草稿 → 新建
+        3. 按需检索记忆 + 上一章末尾 500 字 + 提示词组装（提示词工程内容不变）
+        4. 调用 AI 生成 → 概要边界/超长截断 → 程序化清洗 → 保存
+
+        实现迁移到 app.service.chapter_gen_graph.run_chapter_gen
         """
-        import uuid
-        # ===== 1. 三源数量统计：一致走生成 / 不一致以txt为准自动修复 =====
-        counts = ChapterGenService.count_sources(novel_unique_id, db)
-        if counts["consistent"]:
-            system_logger.info(
-                f"[章节生成] 三源一致 MySQL=TXT=Redis={counts['mysql']['count']} → 走生成路线"
-            )
-        else:
-            system_logger.warning(
-                f"[章节生成] 三源不一致 MySQL={counts['mysql']['count']} TXT={counts['txt']['count']} "
-                f"Redis={counts['redis']['count']} → 以txt为准自动修复后再生成"
-            )
-
-        # 修复 + 加载记忆体（内部：以 txt 为准补 mysql 缺失、补 redis 缺失）
-        memory_body = await ChapterGenService.repair_and_load_memory(novel_unique_id, db)
-
-        # ===== 2. 章节号分配：优先级 = 填充概要草稿 → 覆盖已有正文草稿(每作品仅一个) → 新建 =====
-        mysql_all = ChapterDAO.get_by_novel_id(db, novel_unique_id)
-        # 概要草稿：未发布、无正文（word_count=0）、有概要内容 → 生成正文时填充到该章，避免章节号错位
-        outline_drafts = [c for c in mysql_all
-                          if not c.is_published and not (c.word_count or 0)
-                          and (c.chapter_summary or "").strip()]
-        # 已有正文草稿：未发布且有正文字数 → 每作品仅保留一个，生成时覆盖最新的那个
-        body_drafts = [c for c in mysql_all if not c.is_published and (c.word_count or 0) > 0]
-        if outline_drafts:
-            next_num = min(c.chapter_number or 0 for c in outline_drafts)
-            fill_mode = "outline"
-            system_logger.info(f"[章节生成] 存在概要草稿，将填充正文到第{next_num}章")
-        elif body_drafts:
-            overwrite_target = max(body_drafts, key=lambda c: c.chapter_number or 0)
-            next_num = overwrite_target.chapter_number or 0
-            fill_mode = "overwrite"
-            system_logger.info(f"[章节生成] 每作品仅保留一个草稿，将覆盖旧草稿《{overwrite_target.chapter_name}》(第{next_num}章)")
-        else:
-            # 修复可能补插了 mysql 缺失章节，因此修复后重新统计再计算，避免与已补插章节号重复
-            if not counts["consistent"]:
-                counts = ChapterGenService.count_sources(novel_unique_id, db)
-            mysql_chapters = counts["mysql"]["chapters"]
-            txt_chapters = counts["txt"]["chapters"]
-            mysql_max = mysql_chapters[-1]["num"] if mysql_chapters else 0
-            txt_max = txt_chapters[-1]["num"] if txt_chapters else 0
-            next_num = max(mysql_max, txt_max) + 1
-            fill_mode = "new"
-        title = ChapterService._normalize_chapter_title(next_num, chapter_name)
-
-        # ===== 3. 按需检索对应章节的记忆（封装方法） =====
-        # max_chars=15000 注入上限：实际字数以检索结果为准（概要命中行按相关度
-        # 截断，未达上限则全量注入；注入过长会显著拖慢生成并导致输出坍缩）
-        memory_body = ChapterGenService.retrieve_memory(
-            memory_body, chapter_summary, current_chapter_num=next_num, max_chars=15000)
-
-        # ===== 4. 上一章节末尾 500 字（封装方法；生成场景取已发布最后一章） =====
-        last_ending, dup_text, _last_name = ChapterGenService.get_prev_ending(db, novel_unique_id)
-
-        # ===== 5. 作品设定 + 提示词组装（提示词工程内容不变） =====
-        settings = ChapterService._get_novel_settings(novel_unique_id)
-        # 加载角色卡（主角+前几位配角）注入 prompt，解决「疯批不疯/怼神不怼」式人设写崩
-        character_cards = ChapterService._load_character_cards(db, novel_unique_id)
-        # 未手动选章节模板 → 按作品主角性格自动适配默认模板
-        if not chapter_template:
-            chapter_template = ChapterService._resolve_default_template(db, novel_unique_id)
-            if chapter_template:
-                system_logger.info(f"[章节生成] 未手动选模板，按主角性格自动适配: {chapter_template}")
-        prompt = ChapterGenService.build_prompt(
-            chapter_name=title,
-            memory_body=memory_body,
-            settings_text=settings.get("content", ""),
-            last_chapter_ending=last_ending,
-            chapter_summary=chapter_summary,
-            word_count=word_count,
-            include_combat_meme=True,
-            author_style=author_style,
-            chapter_template=chapter_template,
-            character_cards=character_cards,
-            recent_duplicate_text=dup_text,
-        )
-        system_logger.info(
-            f"[章节生成] 请求输入统计: 记忆体={len(memory_body)}字符 | 概要={len(chapter_summary or '')}字 "
-            f"| 锚点={len(last_ending or '')}字 | 提示词总长={len(prompt)}字符")
-
-        # ===== 6. 调用 AI 生成（只调用一次，不重试不扩写）+ 后处理截断 =====
-        # max_tokens 覆盖目标上限（4000字×4=16000 token），排除 max_tokens 不足导致的提前截断
-        gen_max_tokens = max(int(word_count * gen_max_tokens_multiplier()), gen_max_tokens_min())
-        generated_text, err = await ChapterService._call_generation_api(
-            prompt, gen_max_tokens)
-        if not generated_text:
-            return fail(f"章节生成失败: {err}", code=500)
-        system_logger.info(f"[章节生成] max_tokens={gen_max_tokens} 目标字数={word_count}")
-
-        # 概要边界截断（生成内容不得超过概要覆盖的事件范围；自然收尾保留，不砍结尾）
-        # _trim_to_summary_boundary 内部已有保护：截断点后残留 ≤500 字视为自然收尾保留全文；
-        # 因此直接采用其结果即可——截断后字数少是因为概要本身规模小（prompt 已要求"清单写完即停笔"），
-        # 不能因"字数少"再放行概要外超纲内容（历史 bug：第3章概要外新增3329字因截断后<3200被保留）
-        if chapter_summary:
-            generated_text = ChapterService._trim_to_summary_boundary(generated_text, chapter_summary)
-        # 超长上限截断（与重生成路径一致：hard_cap_ratio 倍且不低于 +hard_cap_min_extra，默认2.0倍/+3000），
-        # 按段落/句号边界截断，避免句中硬切导致结尾残缺
-        hard_cap = max(int(word_count * gen_hard_cap_ratio()), word_count + gen_hard_cap_min_extra())
-        if len(generated_text) > hard_cap:
-            cut = generated_text[:hard_cap]
-            for sep in ("\n\n", "\n", "。", "！", "？"):
-                idx = cut.rfind(sep)
-                if idx > int(hard_cap * 0.8):
-                    cut = cut[:idx + len(sep)]
-                    break
-            generated_text = cut
-
-        # ===== 6.5 程序化清洗：生成后按代码规则去除 AI 检测统计特征 =====
-        # （破折号/冒号/省略号压减、"不是X是Y"压缩、三连排比拆散、明喻换词、均匀长句拆短）
-        # 只动标点与高频句式，不删剧情；引号内对话整体保护不改写
-        cleaned_text, clean_stats = clean_generated_text(generated_text)
-        if clean_stats:
-            system_logger.info(f"[章节生成] 程序化清洗 {title}: {clean_stats}")
-        generated_text = cleaned_text
-
-        actual_word_count = len(generated_text)
-
-        # ===== 7. 保存：填充概要草稿 / 覆盖旧正文草稿 / 新建草稿；+ TXT 文件 + 清草稿缓存 =====
-        from app.models.chapter import Chapter as ChapterModel
-        novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
-        os.makedirs(novel_dir, exist_ok=True)
-
-        fill_row = None
-        if fill_mode == "outline":
-            fill_row = next((c for c in mysql_all if c.chapter_number == next_num), None)
-        elif fill_mode == "overwrite":
-            fill_row = overwrite_target
-
-        if fill_row is not None:
-            # 填充概要草稿 / 覆盖旧正文草稿：沿用原 chapter_unique_id（TXT 文件名随之稳定），更新名称/字数
-            # 注意：概要不落库，留在 Redis 缓存，发布成功后自动转入 MySQL
-            chapter_unique_id = fill_row.chapter_unique_id
-            old_name = fill_row.chapter_name
-            fill_row.chapter_name = title
-            fill_row.word_count = actual_word_count
-            db.commit()
-            # 章节名变化时清理旧 TXT，避免残留文件
-            old_file = ChapterService._get_chapter_txt_path(novel_unique_id, old_name, chapter_unique_id)
-            new_file = ChapterService._get_chapter_txt_path(novel_unique_id, title, chapter_unique_id)
-            if old_name and old_file != new_file and os.path.exists(old_file):
-                try:
-                    os.remove(old_file)
-                except Exception:
-                    pass
-            action_desc = "填充概要草稿" if fill_mode == "outline" else "覆盖旧草稿"
-            system_logger.info(f"[章节生成] {title} 已{action_desc}（{actual_word_count}字）→ 草稿箱")
-        else:
-            chapter_unique_id = uuid.uuid4().hex
-            new_chapter = ChapterModel(
-                novel_unique_id=novel_unique_id,
-                user_id=user_id,
-                chapter_unique_id=chapter_unique_id,
-                chapter_name=title,
-                chapter_number=next_num,
-                chapter_summary="",  # 概要不落库：留在 Redis 缓存，发布成功后自动转入 MySQL
-                word_count=actual_word_count,
-                is_published=0,
-                created_by=created_by,
-            )
-            db.add(new_chapter)
-            db.commit()
-            db.refresh(new_chapter)
-
-        chapter_file = ChapterService._get_chapter_txt_path(novel_unique_id, title, chapter_unique_id)
-        with open(chapter_file, "w", encoding="utf-8") as f:
-            f.write(generated_text)
-        system_logger.info(f"[章节生成] {title} 生成成功（{actual_word_count}字）→ 草稿箱")
-
-        # 概要统一写入 Redis 缓存（发布成功后才落库 MySQL）：
-        # 手动填概要生成时缓存无该章条目，这里补写；从缓存概要点生成时条目已存在则跳过
-        if chapter_summary:
-            try:
-                cached = ChapterService._get_outline_cache(novel_unique_id)
-                if not any((o.get("chapter_number") or 0) == next_num for o in cached):
-                    cached.append({
-                        "chapter_name": title,
-                        "chapter_number": next_num,
-                        "chapter_summary": chapter_summary,
-                    })
-                    ChapterService._write_outline_cache(novel_unique_id, cached)
-            except Exception as e:
-                system_logger.warning(f"[章节生成] 写入概要缓存失败: {e}")
-
-        # 清除草稿缓存（保持原行为）
-        try:
-            r = _redis()
-            if r:
-                r.delete_pattern(f"chapters:drafts:user:{user_id}")
-        except Exception as e:
-            system_logger.warning(f"清除缓存失败: {e}")
-
-        return success({
-            "chapter_unique_id": chapter_unique_id,
-            "chapter_name": title,
-            "word_count": actual_word_count,
-            "content": generated_text,
-        }, f"{title} 章节内容生成成功")
+        from app.service.chapter_gen_graph import run_chapter_gen
+        state = {
+            "mode": "new",
+            "novel_unique_id": novel_unique_id,
+            "user_id": user_id,
+            "chapter_name": chapter_name,
+            "chapter_summary": chapter_summary,
+            "word_count": word_count,
+            "author_style": author_style,
+            "chapter_template": chapter_template,
+            "created_by": created_by,
+            "db": db,
+        }
+        return await run_chapter_gen(state)
 
     # ============================================================
     # 辅助方法：文学质量检查
@@ -2968,283 +2783,49 @@ class ChapterService:
     async def regenerate_with_ai(db: Session, chapter_unique_id: str, user_id: int,
                                  word_count: int = 2000, chapter_summary: str = None,
                                  author_style: str = "", chapter_template: str = "") -> dict:
-        """AI 重新生成指定章节（章节编辑）
+        """AI 重新生成指定章节（章节编辑）— LangGraph 图编排
 
-        流程（与章节生成同一思路，复用公用类方法）：
-        1. 计算当前章节号 cur_num，上一章 = cur_num - 1
-        2. 上一章内容调用「上一章末尾500字」（get_prev_ending 封装方法，
-           current_chapter_num=cur_num 严格取章节号 < cur_num 的最近一章即 cur_num-1）
-        3. 生成输入：章节概要 + 按需检索记忆（retrieve_memory 封装方法）
-           + 上一章末尾 500 字（提示词工程内容不变 build_prompt）
+        流程（与命令式版本一致，迁移到 StateGraph 显式编排）：
+        1. 解析当前章节号 cur_num，上一章 = cur_num - 1
+        2. 三源修复 + 按需检索记忆（排除当前章）
+        3. 上一章末尾 500 字 + 提示词组装（提示词工程内容不变）
+        4. 调用 AI 生成 → 截断 → 程序化清洗 → 覆盖保存
+
+        实现迁移到 app.service.chapter_gen_graph.run_chapter_gen
         """
-        chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
-        if not chapter:
-            return fail("章节不存在", code=404)
-        novel_unique_id = chapter.novel_unique_id
-        cur_num = ChapterGenService.chapter_no(chapter)
-        if cur_num <= 0:
-            return fail("章节号解析失败，无法确定上一章", code=400)
-        summary = chapter_summary if chapter_summary is not None else (chapter.chapter_summary or "")
-        # 草稿阶段概要不落库（发布成功后才转入 MySQL）：若章节无概要，从 Redis 缓存补充
-        if not summary:
-            try:
-                cached = ChapterService._get_outline_cache(novel_unique_id)
-                match = next((o for o in cached if (o.get("chapter_number") or 0) == cur_num), None)
-                if match:
-                    summary = match.get("chapter_summary") or ""
-            except Exception:
-                pass
-
-        # ===== 1. 三源修复 + 加载记忆体（以 txt 为准） =====
-        memory_body = await ChapterGenService.repair_and_load_memory(novel_unique_id, db)
-
-        # ===== 2. 按需检索对应章节的记忆（排除当前章：current_chapter_num=cur_num） =====
-        # max_chars=15000 注入上限：实际字数以检索结果为准（概要命中行按相关度
-        # 截断，未达上限则全量注入；注入过长会显著拖慢生成并导致输出坍缩）
-        memory_body = ChapterGenService.retrieve_memory(
-            memory_body, summary, current_chapter_num=cur_num, max_chars=15000)
-
-        # ===== 3. 上一章节（cur_num-1）末尾 500 字（封装方法） =====
-        last_ending, dup_text, _last_name = ChapterGenService.get_prev_ending(
-            db, novel_unique_id, exclude_chapter_id=chapter_unique_id,
-            current_chapter_num=cur_num,
-        )
-        if not last_ending:
-            system_logger.warning(
-                f"[AI重新生成] 第{cur_num}章 未找到上一章末尾内容（可能是第1章）")
-
-        # ===== 4. 作品设定 + 提示词组装（提示词工程内容不变） =====
-        settings = ChapterService._get_novel_settings(novel_unique_id)
-        # 加载角色卡（主角+前几位配角）注入 prompt，解决「疯批不疯/怼神不怼」式人设写崩
-        character_cards = ChapterService._load_character_cards(db, novel_unique_id)
-        # 未手动选章节模板 → 按作品主角性格自动适配默认模板
-        if not chapter_template:
-            chapter_template = ChapterService._resolve_default_template(db, novel_unique_id)
-            if chapter_template:
-                system_logger.info(f"[AI重新生成] 未手动选模板，按主角性格自动适配: {chapter_template}")
-        prompt = ChapterGenService.build_prompt(
-            chapter_name=chapter.chapter_name,
-            memory_body=memory_body,
-            settings_text=settings.get("content", ""),
-            last_chapter_ending=last_ending,
-            chapter_summary=summary,
-            word_count=word_count,
-            include_combat_meme=True,
-            author_style=author_style,
-            chapter_template=chapter_template,
-            character_cards=character_cards,
-            recent_duplicate_text=dup_text,
-        )
-        system_logger.info(
-            f"[AI重新生成] 请求输入统计: 记忆体={len(memory_body)}字符 | 概要={len(summary or '')}字 "
-            f"| 锚点={len(last_ending or '')}字 | 提示词总长={len(prompt)}字符")
-
-        # ===== 5. 调用 AI 生成（只调用一次，不重试不扩写）+ 后处理截断 =====
-        # max_tokens 覆盖目标上限（4000字×4=16000 token），排除 max_tokens 不足导致的提前截断
-        gen_max_tokens = max(int(word_count * gen_max_tokens_multiplier()), gen_max_tokens_min())
-        generated_text, err = await ChapterService._call_generation_api(
-            prompt, gen_max_tokens,
-            summary=summary,
-            genre=ChapterService._get_novel_genre(novel_unique_id))
-        if not generated_text:
-            return fail(f"AI重新生成失败: {err}", code=500)
-        system_logger.info(f"[AI重新生成] max_tokens={gen_max_tokens} 目标字数={word_count}")
-
-        # 概要边界截断（同 generate_with_ai：直接采用截断结果，_trim_to_summary_boundary 内部
-        # 已有"残留≤500字视为自然收尾保留全文"保护，不再因截断后字数少而放行概要外超纲内容）
-        if summary:
-            generated_text = ChapterService._trim_to_summary_boundary(generated_text, summary)
-        # 超长上限截断（目标字数 → 最多约 hard_cap_ratio 倍），避免生成超长；
-        # 上限放宽到 hard_cap_ratio 倍且不低于 +hard_cap_min_extra，并按段落/句号边界截断，避免句中硬切导致结尾残缺
-        hard_cap = max(int(word_count * gen_hard_cap_ratio()), word_count + gen_hard_cap_min_extra())
-        if len(generated_text) > hard_cap:
-            cut = generated_text[:hard_cap]
-            for sep in ("\n\n", "\n", "。", "！", "？"):
-                idx = cut.rfind(sep)
-                if idx > int(hard_cap * 0.8):
-                    cut = cut[:idx + len(sep)]
-                    break
-            generated_text = cut
-
-        # ===== 5.5 程序化清洗：生成后按代码规则去除 AI 检测统计特征 =====
-        cleaned_text, clean_stats = clean_generated_text(generated_text)
-        if clean_stats:
-            system_logger.info(f"[AI重新生成] 程序化清洗: {clean_stats}")
-        generated_text = cleaned_text
-
-        actual_word_count = len(generated_text)
-
-        # ===== 6. 保存：覆盖 TXT + 更新 MySQL 字数 =====
-        # 注：不再执行生成后增量记忆提取（省去一次等待）。生成输入已通过「按需检索记忆」
-        # （retrieve_memory）从 Redis 记忆体注入，足够满足重新生成场景。
-        novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
-        os.makedirs(novel_dir, exist_ok=True)
-        chapter_file = ChapterService._get_chapter_txt_path(novel_unique_id, chapter.chapter_name, chapter_unique_id)
-        with open(chapter_file, "w", encoding="utf-8") as f:
-            f.write(generated_text)
-        ChapterDAO.update(db, chapter, word_count=actual_word_count)
-        system_logger.info(f"[AI重新生成] 第{cur_num}章 {chapter.chapter_name} 重写成功（{actual_word_count}字）")
-
-        return success({
+        from app.service.chapter_gen_graph import run_chapter_gen
+        state = {
+            "mode": "regenerate",
+            "db": db,
             "chapter_unique_id": chapter_unique_id,
-            "chapter_name": chapter.chapter_name,
-            "word_count": actual_word_count,
-            "content": generated_text,
-        }, f"{chapter.chapter_name} 重新生成成功")
+            "user_id": user_id,
+            "word_count": word_count,
+            "chapter_summary": chapter_summary or "",
+            "author_style": author_style,
+            "chapter_template": chapter_template,
+            "novel_unique_id": "",  # 由 node_assign 查章后填充
+        }
+        return await run_chapter_gen(state)
 
     @staticmethod
     async def continue_with_ai(db: Session, chapter_unique_id: str, word_count: int = 2500) -> dict:
-        """AI 续写指定章节：根据作品设定+前文+当前内容，续写本章后续内容"""
-        from app.dao.novel_dao import NovelDAO
-        chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
-        if not chapter:
-            return fail("章节不存在", code=404)
+        """AI 续写指定章节 — LangGraph 图编排
 
-        # 读取当前章节已有内容：优先从本地 TXT 文件，兜底 DB
-        existing_content = ChapterService._read_chapter_content_from_file(
-            chapter.novel_unique_id, chapter.chapter_name, chapter.chapter_unique_id
-        )
+        流程（与命令式版本一致，迁移到 StateGraph 显式编排）：
+        1. 读当前章已有内容（末尾 2000 字作上下文）+ 只读记忆 + 角色卡 + 疯批规则
+        2. 直连 DeepSeek 续写（system=恒定核心+场景指南，user=续写 prompt+自查清单）
+        3. 程序化清洗 → 追加保存 → 记忆增量更新
 
-        # 当前章节已写内容（取末尾部分作为上下文）
-        context_content = existing_content[-2000:] if len(existing_content) > 2000 else existing_content
-
-        # ===== 记忆体：一次加载 =====
-        memory_body = await ChapterService._ensure_memory(chapter.novel_unique_id, db)
-        cur_num = ChapterService._chapter_num_from_name(chapter.chapter_name)
-        # max_chars=15000 注入上限：实际字数以检索结果为准（概要命中行按相关度
-        # 截断，未达上限则全量注入；注入过长会显著拖慢生成并导致输出坍缩）
-        memory_body = ChapterService._retrieve_relevant_memory(
-            memory_body, chapter.chapter_summary, current_chapter_num=cur_num, max_chars=15000)
-
-        # 加载角色卡（主角+前几位配角）注入 prompt，续写也必须符合人设（疯批/怼神不能续写时变乖巧）
-        character_cards = ChapterService._load_character_cards(db, chapter.novel_unique_id)
-        protagonist_block = ""
-        if isinstance(character_cards, list) and character_cards:
-            try:
-                main = character_cards[0]
-                name = (main.get("name") or "").strip()
-                pers = (main.get("personality") or "").strip()
-                pos = (main.get("position") or "").strip()
-                intro = (main.get("intro") or "").strip()[:800]
-                if name:
-                    parts = [f"【🔴 主角人设硬约束（续写必须遵循，违反即作废）】主角：{name}"]
-                    if pers:
-                        parts.append(f"性格关键词（所有言行必须符合，禁止写相反的人）：{pers}")
-                    if pos:
-                        parts.append(f"角色定位：{pos}")
-                    if intro:
-                        parts.append(f"人物卡（关键信息）：{intro}")
-                    parts.append("硬约束：续写主角的台词/选择/情绪都必须符合上述性格，禁止写与性格相反的反应"
-                                 "（如嘴贱型忽然恭敬、疯批型忽然乖巧、清醒疯型忽然无脑）。")
-                    protagonist_block = "\n".join(parts)
-            except Exception as e:
-                system_logger.warning(f"[AI续写] 角色卡注入异常: {e}")
-
-        # 按主角性格关键词注入对应的疯批/怼神/嘴贱专属规则（与 build_prompt 保持同一套规则）
-        chaot_rules = ""
-        if isinstance(character_cards, list) and character_cards:
-            try:
-                pers_all = (character_cards[0].get("personality") or "") + " " + (character_cards[0].get("intro") or "")
-                import re as _re
-                if _re.search(r'疯|疯批|疯癫|癫|偏执|病娇|嘴贱|反骨|狂', pers_all):
-                    chaot_rules = CONTINUE_CHAOT_RULES
-            except Exception as e:
-                system_logger.warning(f"[AI续写] 疯批规则注入异常: {e}")
-
-        # 读配置：续写采样参数（frequency_penalty 等从 config.yaml 读取，便于调优）
-        from app.config import get as cfg
-        prompt = CONTINUE_PROMPT.format(
-            protagonist_block=protagonist_block,
-            chaot_rules=chaot_rules,
-            memory_body=memory_body,
-            chapter_name=chapter.chapter_name,
-            chapter_summary=chapter.chapter_summary or '无',
-            context_content=context_content,
-            word_count=word_count,
-            min_words=max(word_count - 500, 800),
-        )
-
-        async with httpx.AsyncClient(timeout=180) as client:
-            try:
-                response = await client.post(
-                    f"{deepseek_base_url()}/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {deepseek_api_key()}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                    "model": deepseek_long_model(),
-                    "messages": [
-                        # system 前缀 = 恒定核心 + 按需场景指南（按本章概要推荐）
-                        {"role": "system", "content": build_generate_system_prompt(
-                            chapter.chapter_summary,
-                            ChapterService._get_novel_genre(chapter.novel_unique_id))},
-                        # 自查清单保留 user 末尾（近因效应）；其余固定指南已在 system 中
-                        {"role": "user", "content": prompt + "\n\n" + SELF_CHECK_LIST}
-                    ],
-                    "thinking": {"type": "disabled"},
-                    "max_tokens": max(int(word_count * gen_max_tokens_multiplier()), gen_max_tokens_min()),
-                        "temperature": 0.85,
-                        "top_p": 0.92,
-                        "frequency_penalty": cfg("ai.generation.frequency_penalty", 0.5),
-                        "presence_penalty": cfg("ai.generation.presence_penalty", 0.5)
-                    }
-                )
-                data = response.json()
-                if "choices" not in data or not data["choices"]:
-                    err_msg = str(data.get("error", {}).get("message", "未知错误"))
-                    system_logger.error(f"AI续写失败: {chapter.chapter_name} → {err_msg}")
-                    return fail("AI续写失败: " + err_msg, code=500)
-
-                generated_text = data["choices"][0]["message"]["content"]
-                if not generated_text or not generated_text.strip():
-                    system_logger.error(f"AI续写失败: {chapter.chapter_name} → 模型返回空内容")
-                    return fail("AI续写失败: 模型返回空内容，请重试", code=500)
-                system_logger.info(f"AI续写成功: {chapter.chapter_name} +{len(generated_text)}字")
-
-                # 程序化清洗续写片段（去 AI 检测统计特征，引号内对话保护不改写）
-                cleaned_text, clean_stats = clean_generated_text(generated_text)
-                if clean_stats:
-                    system_logger.info(f"[AI续写] 程序化清洗: {clean_stats}")
-                generated_text = cleaned_text
-
-                # 追加续写内容到文件（兼容）和数据库
-                new_content = existing_content + "\n\n" + generated_text
-                novel_dir = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id)
-                os.makedirs(novel_dir, exist_ok=True)
-                chapter_file = ChapterService._get_chapter_txt_path(
-                    chapter.novel_unique_id, chapter.chapter_name, chapter.chapter_unique_id)
-                with open(chapter_file, "w", encoding="utf-8") as f:
-                    f.write(new_content)
-
-                # 更新数据库字数
-                ChapterDAO.update(db, chapter, word_count=len(new_content))
-
-                # 清理单章正文缓存，确保章节编辑/列表读取到续写后的最新内容
-                rr = _redis()
-                if rr:
-                    rr.delete(f"chapter:content:{chapter_unique_id}")
-                    rr.delete_pattern(f"chapters:novel:{chapter.novel_unique_id}:*")
-
-                await ChapterService._refresh_memory_after_generate(
-                    chapter.novel_unique_id, db, new_content, chapter.chapter_name,
-                    chapter.chapter_summary or ""
-                )
-
-                return success({
-                    "chapter_unique_id": chapter_unique_id,
-                    "chapter_name": chapter.chapter_name,
-                    "continued_text": generated_text,
-                    "word_count": len(new_content),
-                    "total_word_count": len(new_content)
-                }, f"续写成功，新增 {len(generated_text)} 字")
-
-            except httpx.TimeoutException:
-                system_logger.error(f"AI续写超时: {chapter.chapter_name}")
-                return fail("AI接口调用超时，请重试", code=500)
-            except Exception as e:
-                system_logger.error(f"AI续写异常: {chapter.chapter_name} → {str(e)}")
-                return fail(f"AI续写失败: {str(e)}", code=500)
+        实现迁移到 app.service.chapter_gen_graph.run_chapter_gen
+        """
+        from app.service.chapter_gen_graph import run_chapter_gen
+        state = {
+            "mode": "continue",
+            "db": db,
+            "chapter_unique_id": chapter_unique_id,
+            "word_count": word_count,
+        }
+        return await run_chapter_gen(state)
 
     @staticmethod
     def get_drafts(db: Session, user_id: int) -> dict:
@@ -4034,7 +3615,7 @@ class ChapterService:
                             ],
                             "thinking": {"type": "disabled"},
                             "max_tokens": 16384,
-                            "temperature": 0.7,
+                            "temperature": cfg("ai.generation.temperature", 0.85),
                             "top_p": 0.9,
                             "frequency_penalty": cfg("ai.generation.frequency_penalty", 0.5),
                             "presence_penalty": cfg("ai.generation.presence_penalty", 0.5),

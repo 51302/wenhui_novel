@@ -395,6 +395,7 @@ class ChapterGenService:
             settings_text=settings_text or "未设定",
             context_summary=f"上一章末尾（从这里接着写）：\n{last_chapter_ending}" if last_chapter_ending else "这是第一章，无需承接",
             event_checklist=chapter_summary or "根据前文自然推进剧情",
+            summary_narrative=chapter_summary or "根据前文自然推进剧情",
         )
         # 主角人设硬约束：紧贴「最高优先级」之后注入（权重最高）
         if protagonist_guide:

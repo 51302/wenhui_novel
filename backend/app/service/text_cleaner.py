@@ -57,7 +57,6 @@ EXCLAIM_KEEP_PER_CHARS = 150     # 感叹号：人类网文本身多，阈值放
 NOT_IS_KEEP_MAX = 0              # "不是X，是Y"：全文最多0处（检测器红牌项，彻底消除）
 TRIPLE_KEEP_PER_CHARS = 800      # 三连排比：每800字允许1个
 SIMILE_KEEP_PER_CHARS = 250      # 明喻词：每250字允许1个
-LIKE_KEEP_MAX = 3                # "像"字比喻：全文不超过3个（检测器红牌项）
 ABRUPT_KEEP_PER_CHARS = 500      # 忽然/突然/猛地等：每500字允许1个
 ABRUPT_WINDOW = 300               # 同词局部密度：相同副词300字内最多1个（"忽然"92字内3次→删超出的）
 CONJ_KEEP_MAX = 1                # 句首连接词（于是/因此/然后/接着）：全文最多1个
@@ -144,6 +143,13 @@ _GUIDE_RE = get_regex("guide")
 _LIKE_ISOLATED_RE = get_regex("like_isolated")
 # 句尾补丁比喻（，像X。/ 像是X。→ 跟X似的）
 _LIKE_PATCH_RE = get_regex("like_patch")
+# 句中"像X"比喻段（AI 高频：句中补丁比喻"像压实的雪""像一根细针""像影子一样"，
+# 检测端 _METAPHOR_RE 全口径统计，清洗端需同口径压减）
+# 模式1 带尾缀"一样/似的/般"（X 非贪婪，防止吃掉后续动作）；模式2 无尾缀（X 后紧跟标点/换行）
+_LIKE_META_RE = re.compile(
+    r'(?<!好)像(?:是)?[^，。；！？\n]{1,24}?(?:一样|似的|般)'
+    r'|(?<!好)像(?:是)?[^，。；！？\n]{1,24}(?=[，。；！？\n])'
+)
 # 代词/人名 + 动作白名单（删除冗余主语时校验，避免病句）
 _SUBJECT_WORDS = tuple(get_wordlist("SUBJECT_WORDS"))
 # 段首主语表（段落开头词重复检测：连续2段同主语开头 → 第2段删主语）
@@ -223,7 +229,9 @@ _NOUN_PRONOUN_FUSED_RE = get_regex("noun_pronoun_fused")
 # ---- 新增 6 条 AI 特征正则 ----
 # 助词残缺句："每吐一个字都。"（都/会/能/敢/要 + 句号/感叹号/逗号 = 缺补语）
 # 前字必须是实义内容（排除"都都""会不会"等叠词合法用法），后面无紧随内容直接断
-_AUX_BROKEN_RE = re.compile(r'([\u4e00-\u9fff]{2,8})(都|会|能|敢|要)([。！，,])(?![，。！？\u4e00-\u9fff])')
+# "要"前排除"重/需/想/快/主/紧/必/求/须/将/正"等字，防止"重要/需要/想要/主要/必要/要紧/要求/将要/正要"等
+# 完整词被误判为助词残缺（"命比任务重要。"→误补"重要费劲。"）；都/会/能/敢 无需排除
+_AUX_BROKEN_RE = re.compile(r'([\u4e00-\u9fff]{2,8})(都|会|能|敢|(?<![重需想快主紧必求须将正])要)([。！，,])(?![，。！？\u4e00-\u9fff])')
 # 悬空"XX的，"独立成分（"暗红色的，看得见走向"/"裂开一道的口子"中"一道的"=残缺；
 # 排除"总的来说/似的/目的"等合法词；优先匹配句中"XX的，"+前后断开的形容词悬空）
 _ADJ_DANGLING_RE = re.compile(r'(?<![总目似有])的，(?=[\u4e00-\u9fff]{0,6}[，。！？]|$)')
@@ -627,26 +635,30 @@ def _fix_simile(text: str, stats: dict) -> str:
 
 
 def _fix_like_density(text: str, stats: dict) -> str:
-    """"像"字比喻密度压减：全文最多 LIKE_KEEP_MAX 个（检测器红牌项），
-    超出的句尾补丁比喻（，像X。/ 像是X。）直接删除比喻部分（保留主干句），
-    不再换成"跟X似的"（"跟X似的"本身也是AI检测红牌项）"""
+    """"像"字比喻密度压减：与检测端"比喻密度超标"口径对齐（每1000字1处、至少2、最多5），
+    超出的"像X(一样/似的/般)"比喻段（含句中补丁比喻"像压实的雪""像一根细针""像影子一样"）
+    直接删除保留主干句，不再只处理句尾补丁（否则句中比喻堆积永远清不掉）。"""
     count = len(_LIKE_ISOLATED_RE.findall(text))
-    if count <= LIKE_KEEP_MAX:
+    quota = max(2, min(5, len(text) // 1000))
+    if count <= quota:
         return text
-    need = count - LIKE_KEEP_MAX
+    need = count - quota
     replaced = [0]
 
     def repl(m):
         if replaced[0] >= need:
             return m.group(0)
         replaced[0] += 1
-        # 直接删除比喻部分，保留主干（前面的逗号也一起删）
+        # 直接删除比喻段，保留主干（如"像压实的雪，"→删；"像影子一样"→删）
         return ""
 
-    new_text = _LIKE_PATCH_RE.sub(repl, text)
-    # 清理删除后可能产生的多余逗号（"，。"→"。"）
-    new_text = re.sub(r'，。', '。', new_text)
-    new_text = re.sub(r'，，', '，', new_text)
+    new_text = _LIKE_META_RE.sub(repl, text)
+    # 清理删除后残留标点（"，。"→"。"、"，，"→"，"、句首残留逗号）
+    new_text = re.sub(r'，[，。；！？]', lambda m: m.group(0)[1], new_text)
+    new_text = re.sub(r'^[，、]', '', new_text)
+    # 删除比喻后可能留下悬空转折连词（"不高，却像X。"删比喻→"不高，却。"），
+    # 转折连词（却/而/但/则）后无补语属病句，一并删（"不高，却。"→"不高。"）
+    new_text = re.sub(r'[却而但则][。．！]', lambda m: m.group(0)[1], new_text)
     if replaced[0]:
         stats["like"] = replaced[0]
     return new_text
@@ -707,6 +719,41 @@ def _fix_abrupt_adverbs(text: str, stats: dict) -> str:
             last = nxt
     out.append(text[last:])
     stats["abrupt"] = stats.get("abrupt", 0) + len(remove_set)
+    return "".join(out)
+
+
+# ---- "微微X"弱化副词模板清洗（AI 高频：微微发白/蠕动/泛红=弱化副词代替具体动作） ----
+# 检测端 check_ai_features 用 _WEIWEI_ADV_RE（L2473）抓"微微+2~4字"；提示词是软约束跟不上
+# 模型花样（点名"微微发白/蠕动/泛红"，模型就写"微微颔首/发疼/侧身"），清洗器程序化兜底。
+# 改写策略：动作型双字 → 实动作改写（"微微颔首"→"颔了颔首"）；其余 → 删"微微"
+# （"微微发疼"→"发疼"、"微微泛红"→"泛红"，弱化副词删掉后读感更干脆更"人"）。
+_WEIWEI_ACTION_MAP = {
+    "颔首": "颔了颔首",
+    "侧身": "侧了侧身",
+    "点头": "点了点头",
+    "摇头": "摇了摇头",
+    "皱眉": "皱了皱眉",
+}
+
+
+def _fix_weiwei(text: str, stats: dict) -> str:
+    """"微微X"弱化副词清洗：全文所有"微微X"（"微微一笑"固定搭配除外）一律改写，
+    动作型双字走映射改实动作，其余删"微微"。"""
+    matches = list(_WEIWEI_ADV_RE.finditer(text))
+    if not matches:
+        return text
+    out = []
+    last = 0
+    replaced = 0
+    for m in matches:
+        out.append(text[last:m.start()])
+        x = m.group(0)[2:]  # 去掉"微微"，取 X
+        out.append(_WEIWEI_ACTION_MAP.get(x, x))
+        replaced += 1
+        last = m.end()
+    out.append(text[last:])
+    if replaced:
+        stats["weiwei"] = stats.get("weiwei", 0) + replaced
     return "".join(out)
 
 
@@ -1237,20 +1284,17 @@ def _fix_short_para_density(text: str, stats: dict) -> str:
         return False
 
     def _is_short_narrative(p: str) -> bool:
+        # 口径与 check_ai_features 检测端严格一致：非对话段 ≤12字 全算短段。
+        # （曾用 has_verb 过滤导致"声音有些哑，但稳。"漏算 → 检测报0.167清洗端算0.083不触发，
+        #   修复：去掉动词词表约束，纯字数口径对齐，检测超即清洗必并，闭环）
         p = p.strip()
         if not p or len(p) > 12:
             return False
-        if _is_dialogue(p):  # ⭐ 对话整段跳过（台词短是正常的，不是AI节奏）
+        if _is_dialogue(p):  # 对话整段跳过（台词短是正常的，不是AI节奏）
             return False
-        if p in ("沉默。", "安静。", "寂静。", "安静，", "沉默，"):
+        if p in ("沉默。", "安静。", "寂静。", "安静，", "沉默，", "……", "。"):
             return False
-        has_verb = any(c in p for c in "了着过个动走说看停碎坐站来去笑哭打拍抓顿醒收写回转起落"
-                                         "扔拿放闭睁举伸推拉开门关裂塌倒退跑跳跪趴靠躺弯握低"
-                                         "听见知道见想问答喊叫念叹费劲紧松")
-        has_judge_pattern = bool(re.search(r'(?:^|[^是])是[^，。！？]|[一二三四五六七八九十百千\d]+[个次块]', p))
-        has_noun_label = bool(re.match(r'^[\u4e00-\u9fff]{1,6}[。！]$', p)) and \
-                          not p.rstrip('。！').isdigit()
-        return has_verb or has_judge_pattern or has_noun_label
+        return True
 
     import math
     paras = text.split("\n\n")
@@ -2040,7 +2084,650 @@ def _fix_danmu_format(text: str, stats: dict) -> str:
     return text
 
 
+def _fix_loc_fused_comma(text: str, stats: dict) -> str:
+    """处所/方位词后缺逗号粘连修复："长刀上没说话" → "长刀上，没说话"
+    （AI 不断句粘连：处所/方位词后直接接"没/不/未/又/已"开头谓语，缺逗号）
+    与检测规则"处所方位缺逗号粘连"口径一致（排除 山上/天上/地上/路上/海上/身上/怀里/心里/手里/水里/夜里 等已习惯无逗号表达）。
+    必须置于 pipeline 末尾执行——若在 _fix_comma_triple 之前，其"合并前两项"会把此处新补的逗号又吃掉。"""
+    pattern = re.compile(
+        r"([\u4e00-\u9fff]{1,5}[上里中内间])(?<!山上|天上|地上|路上|海上|身上|怀里|心里|手里|水里|夜里)((?:没(?!有)|不|未|又|已)[\u4e00-\u9fff]{1,6})")
+    new_text, n = pattern.subn(r"\1，\2", text)
+    if n:
+        stats["loc_fused_comma"] = stats.get("loc_fused_comma", 0) + n
+    return new_text
+
+
+def _fix_noun_phrase_repeat(text: str, stats: dict) -> str:
+    """同一"方位词+的+名词"具象物件短语全文≥3次的复读压减：
+    "背上的墨渊"×3 → 保留前2次，第3次起改成"它"（"它用灰布裹着""把它解下来"）。
+    确定性安全兜底：只处理"方位词+的+物件名"（上/里/中/内/间/前/后+的+名词）式短语，
+    这是 AI 反复全称点名的重灾区；用"方位词+的"作守卫，避免误伤"顾平安的脸"等人名短语。
+    与检测器 _find_repeated_phrases 口径一致（引号外叙述统计，≥3次才动手）。
+    防病句：某处若紧邻代词（"滑到他背上的墨渊"→"滑到他它"），该处跳过不换。
+    回填策略：需替换 cnt-2 处，若靠后的处紧邻代词被跳过导致替换不足，
+    则回填靠前的安全处补足——否则"第3次恰好紧邻代词"时会一次都不换（残留超标）。"""
+    loc_guard = re.compile(r"[上里中内间前后]的")
+    phrases = _find_repeated_phrases(text)
+    changed = 0
+    for phrase, cnt in phrases:
+        if cnt < 3 or not loc_guard.search(phrase):
+            continue
+        matches = list(re.finditer(re.escape(phrase), text))
+        need = cnt - 2  # 需替换处数（保留前2次）
+        to_replace = []
+
+        def _safe(m):
+            prev = text[m.start() - 1] if m.start() > 0 else ""
+            nxt = text[m.end()] if m.end() < len(text) else ""
+            # 前接代词（"滑到他背上的墨渊"→"滑到他它"）或后随汉字
+            # （"背上的墨渊布条"→"它布条"粘连，属更长复合名词的一部分）→ 该处跳过不换
+            if prev in "他她它你我":
+                return False
+            if nxt and '\u4e00' <= nxt <= '\u9fff':
+                return False
+            return True
+
+        for m in matches[2:]:  # 第3次起优先
+            if _safe(m):
+                to_replace.append(m)
+        for m in (matches[1:2] + matches[0:1]):  # 不足则回填：优先第2次（指代最近），最后才动第1次（首次点名须保留全称，否则首现即"它"指代不明）
+            if len(to_replace) >= need:
+                break
+            if _safe(m):
+                to_replace.append(m)
+        if not to_replace:
+            continue
+        out = []
+        last = 0
+        for m in sorted(to_replace, key=lambda x: x.start()):
+            out.append(text[last:m.start()])
+            out.append("它")
+            last = m.end()
+            changed += 1
+        out.append(text[last:])
+        text = "".join(out)
+    if changed:
+        stats["noun_phrase_repeat"] = stats.get("noun_phrase_repeat", 0) + changed
+    return text
+
+
+def _fix_noun_pair_repeat(text: str, stats: dict) -> str:
+    """并列名词短语"X和Y"复读压减："雷光和灵力"×3 → 保留前2次，第3次起改成"它们"。
+    针对 AI 反复全称罗列"X和Y"式并列物件（"雷光和灵力/刀和鞘"重灾区），
+    确定性安全：只处理"1-2字+和+1-2字"的完整短语，且需 _find_repeated_phrases ≥3 次才动手；
+    换成"它们"不改变并列语义。与检测器 _find_repeated_phrases 口径一致（引号外叙述统计）。
+    防病句：某处若紧邻代词（"把他和她的..."→"把他它们"），该处跳过不换，只换安全处。"""
+    pair_re = re.compile(r"[\u4e00-\u9fff]{1,2}和[\u4e00-\u9fff]{1,2}")
+    phrases = _find_repeated_phrases(text)
+    changed = 0
+    for phrase, cnt in phrases:
+        if cnt < 3 or not pair_re.fullmatch(phrase):
+            continue
+        out = []
+        last = 0
+        occ = 0
+        for m in re.finditer(re.escape(phrase), text):
+            if occ >= 2:  # 第3次起（0起下标 ≥2）
+                prev = text[m.start() - 1] if m.start() > 0 else ""
+                if prev not in "他她它你我":  # 前接代词易造"他它"粘连病句，跳过该处
+                    out.append(text[last:m.start()])
+                    out.append("它们")
+                    last = m.end()
+                    changed += 1
+            occ += 1
+        if changed:
+            out.append(text[last:])
+            text = "".join(out)
+            break
+    if changed:
+        stats["noun_pair_repeat"] = stats.get("noun_pair_repeat", 0) + changed
+    return text
+
+
+def _fix_dialogue_tag_repeat(text: str, stats: dict) -> str:
+    """对话标签复读压减："玄青真人说"×3 → 保留前2次，第3次起换成"他说"。
+    针对"称号/姓名+说"式引导语反复全称点名（AI 对话场景高发），
+    确定性安全：只处理"2-4字说话人+说"的完整短语（玄青真人说/青姨说/老赵说），
+    换成中性"他说"，不改变对话归属语义。与检测器 _find_repeated_phrases 口径一致（≥3次才动手）。"""
+    for phrase, cnt in _find_repeated_phrases(text):
+        if cnt < 3 or not re.fullmatch(r"[\u4e00-\u9fff]{2,4}说", phrase):
+            continue
+        out = []
+        last = 0
+        occ = 0
+        for m in re.finditer(re.escape(phrase), text):
+            if occ >= 2:  # 第3次起换"他说"
+                out.append(text[last:m.start()])
+                out.append("他说")
+                last = m.end()
+            occ += 1
+        if last:
+            out.append(text[last:])
+            text = "".join(out)
+            stats["dialogue_tag_repeat"] = stats.get("dialogue_tag_repeat", 0) + 1
+    return text
+
+
 # ==================== 入口 ====================
+
+def _fix_gaze_tracking(text: str, stats: dict) -> str:
+    """目光/视线/眼神跟随句复读压减：全文>1次时，第2次起删掉"目光/视线/眼神"名词、
+    只留动作（"目光落在他脸上"→"落在他脸上"，主语由上下文承接）。
+    针对 AI 每段都用"目光+落滑扫停移掠巡投"跟随套路（朱雀等 ML 检测器数"目光动词"命中数，
+    统计指纹），确定性安全：只处理"目光/视线/眼神+落滑扫停移掠巡投转"的固定跟随句；
+    只删冗余名词、保留动词短语，不改变语义。与生成端"目光名词句≤1"硬上限对齐（>1次才动手，压回≤1）。
+    防病句：前导"的"一并吞掉（"他的目光落"→"他落"，避免"他的落"悬空）；仅对第2次起的重复句去名。"""
+    gaze_re = re.compile(
+        r"(?:目光|视线|眼神)[^，。！？\n]{0,5}(?:落在|滑到|扫过|停在|移到|掠过|巡过|投到|转了转|移开)")
+    matches = list(gaze_re.finditer(text))
+    if len(matches) < 2:
+        return text
+    changed = 0
+    out = []
+    last = 0
+    for idx, m in enumerate(matches):
+        out.append(text[last:m.start()])
+        if idx >= 1:  # 第2次起（0起下标 ≥1）去掉"目光/视线/眼神"（均2字）
+            if out and out[-1].endswith("的"):  # "他的目光落"→吞"的"→"他落"
+                out[-1] = out[-1][:-1]
+            out.append(m.group(0)[2:])
+            changed += 1
+        else:
+            out.append(m.group(0))
+        last = m.end()
+    out.append(text[last:])
+    if changed:
+        stats["gaze_tracking"] = stats.get("gaze_tracking", 0) + changed
+        return "".join(out)
+    return text
+
+
+def _fix_micro_beat_density(text: str, stats: dict) -> str:
+    """微动作节拍词密度压减（AI 统计指纹——真人不会每拍都用身体微反应，
+    朱雀等 ML 检测器按"一下/一瞬/顿/滞"密度判 AI，真人≈1-2/千字）。配额=2 处
+    （与生成端 HARD_RED_LINES 置顶铁律"微动作节拍词全章≤2"对齐）。
+    确定性安全，按风险分级处理：
+      1) 删停顿节拍（顿/滞/停）：夹在真实子句之间，删后保留主语、吸收相邻标点
+         （"他停了一下，没有回头"→"他没有回头"）；
+      2) 删嵌入节拍："打了一下滑"→"打滑"、"一下一下"→删、"停了一下，"→删，
+         删除后所在子句仍完整（"鞋底打滑""磕着后背""他没有回头"）；
+      3) 改情绪节拍："收了一下"→"收紧"、"缩了一下"→"微缩"、"轻拍一下"→"轻拍"
+         （动词残缺无法直删，改为等义完成式，不增词）。
+    只处理列表内高频"一下/一瞬/顿/滞"节拍词；不碰晃了晃/动了动/紧了紧等 X了X
+    复叠（更接近真人节奏，且删改风险高）。"""
+    quota = 2
+    beat_re = re.compile(
+        r'(?:顿了一下|顿了一瞬|顿了顿|顿住|滞了一下|停了一瞬|停了两息|停了一下'
+        r'|收了一下|缩了一下|蹭了一下|动了一下|轻拍了?一下|打了一下滑|一下一下|缩了缩|抬了抬'
+        r'|[\u4e00-\u9fff]{1,2}了一下)')
+    orig = len(beat_re.findall(text))
+    if orig <= quota:
+        return text
+    need = orig - quota
+    # ---- 1) 停顿节拍：可选前导分隔符 + 可选主语 + 可选"脚步"(前后皆可) + 节拍词 + 可选尾分隔符
+    pause_re = re.compile(
+        r'(?P<lead>[，,。．])?(?P<subj>他|她|玄青真人|顾平安|薛峰|夏语)?(?:脚步)?'
+        r'(?P<beat>顿了一下|顿了一瞬|顿了顿|顿住|滞了一下|停了一瞬|停了两息|停了一下)'
+        r'(?:脚步)?(?P<trail>[，,。．]?)')
+
+    def _repl_pause(m):
+        nonlocal need
+        if need <= 0:
+            return m.group(0)
+        lead, subj = (m.group('lead') or ''), (m.group('subj') or '')
+        trail = m.group('trail') or ''
+        if subj:
+            if trail in '，,':
+                # 逗号后紧跟引号（"玄青真人顿了一下，'叫你来'"）：吞逗号会变
+                # "玄青真人'叫你来'"病句（姓名与引号直接粘连），保留归属并补"说："；
+                if m.end() < len(text) and text[m.end()] in '“"‘\'':
+                    need -= 1
+                    return lead + subj + '说：'
+                # 有主语+逗号承接下文（"他停了一下，X"→"他X"），删节拍、保留主语、吞逗号
+                need -= 1
+                return lead + subj
+            if trail in '。．！':
+                # 句末（"他停了一下。"），删了只剩"他。"残句，不删
+                return m.group(0)
+            # 有主语无尾分隔符（"他顿了顿 X"），删节拍、保留主语
+            need -= 1
+            return lead + subj
+        if lead in '，,。．':
+            # 无主语但前有分隔符（"……，顿了顿，X"→"……，X"；"。脚步滞了一下，"→"。"），保留前分隔符
+            need -= 1
+            return lead
+        if trail in '，,。．':
+            # 无主语、无前导分隔符（"顿了顿，X"→"X"），吞掉尾分隔符
+            need -= 1
+            return ''
+        return m.group(0)
+
+    text = pause_re.sub(_repl_pause, text)
+    # ---- 2)+3) 嵌入/情绪节拍定向替换（优先级：情绪节拍>嵌入节拍>可留可删）
+    # 情绪节拍（收/缩）最像 AI 微表情流水线，最先清；蹭/轻拍等自然微动作最后才动
+    targeted = [
+        (r'收了一下', '收紧'),            # 指节在膝上收紧（"收了一下"是模板化情绪反应）
+        (r'收拢了一下', '收拢'),          # 手指在膝上收拢（"收拢了一下"同属情绪节拍，压回"收拢"）
+        (r'缩了一下', '微缩'),            # 瞳孔微缩（"瞳孔缩了一下"是朱雀点名微表情）
+        (r'凉了一下', '发凉'),            # 符纸贴着胸口发凉（"凉了一下"是装饰性触觉节拍）
+        (r'打了一下滑', '打滑'),          # 鞋底打滑（删"了一下"仍完整）
+        (r'一下一下', ''),                # 磕着后背（删节奏副词）
+        (r'(?P<k>他|她|顾平安|玄青真人|夏语|薛峰)停了一下[，,]',
+         lambda m: m.group('k') + ('说：' if m.end() < len(text) and text[m.end()] in '“"‘\'' else '')),
+        (r'蹭了一下', '蹭'),              # 鞋底在石阶上蹭（自然微动作，预算剩时才删）
+        (r'轻拍了?一下', '轻拍'),          # 在她肩上轻拍（预算剩时才删）
+    ]
+    for pat, rep in targeted:
+        if need <= 0:
+            break
+
+        def _repl_tgt(m, _rep=rep):
+            nonlocal need
+            if need <= 0:
+                return m.group(0)
+            need -= 1
+            return _rep(m) if callable(_rep) else _rep
+
+        text = re.sub(pat, _repl_tgt, text)
+
+    stats['micro_beat'] = max(0, orig - len(beat_re.findall(text)))
+    return text
+
+
+def _fix_sentence_sublimation(text: str, stats: dict) -> str:
+    """句尾"这X让他Y"微动作主题化升华删除（朱雀已知指纹——把一次具体感受拔高成
+    人生感悟/点题，"这疼让他清醒。"式。软约束按不住，句尾升华小句是完整可删的独立
+    小句，删掉不破坏剧情，前文已承载含义。确定性安全：只删整句，保留前句结束标点。）"""
+    subl_re = re.compile(
+        r'(?P<pre>[。．！]?)(?P<core>(?:这|那种|那)[^。．！]{1,14}(?:让|令|使)'
+        r'(?:他|她|我|你|众人|顾平安|薛峰|夏语|玄青真人)[^。．！]{0,10}[。．！])')
+    hits = list(subl_re.finditer(text))
+    if not hits:
+        return text
+
+    def _repl(m):
+        stats['sublimation'] = stats.get('sublimation', 0) + 1
+        return m.group('pre')
+
+    return subl_re.sub(_repl, text)
+
+
+def _fix_imagery_ending(text: str, stats: dict) -> str:
+    """句尾意象工整收尾删除（朱雀已知指纹——末句用"被X吞没"式意象诗意收束
+    或"…没说话"式留白意象收束，都是 ML 检测器点名的"工整收尾"指纹。
+    确定性安全：只删全文最后一处的意象收尾小句，还原为普通直白结尾，保留前句
+    结束标点。覆盖五类：
+      ① "被X遮住/吞没/挡住"型；
+      ② "只剩X，没了/一晃，没了"型；
+      ③ 留白型：仅限"末段=一句话+末句=人物没说话/沉默"，即整个末段只有一句话
+         （段内零句号或仅一个句号），避免"收回目光，低头看草药，没说话"这种正常
+         交代被误删；
+      ④ 段末留白"…，没说话/沉默/不接话。"（任意段末，非仅末段）——朱雀把
+         "低头看草药，没说话。"这类人物留白收束也算"工整收尾"；
+      ⑤ 全文末句环境意象收束（"，暮色漫上来，影子拉得老长。"）——逗号后的
+         环境意象短语整体替换为句号，保留前句实义动作。"""
+    if not text:
+        return text
+    # ④ 段末留白"…，没说话/沉默/不接话。" 通用清理（保留前句与句号）
+    new_text, c4 = re.subn(
+        r'(?<=[^。．！？\n])[，,](?:只是|却|也|仍|始终)?'
+        r'没(?:有)?(?:说(?:话|出口|出声)?|出声|作声|应声|接话)'
+        r'(?=[。．！？])',
+        '', text)
+    if c4:
+        stats['imagery_ending'] = stats.get('imagery_ending', 0) + c4
+        text = new_text
+    # ⑤ 全文末句环境意象收束："，暮色漫上来，影子拉得老长。" → "。"
+    # 允许意象词到收尾词之间含逗号（"暮色已经漫上来，把他的影子拉得老长"）
+    end_re = re.compile(
+        r'[，,](?:暮色|夜色|月光|影子|身影|风声|雾气|光影|天光|山影)'
+        r'[^。．！\n]{0,26}?(?:拉得老长|漫上来|沉下去|铺开|散尽|笼住|压下来|渐渐|彻底|隐去)'
+        r'[^。．！\n]{0,14}[。．！]?\s*$')
+    m5 = end_re.search(text)
+    if m5:
+        stats['imagery_ending'] = stats.get('imagery_ending', 0) + 1
+        text = text[:m5.start()] + '。' + text[m5.end():]
+    img_re = re.compile(
+        r'(?P<pre>[。．！])(?P<tail>[^。．！\n]{1,60}?'
+        r'(?:被[^。．！\n]{1,14}(?:吞没|淹没|裹进|融进|吸走|吞噬|遮住|挡住|吞掉|罩住|掩住|盖过去|盖住|盖没|隐没|飘散|消散)[^。！\n]{0,8}'
+        r'|只剩[^。．！\n]{1,24}没了)'
+        r')[。．！]?\s*$')
+    m = img_re.search(text)
+    if not m:
+        # ③ 留白型：仅最后一段=单句且句末=没说话/沉默型 才删
+        stripped = text.rstrip()
+        # 最后一段：从最后一个 \n\n 之后 或 文本起始
+        last_seg_start = stripped.rfind('\n\n')
+        last_seg = stripped[last_seg_start + 2:] if last_seg_start >= 0 else stripped
+        # 段内句号数 ≤1（一句话），且以留白型作末句
+        if 0 <= last_seg.count('。') + last_seg.count('．') + last_seg.count('！') + last_seg.count('？') <= 1:
+            blank_re = re.compile(
+                r'[^。．！\n]{1,80}?(?:'
+                r'(?:他|她|顾平安|玄青真人|夏语|薛峰|众人|真人|青姨)(?:只是)?'
+                r'(?:没(?:有)?(?:说(?:话|出口|出声)?|出(?:声|口)|接(?:话|茬)?|应(?:声)?|回(?:头|答|应|去)?|动(?:弹)?|说话|出声|作声)|沉默(?:了|着|不语)?)'
+                r'[，,]?[^。．！\n]{0,6})[。．！]?\s*$')
+            m2 = blank_re.search(last_seg)
+            if m2 and m2.start() > 0:  # 非段首才是留白（段首=全段=留白才删）
+                # 回溯到前一个句号 pre
+                # 在 stripped 中定位 m2.start 对应的段起始位置偏移
+                abs_start = (last_seg_start + 2) if last_seg_start >= 0 else 0
+                cut_abs = abs_start + m2.start()
+                # 找 cut_abs 之前最近的句号
+                pre_end = max(
+                    stripped.rfind('。', 0, cut_abs),
+                    stripped.rfind('．', 0, cut_abs),
+                    stripped.rfind('！', 0, cut_abs),
+                )
+                if pre_end >= 0:
+                    stats['imagery_ending'] = stats.get('imagery_ending', 0) + 1
+                    return stripped[:pre_end + 1] + text[len(stripped):]
+        return text
+    stats['imagery_ending'] = stats.get('imagery_ending', 0) + 1
+    return text[:m.start()] + '。' + text[m.end():]
+
+
+def _fix_sense_overload(text: str, stats: dict) -> str:
+    """次要感官描写压减（朱雀已知统计指纹——ML 按"五感覆盖种类数"判 AI：
+    真人一章只写当下最要紧的1-2种主感官，AI 倾向视+听+触+嗅+味五路全开）。
+    确定性安全：只删装饰性、不推进剧情的感官描写，保留对话声音/生理真疼/
+    环境温度等承载动作或情绪的必要感官。
+    处理顺序：嗅觉装饰→味觉装饰→听觉装饰（木头声/轻响/摩擦声点缀）→触觉装饰
+    （闷闷的/有些凉/膝盖发软这类纯感受点缀）。"""
+    if not text:
+        return text
+    n = 0
+    # 1) 嗅觉整句：",他闻到她身上那股气息，……甜。" 删整句保留前导逗号
+    new_text, c1 = re.subn(
+        r'[，,](?:他|她|顾平安|薛峰|夏语|青云子)?(?:闻到|嗅到|闻见)[^。．！？\n]*?[。．！？]',
+        '，', text)
+    n += c1
+    # 2) 香类整句：",檀香从门缝里渗出来，混着一股纸墨气。" 删整句
+    new_text, c2 = re.subn(
+        r'(?:檀香|沉香|药香|线香|焚香)[^。．！？\n]*?[。．！？]',
+        '', new_text)
+    n += c2
+    # 3) "带着/混着一点X味/香/苦/甜" 短语删（保留句号）
+    new_text, c3 = re.subn(
+        r'[，,](?:带着|混着|飘着|散着)(?:一点|一股|几缕)?[^，。．！？\n]{0,15}'
+        r'(?:苦味|甜味|涩味|酸味|腥味|咸味|药味|陈茶的苦|雨后草地的甜|布料味|纸墨气|草木香|花香|血腥味|淡香|香气|香味|药香)[。．！？]',
+        '。', new_text)
+    n += c3
+    # 4) "一股X味钻进来/飘过来，混着淡香。" 嗅觉整句删（保留前导逗号）
+    new_text, c4 = re.subn(
+        r'[，,](?:一股|一缕)[^，。．！？\n]{0,12}(?:味|香|气)[^，。．！？\n]{0,18}'
+        r'(?:钻进来|飘过来|窜上来|涌过来|扑过来)[^。．！？\n]{0,20}?[。．！？]',
+        '，', new_text)
+    n += c4
+    # 5) 听觉装饰整句：非对话的"XX声短促/格外清楚/发出轻响/摩擦声"类点缀整句删
+    #    （剧情对话的声音保留，只删对剧情无推进的独立环境音效句）
+    #    用 ^|\n 替代可变宽度 lookbehind，改为整体多 match 模式
+    new_text, c5 = re.subn(
+        r'(?:(?<=[。．！？\n])|(?<=^))(?:[^“”"‘’\n]{0,6}?(?:木头声|叩门声|脚步声|摩擦声|轻响|咔哒声|咯吱声|嗡嗡声|叮声|咚声|声响)'
+        r'[^。．！？\n]{0,22}(?:格外|分外|很是|特别)?(?:清楚|清晰|清脆|沉闷|刺耳|悠远|轻细|细微)?[。．！？])',
+        '', new_text)
+    # "发出一声/很轻的轻响/摩擦声"短语删除（保留句号）
+    new_text, c5b = re.subn(
+        r'[，,](?:发出|传出)(?:一声|一阵|几声)?(?:很轻的|细微的|闷沉的)?(?:轻响|声响|摩擦声|咔哒声|咯吱声)[。．！？]',
+        '。', new_text)
+    n += c5 + c5b
+    # 6) 触觉装饰短语删：纯感受点缀（不推进剧情、不刻画真伤）
+    #    闷闷的/有些凉/有些发软/发闷/发凉/发麻 这类
+    new_text, c6 = re.subn(
+        r'[，,](?:有些|有点|略微|稍稍|微微)?'
+        r'(?:闷闷的|发闷的|发凉的|发麻的|发软的|发沉的|沉甸甸的|轻飘飘的|凉丝丝的|麻酥酥的|暖洋洋的|凉冰冰的|热乎乎的|湿乎乎的|皱巴巴的|汗津津的)'
+        r'(?=[，,。．！？\n])',
+        '', new_text)
+    # "贴/挨/靠在胸口/肩/背，有些凉/冷/热/痒/麻/沉/闷。" 装饰小句删（保留句号）
+    new_text, c6b = re.subn(
+        r'(?<=[，,。．！？\n])(?:贴|挨|靠)在(?:胸口|肩|背|身)[^，。．！？\n]{0,10}?'
+        r'(?:有些|有点|略微|稍稍)?(?:凉|冷|热|温|烫|痒|麻|沉|闷)[。．！？]',
+        '。', new_text)
+    n += c6 + c6b
+    # 7) 触觉触发词安全换词（朱雀触觉词表 → 非触发词，保语义）：
+    #    凉茶→茶 / 湿滑→删 / 鞋底打滑→脚下不稳 / 发软→发沉 / 靠在地上→放在地上 /
+    #    勒进→勒着 / 沾着→带着 / "符纸贴着胸口，有些凉"装饰句整删
+    before = new_text
+    new_text = re.sub(r'半盏凉茶', '半盏茶', new_text)
+    # 湿滑删除三连：先整句再局部，防残留"踩上的石阶"（删"湿滑"留"的"）、"石阶，两侧"（悬空名词）
+    new_text = re.sub(r'踩上湿滑的石阶', '踩上石阶', new_text)
+    new_text = re.sub(r'石阶湿滑', '石阶上', new_text)
+    new_text = re.sub(r'湿滑(?:的)?', '', new_text)
+    new_text = re.sub(r'鞋底打滑', '脚下不稳', new_text)
+    new_text = re.sub(r'(?:有些|有点|膝盖)?发软', '发沉', new_text)
+    new_text = re.sub(r'(?:长刀|长剑|刀|剑)靠在地上', lambda m: m.group(0).replace('靠在地上', '放在地上'), new_text)
+    new_text = re.sub(r'勒进', '勒着', new_text)
+    new_text = re.sub(r'[，,](?:有些|有点|略微|稍稍)?发疼', '', new_text)
+    new_text = re.sub(r'那疼[^。．！？\n]{0,10}?[。．！？]', '。', new_text)
+    new_text = re.sub(r'沾着', '带着', new_text)
+    # 装饰句"符纸贴着胸口，有些凉。"类整删（保留前句句号）
+    new_text = re.sub(
+        r'[。．](?:符纸|玉简|令牌|信物|灵符)(?:贴着|硌着|靠着)[^。．！？\n]{0,10}?'
+        r'(?:有些|有点|略微|稍稍)?(?:凉|热|硬|冷)[。．！？]',
+        '。', new_text)
+    c7 = (new_text != before)
+    n += 1 if c7 else 0
+    # 8) 听觉触发词安全换词（朱雀听觉词表"声/叫" → 非触发词）：
+    #    声音→话音 / 叫你来→唤你来 / 叫了他一声→唤了他一句 /
+    #    低声说→说 / 轻声问→问 / 嗯了一声→嗯了一句（用"句"不用"下"，防新增微动作节拍）
+    #    声音→话音仅限人声语境（"X的声音从…传出/声音有些哑"），
+    #    防止"水珠落下来的声音""墨渊磕背的声音"这类非人声被误改成"话音"
+    new_text = re.sub(
+        r'(?P<sp>玄青真人|顾平安|夏语|薛峰|青姨|青云子|真人|师父|师尊|师兄|师姐|他|她)?'
+        r'(?P<ps>的)?声音'
+        r'(?P<af>从|自|在|有|有些|有点|发|变|很|更|渐渐|忽然|突然|越来越|沙哑|哑|低沉|低|轻|沉)',
+        lambda m: (m.group('sp') or '') + (m.group('ps') or '') + '话音' + m.group('af'),
+        new_text)
+    new_text = re.sub(r'叫你来', '唤你来', new_text)
+    new_text = re.sub(r'叫了他一声|叫了一声|喊了他一声', '唤了他一句', new_text)
+    new_text = re.sub(r'低声说', '说', new_text)
+    new_text = re.sub(r'轻声问', '问', new_text)
+    new_text = re.sub(r'嗯了一声', '嗯了一句', new_text)
+    # 带引号的"嗯"了一声（引号可能包住嗯："只"嗯"了一声"）——保留引号只改"声"→"句"
+    new_text = re.sub(r'嗯(["”「」])?了一声', '嗯\\1了一句', new_text)
+    # "还是热的/冰的/凉的" 触觉收尾短语删（保留句号）
+    new_text = re.sub(r'[，,]还是[热冰]的[。．！？]', '。', new_text)
+    if n:
+        stats['sense_overload'] = stats.get('sense_overload', 0) + n
+    return new_text
+
+
+def _fix_cv_burst(text: str, stats: dict) -> str:
+    """句长均匀度拉宽（朱雀 ML 指纹——CV<0.7 判节奏齐整=AI）。真人叙述句
+    三极分布明显：超短独段（2-5 字）+ 中句（10-20 字）+ 超长段（50+ 字）。
+    策略（已用第66章 1370 字样文端到端验证：CV 0.54→0.73）：
+      1) 造超长句：同一段非对话叙述，第一句 5-18 字且"主语+有动词"，贪婪合并
+         后续 ≤22 字的有动词句号句 → "A，B，C，D…。" 直到总长 ≥58 字（≥4 句）。
+         超长句是拉大方差的最大杠杆（1 个 58 字句 ≈ 11 个 4 字短句的贡献）。
+      2) 造超短独段：独立叙述段（7-20 字）内部有逗号时，从最后一个逗号处断开，
+         后半 2-6 字完整小句独立成段。防病句：断开处前半不能以介词/单字动词结尾
+         （"顾平安抬。眼看过去"这类残缺必须禁掉），后半首字须是合法主语。
+      3) 跨空行 2 段合并：各 6-19 字叙述 → 合并后 ≥28 字长句（保留）。
+      4) 段尾末句 3-7 字独立成段（保留原有 2a/2b 逻辑）。
+    目标 CV≥0.7，最多 2 轮，一轮推够就停。"""
+    if not text:
+        return text
+
+    def _cv(t):
+        # 口径必须与诊断端 _zhuque_diagnose.py 一致（re.split r'[。．！？!?]+'、
+        # 不含 \n、不排除引号句），否则内部判定达标提前停，诊断端却不达标
+        sents = [s.strip() for s in re.split(r'[。．！？!?]+', t)
+                 if len(s.strip()) >= 2]
+        ls = [len(s) for s in sents]
+        if len(ls) < 4:
+            return 0
+        m = sum(ls) / len(ls)
+        return (sum((x - m) ** 2 for x in ls) / len(ls)) ** 0.5 / m if m else 0
+
+    cur_cv = _cv(text)
+    if cur_cv >= 0.7:
+        return text
+
+    # 合法叙述句首字（名词/代词类，避免把"——/而/便/只"当句首）
+    _SUBJ_PREFIX = set('他她它顾玄山静灰石门此那这当半手背眼脸肩膝指袖怀脚鞋壶席光雾药竹篮叶草壁人薛夏风夜门外天里院中桌旁板阶床暮')
+    # 断开处前半不能以此结尾（介词/单字动词 → 残缺病句）
+    _BAD_PRE_SUFFIX = set('在向到从把被对于给跟和为以抬看听说读写打拿放做办想搞弄擦洗买卖按压收拿')
+    # 动词/状态标记：判定一句话"有动作内容"而非纯名词短语
+    _VERB_MARK = set('着了过下起动落伸凝压笼踩晃稳裹磕走磨破结发软想歇拐掩叩盘搁端推接喝收放取叠跪磕站坐行进出开合搭带提沾勒紧扫转对望凝瞄瞥瞧盯停歇迈跨漫')
+
+    def _has_verb(s):
+        return any(ch in _VERB_MARK for ch in s)
+
+    rounds, max_rounds = 0, 3
+    changed = 0
+    while cur_cv < 0.7 and rounds < max_rounds:
+        rounds += 1
+        t0 = text
+        # 1) 同段连续叙述短句贪婪合并 → 合到 ≥58 字（超长句拉方差的核心）
+        def _merge_greedy(m):
+            nonlocal changed
+            line = m.group(0)
+            pieces = re.findall(r'[^。．！？]{1,40}[。．！？]', line)
+            if len(pieces) < 3:
+                return line
+            merged = []
+            i = 0
+            while i < len(pieces):
+                p = pieces[i]
+                core = p[:-1]
+                # 触发：第一句 5-18 字 + 合法主语 + 有动词
+                if (5 <= len(core) <= 18 and core[0] in _SUBJ_PREFIX and _has_verb(core)
+                        and i + 1 < len(pieces)):
+                    j = i + 1
+                    acc = [core]
+                    total = len(core)
+                    while j < len(pieces):
+                        c2 = pieces[j][:-1]
+                        # 片段上限 30 字：实测长场景描述句（"静室里光线很暗，…尘粒"29 字）
+                        # 是链中最常见卡点，22 上限会掐断合并；合并目标 50 字/3 句即可
+                        # （超长句是拉方差最大杠杆，基准手工版 v22 长句达 58 字）
+                        if _has_verb(c2) and len(c2) <= 30:
+                            if total + 1 + len(c2) > 78:  # 上限防超长病句
+                                break
+                            acc.append(c2)
+                            total += 1 + len(c2)
+                            j += 1
+                            if len(acc) >= 3 and total >= 50:  # ≥3 句 + ≥50 字
+                                break
+                        else:
+                            break
+                    if len(acc) >= 3:
+                        merged_str = '，'.join(acc) + p[-1]
+                        # 病句自检：合并句首非标点、首句结尾非介词/单字动词
+                        if (merged_str[0] not in '，,。．！？'
+                                and acc[0][-1] not in _BAD_PRE_SUFFIX):
+                            changed += j - i - 1
+                            merged.append(merged_str)
+                            i = j
+                            continue
+                merged.append(p)
+                i += 1
+            return ''.join(merged)
+        # 匹配一行（非对话）：不含引号、总长 30+ 字、含≥2个句号
+        text = re.sub(
+            r'(?:(?<=\n)|(?<=^))[^“”"‘’\n]{30,200}[。．！？]',
+            _merge_greedy, text)
+        # 3) 跨空行 2 段合并：各 6-18 字叙述 → 合并后 28+ 字
+        paras = re.split(r'(\n{2,})', text)
+        new_paras = []
+        i = 0
+        while i < len(paras):
+            p = paras[i]
+            if i + 2 < len(paras) and re.fullmatch(r'\n{2,}', paras[i + 1]):
+                a, b = p.strip(), paras[i + 2].strip()
+                def _ok(body):
+                    return (6 <= len(body) <= 19
+                            and body.endswith(('。', '．', '！', '？'))
+                            and not (body.startswith('"') or body.startswith('“'))
+                            and not re.fullmatch(r'[——…\-\s]*', body))
+                if _ok(a) and _ok(b):
+                    a_core = a[:-1] if a[-1] in '。．！？' else a
+                    new_p = f"{a_core}，{b}\n\n"
+                    # 合并后总字数 ≥28 才算提升方差（别合并成 20 字标准句）
+                    if len(a_core) + 1 + len(b) >= 28:
+                        new_paras.append(new_p)
+                        changed += 1
+                        i += 3
+                        continue
+            new_paras.append(p)
+            i += 1
+        text = ''.join(new_paras)
+        # 2) 独立叙述段（7-20 字）末逗号分句拆出成超短段——防病句校验
+        def _break_short_segment(m):
+            nonlocal changed
+            seg = m.group(0).rstrip('\n')
+            nl_match = re.search(r'\n+$', m.group(0))
+            tail_nl = nl_match.group(0) if nl_match else '\n\n'
+            if re.search(r'[“”"‘’]', seg):
+                return m.group(0)
+            body = seg[:-1] if seg and seg[-1] in '。．！？' else seg
+            last_p = max(body.rfind('。'), body.rfind('．'), body.rfind('！'), body.rfind('？'))
+            if last_p < 0:
+                # 无句内句号：本身就是单句、5-12字 → 拆成 "前缀。末2-5字。"
+                if 5 <= len(body) <= 12:
+                    # 从最后一个逗号断开（比切末 2-5 字更安全）
+                    cps = [mm.start() for mm in re.finditer(r'[，,]', body)]
+                    for cp in reversed(cps):
+                        pre = body[:cp].strip()
+                        post = body[cp + 1:].strip()
+                        if (len(pre) >= 3 and pre[0] in _SUBJ_PREFIX
+                                and pre[-1] not in _BAD_PRE_SUFFIX
+                                and 2 <= len(post) <= 6
+                                and _has_verb(post) and post[0] in _SUBJ_PREFIX):
+                            changed += 1
+                            return pre + '。\n' + post + (seg[-1] if seg and seg[-1] in '。．！？' else '。') + tail_nl
+                    # 退化：段末命中"动作短语白名单"才拆出独立超短段。
+                    # 防递归叠加破坏（原 body[-3:] 盲切曾产出"顾平。/安抬眼。/看过去。"
+                    # 病句——同一短段被多轮切坏；"顾平安的指。/节在膝。/上收紧。"同理）。
+                    # 白名单=完整可独立成句的动作短语，绝不让"安抬眼""上收紧"这类残缺尾巴落单。
+                    # 安全条件：① 前缀 ≥2 字有实体（禁"他。抬眼看过去。"）；
+                    #   ② 前缀末字不是动词/介词（禁"顾平安走。上前。"）。
+                    # 前缀上限放宽到 12 字：切分后前缀必被单 \n 隔离，修正后的 lookahead
+                    # （(?=\n{2,}|\n*\Z)）不会再次匹配它，杜绝旧版"顾平。/安抬眼。"递归叠加破坏。
+                    # 白名单按长度降序：先命中长短语，防"看过去"抢先吃掉"抬眼看过去"的前半。
+                    _ACT_END_OK = ('抬眼看过去', '抬头看过去', '抬眼望过去', '回头看过去',
+                                   '抬眼看过来', '抬眼看去', '垂眼看去', '侧目看过去',
+                                   '回头看他', '抬眼看他', '看向他', '看他一眼',
+                                   '看过去', '看过来', '走过去', '走上前', '跟上去',
+                                   '追上去', '站起身', '站起来', '低下头', '垂下眼',
+                                   '收回手', '收回目光', '没说话', '没接话', '没答话',
+                                   '不接话', '侧身让开', '让开半边', '往旁边让',
+                                   '退后一步', '转过身')
+                    pre_end = None
+                    for act in _ACT_END_OK:
+                        if body.endswith(act):
+                            pre_end = body[:-len(act)].rstrip('，,')
+                            break
+                    if (pre_end and 2 <= len(pre_end) <= 12
+                            and pre_end[-1:] not in _BAD_PRE_SUFFIX):
+                        changed += 1
+                        return pre_end + '。\n' + act + (seg[-1] if seg and seg[-1] in '。．！？' else '。') + tail_nl
+                return m.group(0)
+            # 有句内句号：段尾最后一句若 3-7 字独立为末句
+            tail = body[last_p + 1:].strip()
+            if 3 <= len(tail) <= 7 and not re.search(r'[“”"‘’]', tail):
+                pre = body[:last_p + 1]
+                if pre.rstrip()[-1:] not in _BAD_PRE_SUFFIX and tail[0] in _SUBJ_PREFIX:
+                    changed += 1
+                    return pre + '\n' + tail + (seg[-1] if seg and seg[-1] in '。．！？' else '。') + tail_nl
+            return m.group(0)
+        # 匹配：独立叙述段（=段前后都是空行或边界）+ 段长 5-20 字非对话。
+        # 注意：必须用 \Z（绝对末尾）而非 $——re.MULTILINE 下 \n*$ 在任意换行前都成立
+        # （近乎恒真），会把"顾平安抬眼。"这类切分后的前缀再次匹配，导致同一短段
+        # 被多轮递归切坏（"顾平。/安抬眼。/看过去。"病句的根因）。
+        text = re.sub(
+            r'(?:(?<=\n\n)|(?<=^))([^“”"‘’\n]{5,20}[。．！？])(?=\n{2,}|\n*\Z)',
+            _break_short_segment, text)
+        # 清扫叠标点
+        text = re.sub(r'([。．！？，,])\1+', r'\1', text)
+        text = re.sub(r'[。．][，,]', '。', text)
+        text = re.sub(r'[，,][。．]', '。', text)
+        if text == t0:
+            break
+        cur_cv = _cv(text)
+    if changed:
+        stats['cv_burst'] = changed
+    return text
+
 
 def clean_generated_text(text: str) -> tuple:
     """程序化清洗入口
@@ -2073,6 +2760,8 @@ def clean_generated_text(text: str) -> tuple:
     text = _fix_simile(text, stats)
     text = _fix_like_density(text, stats)
     text = _fix_abrupt_adverbs(text, stats)
+    # "微微X"弱化副词模板（AI 高频：微微发白/蠕动/泛红；检测端必查、提示词跟不上，清洗器兜底）
+    text = _fix_weiwei(text, stats)
     text = _fix_simile_guides(text, stats)
     text = _fix_half_explain(text, stats)
     text = _fix_reduplicative_adj(text, stats)
@@ -2127,6 +2816,34 @@ def clean_generated_text(text: str) -> tuple:
     protected = _fix_intro_label(protected, stats)
     protected = _fix_voice_index(protected, stats)
     result = _restore_quotes(protected, placeholders)
+    # ---- 阶段三：pipeline 末尾（勿提前，避免被 _fix_comma_triple 等吃逗号） ----
+    # 同一"方位词+的+物件名"短语复读压减（"背上的墨渊"×3→第3次起改"它"）
+    result = _fix_noun_phrase_repeat(result, stats)
+    # 并列名词"X和Y"短语复读压减（"雷光和灵力"×3→第3次起改"它们"）
+    result = _fix_noun_pair_repeat(result, stats)
+    # 对话标签复读压减（"玄青真人说"×3→第3次起改"他说"）
+    result = _fix_dialogue_tag_repeat(result, stats)
+    # 目光/视线跟随句复读压减（"目光落在他脸上"×3→第3次起去"目光"只留动作）
+    result = _fix_gaze_tracking(result, stats)
+    # 微动作节拍词密度压减（AI 统计指纹，朱雀重点检测：全章≤2处）
+    result = _fix_micro_beat_density(result, stats)
+    # 句尾"这X让他Y"微动作主题化升华删除（朱雀已知指纹）
+    result = _fix_sentence_sublimation(result, stats)
+    # 次要感官（嗅/味）描写删除（朱雀统计指纹——五感不许全开，真人只写1-2种主感官）
+    result = _fix_sense_overload(result, stats)
+    # 处所/方位词后缺逗号粘连（"长刀上没说话"→"长刀上，没说话"）
+    # 必须在本节最末（micro_beat 之前）：micro_beat 删停顿节拍会吃掉相邻逗号，
+    # 若本规则在其前执行则补不到，需在全部可能吃逗号的清洗器跑完后再补
+    result = _fix_loc_fused_comma(result, stats)
+    # 句长均匀度拉宽（CV≥0.7，朱雀 ML 指纹——真人长短交错，AI 齐整）
+    # 位置：loc_fused_comma 之后、短段密度合并之前；断长句造的小碎段由后续 short_para 决定合并
+    result = _fix_cv_burst(result, stats)
+    # 句尾意象工整收尾删除（朱雀已知指纹，如"脚步声被松涛吞没了"）
+    # 必须放 cv_burst 之后：cv_burst 重排段落（合并/拆分）会改变文本末尾结构，
+    # 若在其前执行，合并后新露出的意象收尾会漏网
+    result = _fix_imagery_ending(result, stats)
+    # 短句独立段密度（还原后文本口径与检测一致，合并"血煞门。"类戏剧化短段）
+    result = _fix_short_para_density(result, stats)
     if stats:
         total = sum(stats.values())
         system_logger.info(f"[程序化清洗] 共替换 {total} 处: {stats}")
@@ -2192,7 +2909,10 @@ def _find_repeated_phrases(text: str, min_count: int = 3) -> list:
                 continue
             for i in range(L - n + 1):
                 counter[chunk[i:i + n]] += 1
-    cand = sorted(((p, c) for p, c in counter.items() if c >= min_count),
+    # 排除以"没/不"结尾的候选："玄青真人没寒暄/没立刻应声/没说话"的公共前缀"玄青真人没"
+    # 是"主语+否定词"截断，非完整语义短语（真复读如"布条勒进肩头"以实词结尾）
+    cand = sorted(((p, c) for p, c in counter.items()
+                   if c >= min_count and not p.endswith(("没", "不"))),
                   key=lambda x: -len(x[0]))
     out = []
     for p, c in cand:
@@ -2299,19 +3019,23 @@ def check_ai_features(text: str) -> dict:
         pass
     # 比喻密度超标检测（红牌：按密度比率，每 1000 字允许 1 处，全章上限 3 处）
     # 含「像X一样/似的/般」「跟X一样/似的」「仿佛X」「犹如X」「好似X」+「跟X似的」
-    # AI 强特征：同一段落内比喻句式扎堆，检测器对密度敏感
+    # AI 强特征：同一段落内比喻句式扎堆，检测器对密度敏感。
+    # 只统计叙述（台词里的比喻是自然口语，如"跟从水里捞出来似的""跟平常一样"，
+    # 属人话非 AI 描写堆砌，从密度里剔除），与清洗端口径一致（台词比喻不动）。
     try:
-        all_metaphors = _METAPHOR_RE.findall(text) + _GENXI_RE.findall(text)
+        # 只统计 _METAPHOR_RE（已含「跟X一样/似的」分支），不再叠加 _GENXI_RE 避免重复计数
+        narr = _QUOTE_RE.sub("", text)
+        all_metaphors = _METAPHOR_RE.findall(narr)
         # 动态阈值：每 1000 字允许 1 处，至少允许 2 处，最多允许 5 处
-        text_len = max(len(text), 1)
+        text_len = max(len(narr), 1)
         quota = max(2, min(5, text_len // 1000))
         if len(all_metaphors) > quota:
             report["比喻密度超标"] = len(all_metaphors)
         # 单段密度：任一段落超 2 处即标记（段落级不受全章配额影响）
-        paras_m = [p for p in re.split(r'\n\s*\n', text) if p.strip()]
+        paras_m = [p for p in re.split(r'\n\s*\n', narr) if p.strip()]
         dense_para_cnt = 0
         for p in paras_m:
-            mc = len(_METAPHOR_RE.findall(p)) + len(_GENXI_RE.findall(p))
+            mc = len(_METAPHOR_RE.findall(p))
             if mc > 2:
                 dense_para_cnt += 1
         if dense_para_cnt:
@@ -2476,9 +3200,10 @@ def check_ai_features(text: str) -> dict:
     except Exception:
         pass
     # "得发X"程序化形容词组合（AI 高频：干得发紧/疼得发麻=不用"发干/发疼"这种单字口语，非得"得发"拼接）
+    # 阈值与清洗端 _fix_fake_sensory（FAKE_SENSORY_MAX=1，≥2 才洗）及下方"假感官词"节点对齐，避免口径不一
     try:
         de_fa = _DE_FA_RE.findall(text)
-        if len(de_fa) >= 1:
+        if len(de_fa) > FAKE_SENSORY_MAX:
             report["得发X形容词模板"] = len(de_fa)
     except Exception:
         pass
