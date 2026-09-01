@@ -434,7 +434,7 @@ class ChapterService:
 
         async with httpx.AsyncClient(timeout=180) as client:
             response = await client.post(
-                f"{deepseek_base_url()}/v1/chat/completions",
+                deepseek_base_url(),
                 headers={
                     "Authorization": f"Bearer {deepseek_api_key()}",
                     "Content-Type": "application/json"
@@ -886,7 +886,7 @@ class ChapterService:
                 _genre = ChapterService._get_novel_genre(novel_unique_id)
                 prompt = FULL_EXTRACT_PROMPT.replace("{content}", content[-15000:]).replace("{novel_genre}", _genre)
                 response = await client.post(
-                    f"{deepseek_base_url()}/v1/chat/completions",
+                    deepseek_base_url(),
                     headers={"Authorization": f"Bearer {deepseek_api_key()}", "Content-Type": "application/json"},
                     json={"model": deepseek_model(), "messages": [
                         {"role": "system", "content": EXTRACT_FULL_SYSTEM_PROMPT},
@@ -920,7 +920,7 @@ class ChapterService:
                 _genre = ChapterService._get_novel_genre(novel_unique_id)
                 prompt = FULL_EXTRACT_PROMPT.replace("{content}", extract_content).replace("{novel_genre}", _genre)
                 response = await client.post(
-                    f"{deepseek_base_url()}/v1/chat/completions",
+                    deepseek_base_url(),
                     headers={"Authorization": f"Bearer {deepseek_api_key()}", "Content-Type": "application/json"},
                     json={"model": deepseek_model(), "messages": [
                         {"role": "system", "content": EXTRACT_FULL_STRICT_SYSTEM_PROMPT},
@@ -1067,7 +1067,7 @@ class ChapterService:
         async with httpx.AsyncClient(timeout=120) as client:
             try:
                 response = await client.post(
-                    f"{deepseek_base_url()}/v1/chat/completions",
+                    deepseek_base_url(),
                     headers={
                         "Authorization": f"Bearer {deepseek_api_key()}",
                         "Content-Type": "application/json"
@@ -1566,7 +1566,7 @@ class ChapterService:
                         async with httpx.AsyncClient(timeout=120) as client:
                             prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-5000:]).replace("{novel_genre}", _novel_genre)
                             resp = await client.post(
-                                f"{deepseek_base_url()}/v1/chat/completions",
+                                deepseek_base_url(),
                                 headers={
                                     "Authorization": f"Bearer {deepseek_api_key()}",
                                     "Content-Type": "application/json"
@@ -1625,15 +1625,24 @@ class ChapterService:
     @staticmethod
     async def _refresh_memory_after_generate(novel_unique_id: str, db: Session = None,
                                               chapter_content: str = "", chapter_name: str = "",
-                                              chapter_summary: str = ""):
-        """AI生成章节后，增量更新记忆体（提取本章关键信息追加到已有记忆体）"""
-        if chapter_content:
+                                              chapter_summary: str = "", is_regenerate: bool = False):
+        """AI生成章节后，更新记忆体
+
+        - is_regenerate=False（新章节）：增量追加，只调用1次API
+        - is_regenerate=True（重新生成）：全量重建，确保 Redis 与 TXT/MySQL 严格一致
+        """
+        if not chapter_content:
+            # 无内容时走全量重建（兜底）
+            await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
+            return
+        if is_regenerate:
+            # 重新生成时旧内容已被覆盖，必须全量重建才能与 TXT 严格一致
+            system_logger.info(f"[记忆体] 重新生成: 全量重建记忆体 {novel_unique_id}")
+            await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
+        else:
             await ChapterService._incremental_memory_update(
                 novel_unique_id, db, chapter_content, chapter_name, chapter_summary
             )
-        else:
-            # 无内容时走全量重建（兜底）
-            await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
 
     @staticmethod
     async def _extract_with_light_prompt(content: str, novel_genre: str = "") -> dict:
@@ -1648,7 +1657,7 @@ class ChapterService:
             async with httpx.AsyncClient(timeout=120) as client:
                 prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-5000:]).replace("{novel_genre}", _genre)
                 resp = await client.post(
-                    f"{deepseek_base_url()}/v1/chat/completions",
+                    deepseek_base_url(),
                     headers={
                         "Authorization": f"Bearer {deepseek_api_key()}",
                         "Content-Type": "application/json"
@@ -2236,7 +2245,7 @@ class ChapterService:
                 # 正文生成用长文本模型（flash 句子过平滑易被 AI 检测标记，改用 v4；其余功能仍用 flash）
                 gen_model = deepseek_long_model()
                 resp = await client.post(
-                    f"{deepseek_base_url()}/v1/chat/completions",
+                    deepseek_base_url(),
                     headers={
                         "Authorization": f"Bearer {deepseek_api_key()}",
                         "Content-Type": "application/json"
@@ -2259,7 +2268,15 @@ class ChapterService:
                         "presence_penalty": cfg("ai.generation.presence_penalty", 0.5),
                     },
                 )
-            data = resp.json()
+            raw_text = resp.text
+            if not raw_text or not raw_text.strip():
+                system_logger.error(f"AI生成 接口返回空响应: HTTP {resp.status_code}")
+                return "", f"AI接口返回空响应(HTTP {resp.status_code})，请重试"
+            try:
+                data = json.loads(raw_text)
+            except json.JSONDecodeError:
+                system_logger.error(f"AI生成 接口返回非JSON: HTTP {resp.status_code} body={raw_text[:200]}")
+                return "", f"AI接口返回格式异常(HTTP {resp.status_code})，请重试"
             if resp.status_code != 200:
                 err_msg = str(data.get("error", {}).get("message", f"HTTP {resp.status_code}"))
                 system_logger.error(f"AI生成 接口错误: HTTP {resp.status_code} {err_msg}")
@@ -2576,7 +2593,7 @@ class ChapterService:
             try:
                 async with httpx.AsyncClient(timeout=120) as client:
                     resp = await client.post(
-                        f"{deepseek_base_url()}/v1/chat/completions",
+                        deepseek_base_url(),
                         headers={
                             "Authorization": f"Bearer {deepseek_api_key()}",
                             "Content-Type": "application/json"
@@ -3047,25 +3064,31 @@ class ChapterService:
 
             # ====== 独立验证：逐个维度读回 ======
             if saved_count == 0:
-                # 前端未传提取字段 → 后台 AI 提取后写入 Redis
-                t3_ok = True
-                system_logger.info("[发布-验证] ✅ 记忆体 前端未传提取信息，启动后台 AI 提取")
-                try:
-                    import threading, asyncio
-                    _nid = novel_unique_id
-                    _ct = content_to_save
-                    _cn = chapter_name
-                    _cs = chapter.chapter_summary or ""
-                    def _extract_and_save():
-                        try:
-                            asyncio.run(ChapterService._extract_and_append_to_memory(
-                                _nid, _ct, _cn, _cs
-                            ))
-                        except BaseException as e:
-                            system_logger.error(f"[发布-验证] 后台AI提取失败: {e}")
-                    threading.Thread(target=_extract_and_save, daemon=True).start()
-                except Exception as e:
-                    system_logger.error(f"[发布-验证] 启动后台AI提取线程失败: {e}")
+                # 前端未传提取字段 → 先检查 Redis 是否已有完整记忆体（regenerate/生成后已更新则跳过）
+                existing_memory = ChapterService._load_memory(novel_unique_id)
+                if existing_memory and any(len(v) > 0 for v in existing_memory.split("\n") if v.strip()):
+                    t3_ok = True
+                    system_logger.info("[发布-验证] ✅ 记忆体已有完整数据，跳过后台AI提取")
+                else:
+                    # 后台 AI 提取后写入 Redis
+                    t3_ok = True
+                    system_logger.info("[发布-验证] ✅ 记忆体缺失，启动后台 AI 提取")
+                    try:
+                        import threading, asyncio
+                        _nid = novel_unique_id
+                        _ct = content_to_save
+                        _cn = chapter_name
+                        _cs = chapter.chapter_summary or ""
+                        def _extract_and_save():
+                            try:
+                                asyncio.run(ChapterService._extract_and_append_to_memory(
+                                    _nid, _ct, _cn, _cs
+                                ))
+                            except BaseException as e:
+                                system_logger.error(f"[发布-验证] 后台AI提取失败: {e}")
+                        threading.Thread(target=_extract_and_save, daemon=True).start()
+                    except Exception as e:
+                        system_logger.error(f"[发布-验证] 启动后台AI提取线程失败: {e}")
             elif not (r and r.ping()):
                 system_logger.error("[发布-验证] ❌ Redis 不可用")
             else:
@@ -3602,7 +3625,7 @@ class ChapterService:
             try:
                 async with httpx.AsyncClient(timeout=300) as client:
                     response = await client.post(
-                        f"{deepseek_base_url()}/v1/chat/completions",
+                        deepseek_base_url(),
                         headers={
                             "Authorization": f"Bearer {deepseek_api_key()}",
                             "Content-Type": "application/json"

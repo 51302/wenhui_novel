@@ -1480,12 +1480,38 @@ export default {
       continuing[d.chapter_unique_id] = true
       try {
         const res = await api.post(`/chapters/continue/${d.chapter_unique_id}`, null, { params: { word_count: 800 } })
-        if (res.状态码 === 200) {
-          // 续写完成后刷新草稿列表，确保内容正确显示
-          await fetchDrafts()
-          alert(`续写成功！新增 ${res.数据?.word_count || '?'} 字`)
+        if (res.状态码 === 200 && res.数据?.task_id) {
+          // 异步任务：轮询续写结果
+          const taskId = res.数据.task_id
+          const maxWait = 300000
+          const pollInterval = 3000
+          let waited = 0
+          let done = false
+          while (waited < maxWait) {
+            await new Promise(r => setTimeout(r, pollInterval))
+            waited += pollInterval
+            try {
+              const statusRes = await api.get('/chapters/tasks/' + taskId)
+              if (statusRes.状态码 === 200 && statusRes.数据) {
+                const taskStatus = statusRes.数据.status
+                if (taskStatus === 'done') {
+                  const result = statusRes.数据.result?.data
+                  await fetchDrafts()
+                  const added = result?.total_word_count || result?.word_count || '?'
+                  alert(`续写成功！新增 ${added} 字`)
+                  done = true
+                  break
+                } else if (taskStatus === 'failed') {
+                  alert('AI续写失败: ' + (statusRes.数据.error || '未知错误'))
+                  done = true
+                  break
+                }
+              }
+            } catch { /* ignore polling errors */ }
+          }
+          if (!done) alert('AI续写超时，请稍后查看章节内容')
         } else {
-          alert(res.消息)
+          alert(res.消息 || '提交失败')
         }
       } catch (e) { alert('续写失败') }
       finally { continuing[d.chapter_unique_id] = false }

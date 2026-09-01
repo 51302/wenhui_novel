@@ -73,7 +73,7 @@ def deepseek_base_url() -> str:
     """获取 DeepSeek API 基础地址，从配置文件读取
     :return: API 基础 URL
     """
-    return get("deepseek.base_url", "https://api.deepseek.com")
+    return get("deepseek.base_url", "https://api.deepseek.com/v1/chat/completions")
 
 
 def deepseek_model() -> str:

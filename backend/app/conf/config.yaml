@@ -47,12 +47,19 @@ jwt:
   expire_minutes: 1440         # Token 过期时间（分钟），1440=30天
 
 deepseek:
-  api_key: "sk-9279e57cd0964604a110e9a51f6251ec"
-  base_url: "https://api.deepseek.com"
-  # 轻量功能（记忆体提取/剧本/概要）用 flash，省成本
-  model: "deepseek-v4-flash"
+  # api_key: "sk-xxxxxxxxxxxxxxxxxxx"
+  # base_url: "https://api.deepseek.com/v1/chat/completions"
+  # # 轻量功能（记忆体提取/剧本/概要）用 flash，省成本
+  # model: "deepseek-v4-flash"
+  # # 章节正文生成 + 续写 + 重新生成用 pro，AI 味更淡
+  # model_long: "deepseek-v4-pro"
+
+  api_key: "sk-xxxxxxxxxxxxxxxxxxx"
+  base_url: "https://api.xiaomimimo.com/v1/chat/completions"
+  # 轻量功能（记忆体提取/剧本/概要）用 mimo-v2.5，省成本
+  model: "mimo-v2.5"
   # 章节正文生成 + 续写 + 重新生成用 pro，AI 味更淡
-  model_long: "deepseek-v4-pro"
+  model_long: "mimo-v2.5-pro"
 
 # AI 生成 Mock 开关（压测用）：true 时 AI 生成接口不调用真实 DeepSeek，返回固定文本
 ai:
@@ -62,14 +69,14 @@ ai:
     word_count: 2500           # 默认目标字数（前端创建章节时的默认值）
     word_count_max: 3000       # 前端字数输入上限（超过会提示并自动调整）
     word_count_ratio: 1.2      # prompt 要求字数上浮倍数（目标×ratio=上限，如 2500×1.2=3000；配合hard_cap兜底防超写）
-    max_tokens_multiplier: 3   # max_tokens 倍数（目标字数×此倍数=API max_tokens）
+    max_tokens_multiplier: 2   # max_tokens 倍数（目标字数×此倍数=API max_tokens）
     max_tokens_min: 8000       # max_tokens 下限（不管字数多小，至少给这么多 token）
     hard_cap_ratio: 1.25       # 超长截断倍数（目标字数×此倍数=最大允许字数，超过则截断）
     hard_cap_min_extra: 500    # 超长截断保底（目标字数+此值，与倍数取较大值）
     # 采样惩罚（正文生成+续写+剧本共用）：惩罚已出现过的词/话题，压制"弹幕X了""金色文字浮现"等高
     # 频模板词复用。0=关闭；过高（>1）会让句子生硬回避常用词。模板问题明显时上调，跑偏时下调。
-    frequency_penalty: 0.5
-    presence_penalty: 0.5
+    frequency_penalty: 0.35
+    presence_penalty: 0.35
   # 生成后程序化清洗（去 AI 检测统计特征）：true=开启，false=关闭
   # 共22条规则，两阶段执行：
   # 阶段一（全文级，含对话）：破折号/不是X是Y（逗号+句号版）/三连排比拆散/

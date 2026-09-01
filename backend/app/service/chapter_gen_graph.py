@@ -17,6 +17,7 @@
   - 未来要加「AI检测超标 → LLM定向改写 → 复检」回环，只需在 postprocess 后加一条条件边
 """
 
+import json
 import os
 import uuid
 from typing import TypedDict, Any
@@ -274,8 +275,8 @@ async def node_postprocess(state: dict) -> dict:
 async def node_save(state: dict) -> dict:
     """保存落盘
 
-    - new：填充概要草稿 / 覆盖旧正文草稿 / 新建草稿 + 写 TXT + 概要写缓存 + 清草稿缓存
-    - regenerate：覆盖 TXT + 更新 MySQL 字数（不执行生成后增量记忆提取）
+    - new：填充概要草稿 / 覆盖旧正文草稿 / 新建草稿 + 写 TXT + 概要写缓存 + 清草稿缓存 + 增量更新记忆体
+    - regenerate：覆盖 TXT + 更新 MySQL 字数 + 增量更新记忆体
     """
     from app.dao.chapter_dao import ChapterDAO
     from app.models.chapter import Chapter as ChapterModel
@@ -295,6 +296,10 @@ async def node_save(state: dict) -> dict:
         with open(chapter_file, "w", encoding="utf-8") as f:
             f.write(generated_text)
         ChapterDAO.update(state["db"], chapter, word_count=actual_word_count)
+        # 覆盖正文后同步更新记忆体（regenerate 用全量重建，保证 Redis 与 TXT/MySQL 严格一致）
+        await ChapterService._refresh_memory_after_generate(
+            novel_unique_id, state["db"], generated_text, chapter.chapter_name,
+            state.get("summary") or "", is_regenerate=True)
         return {"chapter_unique_id": state["chapter_unique_id"], "actual_word_count": actual_word_count}
 
     # ---- mode == "new" ----
@@ -357,6 +362,10 @@ async def node_save(state: dict) -> dict:
             r.delete_pattern(f"chapters:drafts:user:{state.get('user_id')}")
     except Exception:
         pass
+    # 生成后增量更新记忆体（new 模式用增量追加，只调1次API；写入 Redis 避免下次修复触发）
+    await ChapterService._refresh_memory_after_generate(
+        novel_unique_id, state["db"], generated_text, state["title"],
+        state.get("summary") or "", is_regenerate=False)
     return {"chapter_unique_id": chapter_unique_id, "actual_word_count": actual_word_count}
 
 
@@ -457,7 +466,7 @@ async def node_call_continue_api(state: dict) -> dict:
     try:
         async with httpx.AsyncClient(timeout=180) as client:
             response = await client.post(
-                f"{deepseek_base_url()}/v1/chat/completions",
+                deepseek_base_url(),
                 headers={
                     "Authorization": f"Bearer {deepseek_api_key()}",
                     "Content-Type": "application/json",
@@ -480,7 +489,13 @@ async def node_call_continue_api(state: dict) -> dict:
                     "presence_penalty": cfg("ai.generation.presence_penalty", 0.5),
                 },
             )
-        data = response.json()
+        raw_text = response.text
+        if not raw_text or not raw_text.strip():
+            return {"error": f"AI接口返回空响应(HTTP {response.status_code})，请重试"}
+        try:
+            data = json.loads(raw_text)
+        except json.JSONDecodeError:
+            return {"error": f"AI接口返回格式异常(HTTP {response.status_code})，请重试"}
         if "choices" not in data or not data["choices"]:
             err_msg = str(data.get("error", {}).get("message", "未知错误"))
             return {"error": "AI续写失败: " + err_msg}
@@ -517,6 +532,7 @@ async def node_append_save(state: dict) -> dict:
         try:
             rr.delete(f"chapter:content:{chapter.chapter_unique_id}")
             rr.delete_pattern(f"chapters:novel:{chapter.novel_unique_id}:*")
+            rr.delete(f"chapters:drafts:user:{chapter.user_id}")
         except Exception:
             pass
     return {"total_word_count": len(new_content)}
