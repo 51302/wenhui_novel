@@ -27,6 +27,71 @@ from app.utils.logger import system_logger
 class ChapterGenService:
     """章节生成的公共能力封装（只抽取公共方法，不改变提示词内容）"""
 
+    # ==================== 概要事件解析 ====================
+
+    @staticmethod
+    def _parse_summary_to_events(summary: str) -> str:
+        """将章节概要解析为结构化的事件清单，确保每个事件独立成条
+
+        例如输入：
+        "顾平安在归元宗内继续修炼，尝试突破天仙境界。夏语在藏经阁整理古籍时发现了一本关于血煞图谋的残卷。薛峰从外门传来消息，说有可疑人物在宗门附近出没。顾平安决定去调查，夏语坚持同行。两人在途中再次谈起当年落云山脉的事，顾平安第一次正面回应了夏语的感情。"
+
+        输出：
+        "1. 顾平安在归元宗内继续修炼，尝试突破天仙境界
+        2. 夏语在藏经阁整理古籍时发现了一本关于血煞图谋的残卷
+        3. 薛峰从外门传来消息，说有可疑人物在宗门附近出没
+        4. 顾平安决定去调查
+        5. 夏语坚持同行
+        6. 两人在途中再次谈起当年落云山脉的事
+        7. 顾平安第一次正面回应了夏语的感情"
+        """
+        if not summary or summary.strip() == "":
+            return summary
+
+        # 按句号、分号、逗号+动作主语分割
+        # 先按句号分割
+        sentences = re.split(r'[。；]', summary)
+        events = []
+        idx = 1
+
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+
+            # 检查是否包含多个独立事件（用逗号连接但主语不同的情况）
+            # 例如："顾平安决定去调查，夏语坚持同行"
+            parts = re.split(r'[，,]', sent)
+            if len(parts) > 1:
+                # 检查是否有不同主语
+                has_different_subjects = False
+                subjects = []
+                for part in parts:
+                    part = part.strip()
+                    if not part:
+                        continue
+                    # 提取主语（前2-4个字）
+                    m = re.match(r'^([\u4e00-\u9fa5]{2,4})', part)
+                    if m:
+                        subjects.append(m.group(1))
+                # 如果有不同主语，拆分为多个事件
+                if len(set(subjects)) > 1 and len(subjects) > 1:
+                    has_different_subjects = True
+                    for part in parts:
+                        part = part.strip()
+                        if part and len(part) > 5:  # 忽略太短的片段
+                            events.append(f"{idx}. {part}")
+                            idx += 1
+                    continue
+
+            if len(sent) > 5:  # 忽略太短的片段
+                events.append(f"{idx}. {sent}")
+                idx += 1
+
+        result = "\n".join(events) if events else summary
+        system_logger.info(f"[概要解析] 原文{len(summary)}字 → {len(events)}个事件")
+        return result
+
     # ==================== 章节号解析 ====================
 
     CN_UNIT = {'一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
@@ -357,11 +422,41 @@ class ChapterGenService:
                     lines.append("4. 底线固定：人物卡里标注的「对某人不嘴贱/唯一安静时刻」必须遵守，碰到这条线立刻安静，前后反差感本身就是爽点。")
                 protagonist_guide = "\n".join(lines)
 
-            # 其他角色：只把在本章概要或记忆体/设定中可能出现的（取前 5 个）列出来，避免 AI 忘了配角定位
+            # 方案A：动态注入——从章节概要提取角色名，只注入概要提到的配角（不限5个）
+            # 方案B：记忆体人物维度合并——从memory_body的【人物】段提取补充信息
+            import re as _re_mod
+            summary_text = chapter_summary or ""
+            # 提取概要中出现的角色名（从角色卡中匹配）
+            main_name = n_main["name"]
+            mentioned_names = set()
+            for c in character_cards[1:]:
+                cn = _normalize(c)
+                if cn["name"] and cn["name"] in summary_text:
+                    mentioned_names.add(cn["name"])
+            # 如果概要没有匹配到任何配角名，fallback到前5个（兜底）
+            if not mentioned_names:
+                mentioned_names = {(_normalize(c).get("name") or "") for c in character_cards[1:6]}
+                mentioned_names.discard("")
+
+            # 方案B：从记忆体人物维度提取补充性格信息
+            memory_char_info = {}
+            if memory_body:
+                for dim_block in memory_body.split("【"):
+                    if dim_block.startswith("人物") or "人物" in dim_block[:4]:
+                        for line in dim_block.split("\n"):
+                            line = line.strip()
+                            if "|" in line and line.startswith("-"):
+                                parts = line.lstrip("- ").split("|", 1)
+                                char_name = parts[0].strip()
+                                if char_name and char_name != main_name and len(char_name) <= 8:
+                                    memory_char_info[char_name] = parts[1].strip() if len(parts) > 1 else ""
+                        break
+
+            # 组装配角注入
             extras = []
-            for c in character_cards[1:6]:
+            for c in character_cards[1:]:
                 n = _normalize(c)
-                if not n["name"]:
+                if not n["name"] or n["name"] not in mentioned_names:
                     continue
                 one = f"- {n['name']}"
                 bits = []
@@ -371,9 +466,20 @@ class ChapterGenService:
                     bits.append(f"性格：{n['personality'][:200]}")
                 if n["intro"]:
                     bits.append(f"关键设定：{n['intro'][:260]}")
+                # 方案B：合并记忆体中的补充信息
+                mem_info = memory_char_info.get(n["name"], "")
+                if mem_info:
+                    bits.append(f"记忆体补充：{mem_info[:200]}")
                 if bits:
                     one += " | " + "；".join(bits)
                 extras.append(one)
+
+            # 方案B补充：记忆体中有但角色卡中没有的角色，也注入（从记忆体人物维度）
+            injected_names = {(_normalize(c).get("name") or "") for c in character_cards}
+            for mem_name, mem_detail in memory_char_info.items():
+                if mem_name and mem_name not in injected_names and len(extras) < 10:
+                    extras.append(f"- {mem_name} | 记忆体信息：{mem_detail[:300]}")
+
             if extras:
                 side_roles_guide = (
                     "【🔴 配角人设硬约束 —— 违反即整章作废】\n"
@@ -389,13 +495,15 @@ class ChapterGenService:
                     "大段背景揭秘/前史讲述/动机说明必须交给设定里「清醒、健谈、有动机讲述」的角色，不得塞给非人角色。"
                 )
 
+        # 将概要解析为结构化事件清单，确保每个事件独立成条
+        structured_events = ChapterGenService._parse_summary_to_events(chapter_summary) if chapter_summary else "根据前文自然推进剧情"
+
         prompt = GENERATE_CREATIVE_DIRECTION.format(
             memory_body=memory_body or "暂无已写章节记忆体",
             truth_context="无",
             settings_text=settings_text or "未设定",
             context_summary=f"上一章末尾（从这里接着写）：\n{last_chapter_ending}" if last_chapter_ending else "这是第一章，无需承接",
-            event_checklist=chapter_summary or "根据前文自然推进剧情",
-            summary_narrative=chapter_summary or "根据前文自然推进剧情",
+            event_checklist=structured_events,
         )
         # 主角人设硬约束：紧贴「最高优先级」之后注入（权重最高）
         if protagonist_guide:
@@ -417,24 +525,12 @@ class ChapterGenService:
                 "【上一章结尾（禁止复用）】：\n" + recent_duplicate_text
             )
         # 提示词工程组装：约束分层/冲突裁决/写作流程）→ 各风格指南 → 字数要求 → 自查清单
-        # 字数服从概要：目标字数仅作参考上限，清单事件写完即停笔，禁止为凑字数编新剧情
-        # （修复历史问题：原"必须写X~Y字"硬下限 + "字数未达标补充内容"暗示，导致AI在概要事件少时
-        #   突破清单边界编造新剧情凑字数。现改为字数服从概要边界，事件少则少写）
-        # 动态字数参考（随概要规模浮动）：目标字数 = min(用户目标字数, 概要事件数×500)，
-        # 事件少则参考字数自动下浮（如3个事件→1500字，而非硬逼4000字），
-        # 避免"字数硬下限 > 概要可写量"时 AI 突破概要边界编造新剧情凑字数
+        # 字数要求：硬性范围 2000-2500字，写少于此范围或超出都算不达标
         target_words = word_count
-        event_count = ChapterGenService._estimate_event_count(chapter_summary)
-        if event_count > 0:
-            # 每个事件约展开400-600字，按中值500字/事件估算本章可写量
-            event_based = event_count * 500
-            if event_based < target_words:
-                target_words = event_based
-                system_logger.info(
-                    f"[章节生成] 概要事件数={event_count}，参考字数由 {word_count} 下浮为 {target_words}"
-                )
-        max_words = int(word_count * gen_word_count_ratio())
-        prompt += f"\n\n🔴 本章字数参考：约 {target_words} 字（上限 {max_words} 字，概要事件少则少写、事件多则多写，不是硬性下限）。"
+        min_words = 2000
+        # 字数要求放在最前面，确保AI首先看到
+        prompt = f"🔴【最高优先级】本章必须写满 {min_words}-{target_words} 字！这是硬性要求，违反=整章作废！\n\n" + prompt
+        prompt += f"\n\n🔴 本章字数硬性要求：必须写满 {min_words}-{target_words} 字。每个事件展开300-500字，写完概要最后一个事件后，如果字数不足{min_words}字，继续扩写场景细节、角色内心活动、环境氛围、对话交锋，直到达标。绝对不能提前结束。记住：{min_words}字是最低要求，低于这个字数=失败！"
         # 长文衰减提醒锚点：反 AI 规则在 5000 字后会被模型稀释，此处强制提醒
         # 作用时机：模型读到字数要求时正处于写作起点，提醒会随上下文持续生效到中后段
         prompt += (
@@ -459,16 +555,21 @@ class ChapterGenService:
         # 追加字数+边界铁律到 prompt 末尾（最高优先级，近因效应）
         # 核心修复：字数服从概要边界。清单事件写完即停笔，禁止为凑字数编新剧情
         prompt += (
-            f"\n\n🔴 字数与边界铁律（最高优先级，违反即整章作废）：\n"
-            f"1. 概要=唯一边界：清单事件全写完即可停笔。清单外的新事件/新剧情/新对话/新场景一律不写。\n"
-            f"2. 字数是参考值不是硬下限：写完清单事件后字数不足 {target_words} 字，立即用1-2句话自然收尾停笔。"
-            f"禁止为凑字数编造新剧情、推进新事件、延长对话、新增场景。\n"
-            f"3. 每个事件展开400-600字（环境+动作+对话+内心+感官+情绪六要素交织），把清单事件写饱写透即可。\n"
-            f"4. 只有在「清单事件尚未写完」时才允许继续展开；清单事件全部写完=本章结束，立即收尾。\n"
-            f"开头第一句就是正文。【绝对禁止复述、换词重写已经写过的内容！】每段必须有新信息，"
-            f"不得与前面任何段落内容雷同或语义重复——平台会检测「相邻或跨段大段雷同/复述」并直接驳回签约。"
-            f"绝对禁止凑字数或水文字。"
+            f"\n\n🔴 概要边界铁律（最高优先级，违反即整章作废）：\n"
+            f"【核心原则】\n"
+            f"1. 章节概要是唯一依据和边界：所有扩写内容必须严格基于概要中提到的信息点。\n"
+            f"2. 允许合理扩写：概要里说'主角回忆起童年'，你可以扩写童年具体发生了什么、当时的场景和感受等。\n"
+            f"3. 绝对禁止跳脱：如果概要里没提到的事件，无论你觉得多精彩，都不能写进去。\n"
+            f"4. 扩写本质是填充血肉而非增加骨架：概要=骨架，你可以在骨架上添加肌肉、皮肤、衣物（细节描写、心理活动、对话、环境渲染），但不能额外长出新的骨头（新增事件、人物、设定）。\n"
+            f"【具体规则】\n"
+            f"5. 概要写'修炼困境'→只写当前修炼，可以扩写身体感受、内心挣扎、环境氛围，但不能闪回'想起三年前...'。\n"
+            f"6. 概要写'发现古卷'→只写发现过程，可以扩写古卷外观、翻开感受、阅读心理，但不能闪回'想起上次...'。\n"
+            f"7. 只有概要里明确写了'回忆XX往事'时才能写回忆，而且只能写概要里提到的那段往事。\n"
+            f"8. 每写一段前自检：这段内容在概要清单里吗？不在→删除。\n"
+            f"【字数参考】目标 {target_words} 字，上下浮动20%均可。写完清单事件后字数不足，可在已写事件中补充细节，但禁止为凑字数编新剧情。\n"
+            f"开头第一句就是正文。【绝对禁止复述、换词重写已经写过的内容！】"
         )
+        # 移除最后的字数提醒，避免AI困惑
         prompt += f"\n章节标题：「{chapter_name}」"
         # 自查清单放最末尾（近因效应）：停笔前逐项核对
         prompt += "\n\n" + SELF_CHECK_LIST

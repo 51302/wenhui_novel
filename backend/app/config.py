@@ -26,8 +26,22 @@ def _load() -> dict:
     return _config_cache
 
 
+_ENV_KEYS = {
+    "deepseek.api_key": "DEEPSEEK_API_KEY",
+    "mysql.password": "MYSQL_PASSWORD",
+    "jwt.secret_key": "JWT_SECRET_KEY",
+    "email.resend_api_key": "RESEND_API_KEY",
+    "alipay.app_private_key": "ALIPAY_APP_PRIVATE_KEY",
+    "alipay.app_public_key": "ALIPAY_APP_PUBLIC_KEY",
+    "alipay.alipay_public_key": "ALIPAY_PUBLIC_KEY",
+}
+
+
 def get(key: str, default=None):
-    """从 config.yaml 获取配置项，支持点号路径 如 'redis.host'"""
+    if key in _ENV_KEYS:
+        env_val = os.environ.get(_ENV_KEYS[key])
+        if env_val is not None and env_val.strip():
+            return env_val
     cfg = _load()
     for k in key.split("."):
         if isinstance(cfg, dict):
@@ -142,6 +156,42 @@ def gen_max_tokens_min() -> int:
     return int(get("ai.generation.max_tokens_min", 16000))
 
 
+def calc_dynamic_max_tokens(word_count: int, input_chars: int) -> int:
+    """根据实际输入大小动态计算 max_tokens
+    
+    算法逻辑：
+    1. 输出token需求 = 字数 × 1.4（中文1字≈1.4token）
+    2. 输入越大，AI需要更多输出token来组织内容 → 按输入规模动态调整倍率
+    3. 保底不低于 min_tokens，上限不超过 max_tokens_max
+    
+    Args:
+        word_count: 目标字数（如2500）
+        input_chars: 输入总字符数（系统提示词+记忆体+概要+用户提示词）
+    """
+    # 基础输出token需求（中文1字≈1.4token，加20%冗余）
+    base_output = int(word_count * 1.4 * 1.2)
+    
+    # 根据输入规模动态调整倍率
+    # 输入越少 → 倍率越低（节省token）
+    # 输入越多 → 倍率越高（确保AI有足够token组织内容）
+    if input_chars < 5000:
+        multiplier = 1.0   # 输入很少，基础输出就够了
+    elif input_chars < 10000:
+        multiplier = 1.1   # 输入适中，略加冗余
+    elif input_chars < 20000:
+        multiplier = 1.2   # 输入较多，需要更多空间
+    else:
+        multiplier = 1.3   # 输入很大，最大冗余
+    
+    dynamic_tokens = int(base_output * multiplier)
+    
+    # 保底和上限
+    min_tokens = gen_max_tokens_min()
+    max_tokens_max = int(get("ai.generation.max_tokens_max", 6000))
+    
+    return max(min(dynamic_tokens, max_tokens_max), min_tokens)
+
+
 def gen_hard_cap_ratio() -> float:
     """超长截断倍数"""
     return float(get("ai.generation.hard_cap_ratio", 2.0))
@@ -150,3 +200,8 @@ def gen_hard_cap_ratio() -> float:
 def gen_hard_cap_min_extra() -> int:
     """超长截断保底"""
     return int(get("ai.generation.hard_cap_min_extra", 3000))
+
+
+def gen_api_timeout() -> int:
+    """正文生成API超时（秒），默认240s"""
+    return int(get("ai.generation.api_timeout", 240))

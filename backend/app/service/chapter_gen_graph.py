@@ -19,12 +19,34 @@
 
 import json
 import os
+import re
 import uuid
 from typing import TypedDict, Any
 
 from langgraph.graph import StateGraph, START, END
+from app.utils.logger import system_logger
 
 __all__ = ["ChapterGenState", "run_chapter_gen", "get_chapter_graph", "get_continue_graph"]
+
+
+def _log_memory_breakdown(memory_body: str, tag: str = ""):
+    """解析记忆体并输出各维度字数统计（调用API前使用）"""
+    import re
+    if not memory_body:
+        system_logger.info(f"[记忆体-调用前] {tag} 记忆体为空")
+        return
+    sections = re.split(r'\n(?=【)', memory_body)
+    parts = []
+    total = 0
+    for sec in sections:
+        m = re.match(r'【(.+?)】', sec)
+        if m:
+            dim = m.group(1)
+            char_count = len(sec)
+            total += char_count
+            parts.append(f"{dim}={char_count}字")
+    system_logger.info(
+        f"[记忆体-调用前] {tag} 共{len(parts)}个维度 | {' | '.join(parts)} | 总计={total}字")
 
 
 class ChapterGenState(TypedDict, total=False):
@@ -64,6 +86,8 @@ class ChapterGenState(TypedDict, total=False):
     generated_text: str
     clean_stats: dict
     actual_word_count: int
+    fact_check_result: str           # 事实核查结果（"PASS" 或幻觉描述）
+    hallucinations: list             # 幻觉条目列表
     error: str                       # 失败出口
     # continue 专属
     existing_content: str
@@ -76,11 +100,12 @@ class ChapterGenState(TypedDict, total=False):
 # ============================================================
 
 async def node_repair_load(state: dict) -> dict:
-    """三源修复 + 加载记忆体（以 txt 为准补 mysql/redis 缺失；Redis 缓存命中则快速返回）
+    """加载记忆体（优先从Redis快速加载；三源修复仅在Redis缺失时触发）
 
     regenerate 模式先查章获得 novel_unique_id（原方法在查章后加载记忆），
     并把 chapter 写入 state 供 node_assign 复用（避免二次查询）。
     """
+    from app.config import get as cfg
     from app.dao.chapter_dao import ChapterDAO
     from app.service.chapter_gen_service import ChapterGenService
 
@@ -93,7 +118,37 @@ async def node_repair_load(state: dict) -> dict:
         result: dict = {"memory_body": "", "chapter": chapter, "novel_unique_id": novel_unique_id}
     else:
         result = {}
-    memory_body = await ChapterGenService.repair_and_load_memory(novel_unique_id, state["db"])
+
+    # 快速加载：优先从Redis获取，不触发三源修复
+    from app.service.chapter_service import ChapterService
+    memory_body = ChapterService._load_memory(novel_unique_id)
+
+    # 去重：Redis可能积累了重复维度段，按维度名合并去重
+    if memory_body:
+        import re as _re
+        _sections = _re.split(r'\n(?=【)', memory_body)
+        _dims = {}
+        for _sec in _sections:
+            _m = _re.match(r'【(.+?)】', _sec)
+            if _m:
+                _name = _m.group(1)
+                _dims[_name] = _sec  # 同名维度只保留最后一个
+            elif _dims:
+                # 没有标题的段落追加到上一个维度
+                _last = list(_dims.keys())[-1]
+                _dims[_last] += "\n" + _sec
+        memory_body = "\n\n".join(_dims.values())
+        system_logger.info(f"[记忆体去重] 去重后 {len(_dims)} 个维度，{len(memory_body)} 字")
+
+    if not memory_body:
+        # Redis无缓存时才触发三源修复（会消耗额外AI调用）
+        skip_repair = cfg("memory.skip_repair_on_generate", False)
+        if skip_repair:
+            system_logger.info(f"[三源修复] 跳过（skip_repair_on_generate=true），记忆体为空")
+            memory_body = ""
+        else:
+            memory_body = await ChapterGenService.repair_and_load_memory(novel_unique_id, state["db"])
+
     result["memory_body"] = memory_body
     return result
 
@@ -168,20 +223,31 @@ async def node_assign(state: dict) -> dict:
         fill_row = None
 
     title = ChapterService._normalize_chapter_title(next_num, state.get("chapter_name", ""))
+    summary = (state.get("chapter_summary") or "").strip()
+    if not summary:
+        try:
+            cached = ChapterService._get_outline_cache(novel_unique_id)
+            match = next((o for o in cached if (o.get("chapter_number") or 0) == next_num), None)
+            if match:
+                summary = (match.get("chapter_summary") or "").strip()
+        except Exception:
+            pass
     return {
         "counts": counts, "next_num": next_num, "fill_mode": fill_mode,
         "fill_row": fill_row, "title": title,
-        "summary": state.get("chapter_summary") or "",
+        "summary": summary,
     }
 
 
 async def node_retrieve_memory(state: dict) -> dict:
-    """按需检索对应章节的记忆（≤15000 字符注入上限）"""
+    """按需检索对应章节的记忆（注入上限由配置控制，max_chars=0 表示不限制）"""
+    from app.config import get as cfg
     from app.service.chapter_gen_service import ChapterGenService
     cur = state.get("cur_num") or state.get("next_num")
+    max_chars = cfg("memory.max_inject_chars", 0)
     memory_body = ChapterGenService.retrieve_memory(
         state.get("memory_body") or "", state.get("summary") or "",
-        current_chapter_num=cur, max_chars=15000)
+        current_chapter_num=cur, max_chars=max_chars if max_chars > 0 else None)
     return {"memory_body": memory_body}
 
 
@@ -233,13 +299,50 @@ async def node_call_llm(state: dict) -> dict:
 
     统一传 summary/genre：场景指南按本章概要命中注入（生成路径原为漏传，图化时对齐 regenerate）
     """
-    from app.config import gen_max_tokens_multiplier, gen_max_tokens_min
+    from app.config import calc_dynamic_max_tokens
+    from app.utils.logger import system_logger
     from app.service.chapter_service import ChapterService
+    from app.service.ai_chat_service import estimate_tokens as _est_tok
     word_count = state.get("word_count", 2000)
-    max_tokens = max(int(word_count * gen_max_tokens_multiplier()), gen_max_tokens_min())
+
+    # 动态计算 max_tokens：根据实际输入大小决定输出token上限
+    memory_body = state.get("memory_body", "")
+    summary = state.get("summary", "")
+    prompt_text = state.get("prompt", "")
+    last_ending = state.get("last_ending", "")
+
+    # 估算输入总字符数（系统提示词+记忆体+概要+用户提示词+续写尾部）
+    from app.prompts.chapter_prompts import build_generate_system_prompt
+    system_prompt_text = build_generate_system_prompt(
+        summary=summary,
+        genre=ChapterService._get_novel_genre(state["novel_unique_id"]))
+    input_chars = len(system_prompt_text) + len(memory_body) + len(summary) + len(prompt_text) + len(last_ending)
+    max_tokens = calc_dynamic_max_tokens(word_count, input_chars)
+
+    # 调用前详细日志 + token 预估
+    _log_memory_breakdown(memory_body, "正文生成")
+
+    from app.service.ai_chat_service import (
+        estimate_generation_tokens, log_token_estimate,
+        estimate_tokens as _est_tok)
+    from app.prompts.chapter_prompts import build_generate_system_prompt
+    # 构建系统提示词用于预估（与 _call_generation_api 内部一致）
+    system_prompt_text = build_generate_system_prompt(
+        summary=summary,
+        genre=ChapterService._get_novel_genre(state["novel_unique_id"]))
+    token_est = estimate_generation_tokens(
+        system_prompt=system_prompt_text, memory_body=memory_body,
+        prompt=prompt_text, summary=summary, last_ending=last_ending,
+        max_tokens=max_tokens, word_count=word_count)
+    log_token_estimate("正文生成", token_est)
+
     genre = ChapterService._get_novel_genre(state["novel_unique_id"])
+    import time
+    t_ai = time.time()
     generated_text, err = await ChapterService._call_generation_api(
-        state["prompt"], max_tokens, summary=state.get("summary", ""), genre=genre)
+        prompt_text, max_tokens, summary=summary, genre=genre)
+    ai_elapsed = time.time() - t_ai
+    system_logger.info(f"[AI调用耗时] 正文生成={ai_elapsed:.1f}秒 | max_tokens={max_tokens} | 输入={input_chars}字")
     if not generated_text:
         return {"error": err or "章节生成失败"}
     return {"generated_text": generated_text}
@@ -272,101 +375,293 @@ async def node_postprocess(state: dict) -> dict:
     return {"generated_text": cleaned, "clean_stats": stats, "actual_word_count": len(cleaned)}
 
 
-async def node_save(state: dict) -> dict:
-    """保存落盘
+async def node_fact_check(state: dict) -> dict:
+    """生成后事实核查：用轻量AI调用检测正文中是否存在记忆体中没有的事件/关系（反幻觉）
 
-    - new：填充概要草稿 / 覆盖旧正文草稿 / 新建草稿 + 写 TXT + 概要写缓存 + 清草稿缓存 + 增量更新记忆体
-    - regenerate：覆盖 TXT + 更新 MySQL 字数 + 增量更新记忆体
+    流程：
+    1. 从记忆体中提取关键事实（人物、事件、时间线）
+    2. 用事实核查prompt检查正文是否有幻觉
+    3. 如果有幻觉，尝试自动修复（删除/模糊化幻觉段落）
+    4. 修复后再次核查，最多重试1次
     """
+    from app.config import get as cfg
+    from app.prompts.prompt_loader import get_config as get_yaml_config
+    from app.service.ai_chat_service import chat_completion, log_ai_call
+    from app.config import deepseek_model
+
+    generated_text = state.get("generated_text", "")
+    memory_body = state.get("memory_body", "")
+    summary = state.get("summary", "")
+
+    if not generated_text or not memory_body:
+        return {"fact_check_result": "PASS", "hallucinations": []}
+
+    # 跳过核查的情况：mock模式 或 配置关闭
+    if cfg("ai.mock_generate", False) or not cfg("ai.fact_check.enabled", True):
+        return {"fact_check_result": "PASS", "hallucinations": []}
+
+    fact_check_system = get_yaml_config("FACT_CHECK_SYSTEM_PROMPT", "")
+    fact_check_user_tpl = get_yaml_config("FACT_CHECK_USER_TEMPLATE", "")
+
+    if not fact_check_system or not fact_check_user_tpl:
+        return {"fact_check_result": "PASS", "hallucinations": []}
+
+    # 截取记忆体关键部分（避免过长，只取事件/时间线/人物关系维度）
+    from app.prompts.chapter_prompts import get_memory_category_names
+    import re as _re
+    sections = _re.split(r'\n(?=【)', memory_body)
+    key_dims = ("关键事件", "时间线", "人物", "人物关系")
+    key_facts = []
+    for sec in sections:
+        m = _re.match(r'【(.+?)】', sec)
+        if m and m.group(1) in key_dims:
+            key_facts.append(sec.strip())
+    key_facts_text = "\n\n".join(key_facts) if key_facts else memory_body[:3000]
+
+    # 事实核查：只检查正文前3000字+后1000字（幻觉通常出现在开头回忆和结尾总结）
+    check_text = generated_text[:3000]
+    if len(generated_text) > 4000:
+        check_text += "\n\n...(中间省略)...\n\n" + generated_text[-1000:]
+
+    user_prompt = fact_check_user_tpl.replace("{memory_body}", key_facts_text[:4000]) \
+        .replace("{summary}", summary[:1000]) \
+        .replace("{generated_text}", check_text)
+
+    try:
+        fc_params = cfg("ai.api_params.fact_check_api", {})
+        fc_msgs = [
+            {"role": "system", "content": fact_check_system},
+            {"role": "user", "content": user_prompt},
+        ]
+        system_logger.info(
+            f"[AI调用-事实核查] 正文={len(generated_text)}字 | 记忆体={len(memory_body)}字 | "
+            f"核查文本={len(check_text)}字 | 关键记忆={len(key_facts_text)}字")
+        text, err, usage = await chat_completion(
+            messages=fc_msgs,
+            model=deepseek_model(),
+            max_tokens=fc_params.get("max_tokens", 1500),
+            timeout=fc_params.get("timeout", 60),
+            thinking={"type": "disabled"},
+            temperature=fc_params.get("temperature", 0.1),
+        )
+        log_ai_call("事实核查", fc_msgs, text, err, usage,
+                    model=deepseek_model(),
+                    extra_info={"正文字数": len(generated_text), "记忆体字数": len(memory_body)})
+        if err:
+            system_logger.warning(f"[事实核查] AI调用失败: {err}")
+            return {"fact_check_result": "PASS", "hallucinations": []}
+
+        text = (text or "").strip()
+        if text == "PASS" or "PASS" in text:
+            system_logger.info("[事实核查] ✅ 通过，未发现幻觉")
+            return {"fact_check_result": "PASS", "hallucinations": []}
+
+        # 解析幻觉列表
+        hallucinations = []
+        try:
+            # 尝试提取JSON数组
+            json_match = _re.search(r'\[.*\]', text, _re.DOTALL)
+            if json_match:
+                hallucinations = json.loads(json_match.group())
+        except (json.JSONDecodeError, Exception):
+            # JSON解析失败，把整个输出作为幻觉描述
+            hallucinations = [{"text": text[:200], "reason": "AI返回格式异常", "suggestion": "人工检查"}]
+
+        if hallucinations:
+            system_logger.warning(
+                f"[事实核查] ⚠️ 发现 {len(hallucinations)} 处幻觉: "
+                + "; ".join(h.get("reason", "")[:50] for h in hallucinations[:3])
+            )
+            return {"fact_check_result": text, "hallucinations": hallucinations}
+
+        return {"fact_check_result": "PASS", "hallucinations": []}
+
+    except Exception as e:
+        system_logger.warning(f"[事实核查] 异常: {e}")
+        return {"fact_check_result": "PASS", "hallucinations": []}
+
+
+async def _save_chapter_content(state: dict, chapter, content: str, is_regenerate: bool = False) -> None:
+    from app.dao.chapter_dao import ChapterDAO
+    from app.service.chapter_gen_service import ChapterGenService
+    from app.service.chapter_service import ChapterService, _redis
+
+    novel_unique_id = chapter.novel_unique_id
+    chapter_unique_id = chapter.chapter_unique_id
+
+    # 记录事实核查结果
+    fact_result = state.get("fact_check_result", "SKIP")
+    hallucinations = state.get("hallucinations", [])
+    if fact_result != "PASS" and hallucinations:
+        system_logger.warning(
+            f"[事实核查] 章节 {chapter.chapter_name} 存在 {len(hallucinations)} 处幻觉，仍予保存: "
+            + "; ".join(h.get("reason", "")[:60] for h in hallucinations[:3])
+        )
+    elif fact_result == "PASS":
+        system_logger.info(f"[事实核查] 章节 {chapter.chapter_name} 核查通过")
+    # 概要必须先落库；这里是生成正文成功后的唯一持久化入口
+    used_summary = (state.get("summary") or getattr(chapter, "chapter_summary", "") or "").strip()
+    if used_summary and not (getattr(chapter, "chapter_summary", "") or "").strip():
+        chapter.chapter_summary = used_summary
+        state["db"].flush()
+    chapter_file = ChapterService._get_chapter_txt_path(
+        novel_unique_id, chapter.chapter_name, chapter_unique_id)
+    novel_dir = os.path.dirname(chapter_file)
+    os.makedirs(novel_dir, exist_ok=True)
+    temp_file = f"{chapter_file}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(temp_file, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_file, chapter_file)
+        ChapterDAO.update(state["db"], chapter, word_count=len(content))
+
+        r = _redis()
+        if not r or not r.ping():
+            raise RuntimeError(f"章节保存失败：Redis不可用，chapter_unique_id={chapter_unique_id}")
+        r.delete(f"chapter:content:{chapter_unique_id}")
+        r.delete_pattern(f"chapters:novel:{novel_unique_id}:*")
+        r.delete(f"chapters:drafts:user:{chapter.user_id}")
+
+        # 记忆提取改为后台异步执行（不阻塞任务完成，可节省30~120s）
+        _summary = state.get("summary") or getattr(chapter, "chapter_summary", "") or ""
+        _db = state["db"]
+        _cname = chapter.chapter_name
+        async def _bg_memory_refresh():
+            try:
+                await ChapterService._refresh_memory_after_generate(
+                    novel_unique_id, _db, content, _cname, _summary, is_regenerate=is_regenerate)
+                system_logger.info(f"[记忆提取] 后台完成: {_cname}")
+            except Exception as e:
+                system_logger.warning(f"[记忆提取] 后台失败: {_cname}: {e}")
+        import asyncio
+        asyncio.create_task(_bg_memory_refresh())
+
+        chapter_num = ChapterGenService.chapter_no(chapter)
+        if chapter_num <= 0:
+            chapter_num = ChapterService._chapter_num_from_name(chapter.chapter_name)
+        if not chapter_num or chapter_num <= 0:
+            raise RuntimeError(
+                f"章节三源保存校验失败，chapter_unique_id={chapter_unique_id}，章节号解析失败")
+        memory_key = ChapterService._memory_key(novel_unique_id)
+        memory_values = r.hgetall(memory_key)
+        redis_exists = False
+        for value in memory_values.values():
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", errors="ignore")
+            for chapter_marker in re.findall(r'\[第\s*[一二三四五六七八九十百零\d]+\s*章[^\]]*\]', str(value)):
+                memory_chapter_num = ChapterService._chapter_num_from_name(chapter_marker[1:-1])
+                if memory_chapter_num == chapter_num:
+                    redis_exists = True
+                    break
+            if redis_exists:
+                break
+
+        # 如果AI增量提取失败导致Redis无本章记忆条目，回写最小标记保底
+        if not redis_exists:
+            fallback_summary = state.get("summary") or getattr(chapter, "chapter_summary", "") or ""
+            fallback_marker = f"[{chapter.chapter_name}] {fallback_summary}" if fallback_summary else f"[{chapter.chapter_name}] 本章内容已生成。"
+            from app.service.chapter_service import get_memory_category_names
+            cats = get_memory_category_names()
+            target_cat = "关键事件" if "关键事件" in cats else (cats[0] if cats else None)
+            if target_cat:
+                ChapterService._append_to_dimension(novel_unique_id, target_cat, fallback_marker)
+                system_logger.warning(f"[三源保底] AI记忆提取未写入，已回写最小标记到 [{target_cat}]: {fallback_marker[:80]}")
+            # 重新读取确认写入成功
+            memory_values = r.hgetall(memory_key)
+            for value in memory_values.values():
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8", errors="ignore")
+                for chapter_marker in re.findall(r'\[第\s*[一二三四五六七八九十百零\d]+\s*章[^\]]*\]', str(value)):
+                    memory_chapter_num = ChapterService._chapter_num_from_name(chapter_marker[1:-1])
+                    if memory_chapter_num == chapter_num:
+                        redis_exists = True
+                        break
+                if redis_exists:
+                    break
+
+        counts = ChapterGenService.count_sources(novel_unique_id, state["db"])
+        mysql_exists = any(item.get("id") == chapter_unique_id for item in counts["mysql"]["chapters"])
+        txt_exists = os.path.isfile(chapter_file)
+        missing = []
+        if not mysql_exists:
+            missing.append("MySQL记录")
+        if not txt_exists:
+            missing.append("TXT文件")
+        if not redis_exists:
+            missing.append("Redis记忆条目")
+        if missing:
+            raise RuntimeError(
+                f"章节三源保存校验失败，chapter_unique_id={chapter_unique_id}，缺失：{'、'.join(missing)}")
+    except Exception:
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        raise
+
+
+async def node_save(state: dict) -> dict:
     from app.dao.chapter_dao import ChapterDAO
     from app.models.chapter import Chapter as ChapterModel
-    from app.service.chapter_service import NOVEL_DATA_PATH, ChapterService
+    from app.service.chapter_service import ChapterService
+    from app.utils.task_queue import acquire_novel_lock, release_novel_lock
 
     mode = state.get("mode")
     novel_unique_id = state["novel_unique_id"]
     generated_text = state["generated_text"]
     actual_word_count = state.get("actual_word_count") or len(generated_text)
-    novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
-    os.makedirs(novel_dir, exist_ok=True)
 
-    if mode == "regenerate":
-        chapter = state["chapter"]
-        chapter_file = ChapterService._get_chapter_txt_path(
-            novel_unique_id, chapter.chapter_name, state["chapter_unique_id"])
-        with open(chapter_file, "w", encoding="utf-8") as f:
-            f.write(generated_text)
-        ChapterDAO.update(state["db"], chapter, word_count=actual_word_count)
-        # 覆盖正文后同步更新记忆体（regenerate 用全量重建，保证 Redis 与 TXT/MySQL 严格一致）
-        await ChapterService._refresh_memory_after_generate(
-            novel_unique_id, state["db"], generated_text, chapter.chapter_name,
-            state.get("summary") or "", is_regenerate=True)
-        return {"chapter_unique_id": state["chapter_unique_id"], "actual_word_count": actual_word_count}
-
-    # ---- mode == "new" ----
-    fill_row = state.get("fill_row")
-    if fill_row is not None:
-        # 填充概要草稿 / 覆盖旧正文草稿：沿用原 chapter_unique_id（TXT 文件名随之稳定）
-        chapter_unique_id = fill_row.chapter_unique_id
-        old_name = fill_row.chapter_name
-        title = state["title"]
-        fill_row.chapter_name = title
-        fill_row.word_count = actual_word_count
-        state["db"].commit()
-        old_file = ChapterService._get_chapter_txt_path(novel_unique_id, old_name, chapter_unique_id)
-        new_file = ChapterService._get_chapter_txt_path(novel_unique_id, title, chapter_unique_id)
-        if old_name and old_file != new_file and os.path.exists(old_file):
-            try:
-                os.remove(old_file)
-            except Exception:
-                pass
-    else:
-        chapter_unique_id = uuid.uuid4().hex
-        new_chapter = ChapterModel(
-            novel_unique_id=novel_unique_id,
-            user_id=state.get("user_id"),
-            chapter_unique_id=chapter_unique_id,
-            chapter_name=state["title"],
-            chapter_number=state["next_num"],
-            chapter_summary="",  # 概要不落库：留在 Redis 缓存，发布成功后自动转入 MySQL
-            word_count=actual_word_count,
-            is_published=0,
-            created_by=state.get("created_by", ""),
-        )
-        state["db"].add(new_chapter)
-        state["db"].commit()
-        state["db"].refresh(new_chapter)
-
-    chapter_file = ChapterService._get_chapter_txt_path(
-        novel_unique_id, state["title"], chapter_unique_id)
-    with open(chapter_file, "w", encoding="utf-8") as f:
-        f.write(generated_text)
-
-    # 概要统一写入 Redis 缓存（发布成功后才落库 MySQL）
-    if state.get("summary"):
-        try:
-            cached = ChapterService._get_outline_cache(novel_unique_id)
-            if not any((o.get("chapter_number") or 0) == state["next_num"] for o in cached):
-                cached.append({
-                    "chapter_name": state["title"],
-                    "chapter_number": state["next_num"],
-                    "chapter_summary": state["summary"],
-                })
-                ChapterService._write_outline_cache(novel_unique_id, cached)
-        except Exception:
-            pass
-    # 清除草稿缓存（保持原行为）
+    lock_token = acquire_novel_lock(novel_unique_id)
     try:
-        from app.service.chapter_service import _redis
-        r = _redis()
-        if r:
-            r.delete_pattern(f"chapters:drafts:user:{state.get('user_id')}")
-    except Exception:
-        pass
-    # 生成后增量更新记忆体（new 模式用增量追加，只调1次API；写入 Redis 避免下次修复触发）
-    await ChapterService._refresh_memory_after_generate(
-        novel_unique_id, state["db"], generated_text, state["title"],
-        state.get("summary") or "", is_regenerate=False)
-    return {"chapter_unique_id": chapter_unique_id, "actual_word_count": actual_word_count}
+        if mode == "regenerate":
+            chapter = state["chapter"]
+            await _save_chapter_content(state, chapter, generated_text, is_regenerate=True)
+            return {"chapter_unique_id": chapter.chapter_unique_id, "actual_word_count": actual_word_count}
+
+        fill_row = state.get("fill_row")
+        if fill_row is not None:
+            chapter = fill_row
+            old_name = chapter.chapter_name
+            chapter.chapter_name = state["title"]
+            if state.get("summary"):
+                chapter.chapter_summary = state["summary"]
+            old_file = ChapterService._get_chapter_txt_path(novel_unique_id, old_name, chapter.chapter_unique_id)
+            new_file = ChapterService._get_chapter_txt_path(
+                novel_unique_id, chapter.chapter_name, chapter.chapter_unique_id)
+            if old_name and old_file != new_file and os.path.exists(old_file):
+                os.remove(old_file)
+            chapter_unique_id = chapter.chapter_unique_id
+        else:
+            chapter_unique_id = uuid.uuid4().hex
+            chapter = ChapterModel(
+                novel_unique_id=novel_unique_id,
+                user_id=state.get("user_id"),
+                chapter_unique_id=chapter_unique_id,
+                chapter_name=state["title"],
+                chapter_number=state["next_num"],
+                chapter_summary=(state.get("summary") or "").strip(),
+                word_count=actual_word_count,
+                is_published=0,
+                created_by=state.get("created_by", ""),
+            )
+            state["db"].add(chapter)
+            state["db"].commit()
+            state["db"].refresh(chapter)
+
+        chapter.word_count = actual_word_count
+        state["db"].commit()
+        await _save_chapter_content(state, chapter, generated_text)
+
+        # 生成正文后：从概要缓存中删除已使用的那条概要
+        cached = ChapterService._get_outline_cache(novel_unique_id)
+        used_num = state.get("next_num") or (state.get("cur_num") if state.get("mode") == "regenerate" else None)
+        if used_num and any((o.get("chapter_number") or 0) == used_num for o in cached):
+            kept = [o for o in cached if (o.get("chapter_number") or 0) != used_num]
+            ChapterService._write_outline_cache(novel_unique_id, kept)
+            system_logger.info(f"[概要缓存] 已删除第{used_num}章概要（正文已生成）")
+        return {"chapter_unique_id": chapter_unique_id, "actual_word_count": actual_word_count}
+    finally:
+        release_novel_lock(novel_unique_id, lock_token)
 
 
 # ============================================================
@@ -385,13 +680,15 @@ async def node_load_existing(state: dict) -> dict:
         return {"error": "章节不存在"}
     existing_content = ChapterService._read_chapter_content_from_file(
         chapter.novel_unique_id, chapter.chapter_name, chapter.chapter_unique_id)
-    context_content = existing_content[-2000:] if len(existing_content) > 2000 else existing_content
+    from app.config import get as cfg
+    tail_chars = cfg("ai.api_params.continue_writing.tail_chars", 2000)
+    context_content = existing_content[-tail_chars:] if len(existing_content) > tail_chars else existing_content
 
     # 记忆体：一次加载（只读优先，Redis 缓存命中不触发全量 AI 提取）
     memory_body = await ChapterService._ensure_memory(chapter.novel_unique_id, state["db"])
     cur_num = ChapterService._chapter_num_from_name(chapter.chapter_name)
     memory_body = ChapterService._retrieve_relevant_memory(
-        memory_body, chapter.chapter_summary, current_chapter_num=cur_num, max_chars=15000)
+        memory_body, chapter.chapter_summary, current_chapter_num=cur_num)
 
     # 角色卡 → 主角人设硬约束块
     character_cards = ChapterService._load_character_cards(state["db"], chapter.novel_unique_id)
@@ -448,104 +745,79 @@ async def node_load_existing(state: dict) -> dict:
 
 async def node_call_continue_api(state: dict) -> dict:
     """调用 DeepSeek 续写（system=恒定核心+场景指南，user=续写 prompt+自查清单）→ 程序化清洗"""
-    import httpx
-    from app.config import deepseek_base_url, deepseek_api_key, deepseek_long_model
-    from app.config import gen_max_tokens_multiplier, gen_max_tokens_min
     from app.config import get as cfg
+    from app.config import deepseek_long_model, gen_api_timeout
+    from app.service.ai_chat_service import chat_completion, log_ai_call
     from app.prompts.chapter_prompts import SELF_CHECK_LIST, build_generate_system_prompt
     from app.service.chapter_service import ChapterService
     from app.service.text_cleaner import clean_generated_text
 
     chapter = state["chapter"]
     word_count = state.get("word_count", 2500)
-    # Mock 模式（压测用，config.yaml ai.mock_generate=true）：不调用真实 DeepSeek
-    from app.config import get as cfg
     if cfg("ai.mock_generate", False):
         return {"continued_text": "压测用模拟续写内容，仅用于接口压力测试，不包含真实剧情。" * 200,
                 "clean_stats": {}}
     try:
-        async with httpx.AsyncClient(timeout=180) as client:
-            response = await client.post(
-                deepseek_base_url(),
-                headers={
-                    "Authorization": f"Bearer {deepseek_api_key()}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": deepseek_long_model(),
-                    "messages": [
-                        # system 前缀 = 恒定核心 + 按需场景指南（按本章概要推荐）
-                        {"role": "system", "content": build_generate_system_prompt(
-                            chapter.chapter_summary,
-                            ChapterService._get_novel_genre(chapter.novel_unique_id))},
-                        # 自查清单保留 user 末尾（近因效应）
-                        {"role": "user", "content": state["prompt"] + "\n\n" + SELF_CHECK_LIST},
-                    ],
-                    "thinking": {"type": "disabled"},
-                    "max_tokens": max(int(word_count * gen_max_tokens_multiplier()), gen_max_tokens_min()),
-                    "temperature": 0.85,
-                    "top_p": 0.92,
-                    "frequency_penalty": cfg("ai.generation.frequency_penalty", 0.5),
-                    "presence_penalty": cfg("ai.generation.presence_penalty", 0.5),
-                },
-            )
-        raw_text = response.text
-        if not raw_text or not raw_text.strip():
-            return {"error": f"AI接口返回空响应(HTTP {response.status_code})，请重试"}
-        try:
-            data = json.loads(raw_text)
-        except json.JSONDecodeError:
-            return {"error": f"AI接口返回格式异常(HTTP {response.status_code})，请重试"}
-        if "choices" not in data or not data["choices"]:
-            err_msg = str(data.get("error", {}).get("message", "未知错误"))
-            return {"error": "AI续写失败: " + err_msg}
-        generated_text = data["choices"][0]["message"]["content"]
-        if not generated_text or not generated_text.strip():
-            return {"error": "AI续写失败: 模型返回空内容，请重试"}
-        # 程序化清洗续写片段（去 AI 检测统计特征，引号内对话保护不改写）
+        cw_params = cfg("ai.api_params.continue_writing", {})
+        cw_max = min(max(int(word_count * cw_params.get("max_tokens_multiplier", 2)),
+                         cw_params.get("max_tokens_min", 1200)),
+                     cw_params.get("max_tokens_max", 5000))
+        cw_msgs = [
+            {"role": "system", "content": build_generate_system_prompt(
+                chapter.chapter_summary,
+                ChapterService._get_novel_genre(chapter.novel_unique_id))},
+            {"role": "user", "content": state["prompt"] + "\n\n" + SELF_CHECK_LIST},
+        ]
+
+        # 调用前详细日志 + token 预估
+        existing_content = state.get("existing_content", "")
+        from app.service.ai_chat_service import estimate_generation_tokens, log_token_estimate
+        token_est = estimate_generation_tokens(
+            system_prompt=cw_msgs[0]["content"], memory_body="",
+            prompt=state["prompt"], summary=chapter.chapter_summary or "",
+            last_ending=existing_content, max_tokens=cw_max, word_count=word_count)
+        log_token_estimate("续写", token_est)
+
+        generated_text, err, usage = await chat_completion(
+            messages=cw_msgs,
+            model=deepseek_long_model(),
+            max_tokens=cw_max,
+            timeout=cw_params.get("timeout", gen_api_timeout()),
+            thinking={"type": "disabled"},
+            temperature=cw_params.get("temperature", 0.85),
+            top_p=cw_params.get("top_p", 0.92),
+            frequency_penalty=cfg("ai.generation.frequency_penalty", 0.5),
+            presence_penalty=cfg("ai.generation.presence_penalty", 0.5),
+        )
+        log_ai_call("续写", cw_msgs, generated_text, err, usage,
+                    model=deepseek_long_model(),
+                    extra_info={"概要字数": len(chapter.chapter_summary or ""), "max_tokens": cw_max,
+                                "章节末尾字数": len(state.get("existing_content", ""))})
+        if not generated_text:
+            return {"error": "AI续写失败: " + (err or "未知错误")}
         cleaned_text, clean_stats = clean_generated_text(generated_text)
         return {"continued_text": cleaned_text, "clean_stats": clean_stats}
-    except httpx.TimeoutException:
-        return {"error": "AI接口调用超时，请重试"}
     except Exception as e:
         return {"error": f"AI续写失败: {str(e)}"}
 
 
 async def node_append_save(state: dict) -> dict:
-    """续写结果追加到 TXT + 更新 DB 字数 + 清理单章正文缓存"""
     from app.dao.chapter_dao import ChapterDAO
-    from app.service.chapter_service import NOVEL_DATA_PATH, ChapterService
-    import app.utils.redis_cache as redis_mod
+    from app.service.chapter_service import ChapterService
+    from app.utils.task_queue import acquire_novel_lock, release_novel_lock
 
     chapter = state["chapter"]
-    new_content = state["existing_content"] + "\n\n" + state["continued_text"]
-    novel_dir = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id)
-    os.makedirs(novel_dir, exist_ok=True)
-    chapter_file = ChapterService._get_chapter_txt_path(
-        chapter.novel_unique_id, chapter.chapter_name, chapter.chapter_unique_id)
-    with open(chapter_file, "w", encoding="utf-8") as f:
-        f.write(new_content)
-    ChapterDAO.update(state["db"], chapter, word_count=len(new_content))
-
-    rr = redis_mod.redis_client
-    if rr:
-        try:
-            rr.delete(f"chapter:content:{chapter.chapter_unique_id}")
-            rr.delete_pattern(f"chapters:novel:{chapter.novel_unique_id}:*")
-            rr.delete(f"chapters:drafts:user:{chapter.user_id}")
-        except Exception:
-            pass
-    return {"total_word_count": len(new_content)}
+    novel_unique_id = chapter.novel_unique_id
+    lock_token = acquire_novel_lock(novel_unique_id)
+    try:
+        new_content = state["existing_content"] + "\n\n" + state["continued_text"]
+        await _save_chapter_content(state, chapter, new_content)
+        return {"total_word_count": len(new_content)}
+    finally:
+        release_novel_lock(novel_unique_id, lock_token)
 
 
 async def node_refresh_memory(state: dict) -> dict:
-    """续写后记忆增量更新（唯一执行生成后记忆更新的路径）"""
-    from app.service.chapter_service import ChapterService
-    chapter = state["chapter"]
-    new_content = state["existing_content"] + "\n\n" + state["continued_text"]
-    await ChapterService._refresh_memory_after_generate(
-        chapter.novel_unique_id, state["db"], new_content,
-        chapter.chapter_name, chapter.chapter_summary or "")
     return {}
 
 
@@ -572,6 +844,7 @@ def build_chapter_gen_graph():
     builder.add_node("build_prompt", node_build_prompt)
     builder.add_node("call_llm", node_call_llm)
     builder.add_node("postprocess", node_postprocess)
+    builder.add_node("fact_check", node_fact_check)
     builder.add_node("save", node_save)
 
     builder.add_edge(START, "repair_load")
@@ -582,7 +855,8 @@ def build_chapter_gen_graph():
     builder.add_edge("prev_ending", "build_prompt")
     builder.add_edge("build_prompt", "call_llm")
     builder.add_conditional_edges("call_llm", _route_on_error, {"ok": "postprocess", "error": END})
-    builder.add_edge("postprocess", "save")
+    builder.add_edge("postprocess", "fact_check")
+    builder.add_edge("fact_check", "save")
     builder.add_edge("save", END)
     return builder.compile()
 
@@ -627,8 +901,10 @@ def get_continue_graph():
 async def run_chapter_gen(state: dict) -> dict:
     """统一入口：按 mode 选择子图执行，返回 success/fail 结构（与现有 service 方法一致）"""
     from app.utils.response import success, fail
+    import time
 
     mode = state.get("mode", "new")
+    t_start = time.time()
     try:
         graph = get_continue_graph() if mode == "continue" else get_chapter_graph()
         result = await graph.ainvoke(state)
@@ -636,6 +912,14 @@ async def run_chapter_gen(state: dict) -> dict:
         import logging
         logging.getLogger("chapter_gen_graph").exception("章节生成图执行异常")
         return fail(f"章节生成失败: {str(e)}", code=500)
+
+    elapsed = time.time() - t_start
+    from app.utils.logger import system_logger
+    system_logger.info(
+        f"[章节生成耗时] mode={mode} | 耗时={elapsed:.1f}秒 | "
+        f"字数={result.get('actual_word_count', 0)} | "
+        f"成功={not result.get('error')}"
+    )
 
     if result.get("error"):
         return fail(result["error"], code=500)

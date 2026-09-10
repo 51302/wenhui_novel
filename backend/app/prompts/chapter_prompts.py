@@ -131,36 +131,69 @@ GENERATE_CORE_SYSTEM_PROMPT = (
 # ============================================================================
 
 # 战斗场景触发词：概要出现任一 → 注入 COMBAT_WRITING_GUIDE
-COMBAT_TRIGGER_KEYWORDS = (
-    "战斗", "厮杀", "打斗", "对决", "比武", "斗法", "围攻", "偷袭", "突袭",
-    "追杀", "逃杀", "碾压", "反杀", "击杀", "激战", "血战", "大战", "决战",
-    "生死战", "突围", "破阵", "进攻", "反击", "交手", "过招", "冲突", "对峙",
-)
+COMBAT_TRIGGER_KEYWORDS = {
+    "激战": 3, "血战": 3, "大战": 3, "决战": 3,
+    "打斗": 2, "对决": 2, "战斗": 2, "厮杀": 2, "比武": 2, "斗法": 2,
+    "围攻": 2, "偷袭": 2, "突袭": 2, "追杀": 2, "逃杀": 2, "碾压": 2,
+    "反杀": 2, "击杀": 2, "生死战": 2, "突围": 2, "破阵": 2, "进攻": 2,
+    "反击": 2, "交手": 2, "过招": 2,
+    "冲突": 1, "对峙": 1,
+}
 
 # 静态场景触发词：概要出现任一 → 注入 STATIC_SCENE_GUIDE
 # （对话/谈判/夜谈/展示/教学等"静态说明文重灾区"章节）
-STATIC_SCENE_TRIGGER_KEYWORDS = (
-    "对话", "谈判", "商谈", "夜谈", "密谋", "商议", "交易", "拜师", "回忆",
-    "祭拜", "审讯", "审问", "答疑", "讲解", "展示", "参观", "游览", "夜聊",
-    "闲聊", "诉苦", "和解", "结盟", "会面", "探视", "饭局", "酒局",
-    # 汇报/受命/辞别类（拜见师父、领任务、道别等静态对话场景，AI 易写成规整说明文）
-    "拜见", "请安", "问安", "领命", "受命", "复命", "辞别", "拜别", "道别",
-    "告别", "叮嘱", "交代", "嘱咐", "禀报", "汇报", "请示", "召见", "接见",
-    "会客", "赐", "任务", "告之", "告知",
-)
+STATIC_SCENE_TRIGGER_KEYWORDS = {
+    "审讯": 3, "审问": 3, "密谋": 3,
+    "对话": 2, "谈判": 2, "商谈": 2, "夜谈": 2, "商议": 2, "交易": 2,
+    "拜师": 2, "回忆": 2, "祭拜": 2, "答疑": 2, "讲解": 2, "展示": 2,
+    "参观": 2, "游览": 2, "夜聊": 2, "诉苦": 2, "和解": 2, "结盟": 2,
+    "会面": 2, "探视": 2, "饭局": 2, "酒局": 2,
+    "拜见": 2, "请安": 2, "问安": 2, "领命": 2, "受命": 2, "复命": 2,
+    "辞别": 2, "拜别": 2, "道别": 2, "告别": 2, "叮嘱": 2, "交代": 2,
+    "嘱咐": 2, "禀报": 2, "请示": 2, "召见": 2, "接见": 2,
+    "会客": 2, "赐": 2, "任务": 2, "告之": 2, "告知": 2,
+    "闲聊": 1, "汇报": 1,
+}
 
 # 网感触发词：概要出现任一 → 注入 VULGAR_DIALOGUE_GUIDE
-VULGAR_TRIGGER_KEYWORDS = (
-    "弹幕", "直播", "系统提示", "评论区", "吐槽", "玩梗", "段子", "嘴贱",
-    "对骂", "骂战", "叫骂", "破口大骂", "市井", "街头", "赌场", "酒馆",
-    "嘲讽", "挑衅", "怼", "粉丝", "水友", "打赏",
-)
+VULGAR_TRIGGER_KEYWORDS = {
+    "弹幕": 3, "直播": 3, "系统提示": 3, "评论区": 3,
+    "吐槽": 2, "玩梗": 2, "段子": 2, "嘴贱": 2, "嘲讽": 2, "挑衅": 2,
+    "对骂": 2, "叫骂": 2, "破口大骂": 2, "市井": 2, "街头": 2, "赌场": 2,
+    "酒馆": 2, "粉丝": 2, "水友": 2, "打赏": 2,
+    "怼": 1, "骂战": 1,
+}
 
 # 网感题材提示：题材命中任一 → 网感指南常驻（现代/系统/穿越类用梗多）
 VULGAR_GENRE_HINTS = (
     "都市", "现代", "系统", "穿越", "直播", "末世", "娱乐", "校园", "职场",
     "网游", "搞笑", "轻松",
 )
+
+
+NEGATION_WORDS = ("没有", "不是", "并非", "未", "无", "不会", "不曾", "未曾")
+
+
+def _score_keywords(text: str, keyword_weights: dict) -> int:
+    if not text:
+        return 0
+    score = 0
+    for kw, weight in keyword_weights.items():
+        idx = text.find(kw)
+        if idx < 0:
+            continue
+        negated = False
+        for neg in NEGATION_WORDS:
+            prefix_end = idx
+            prefix_start = idx - len(neg)
+            if prefix_start >= 0 and text[prefix_start:prefix_end] == neg:
+                negated = True
+                break
+        if negated:
+            score -= 2
+        else:
+            score += weight
+    return score
 
 
 def _has_any(text: str, keywords) -> list:
@@ -179,11 +212,11 @@ def recommend_scene_guides(summary: str = "", genre: str = "") -> list:
     保持追加顺序恒定，让核心前缀之后的缓存尾部尽量一致。
     """
     guides = []
-    if _has_any(summary or "", STATIC_SCENE_TRIGGER_KEYWORDS):
+    if _score_keywords(summary, STATIC_SCENE_TRIGGER_KEYWORDS) >= 2:
         guides.append(STATIC_SCENE_GUIDE)
-    if _has_any(summary or "", COMBAT_TRIGGER_KEYWORDS):
+    if _score_keywords(summary, COMBAT_TRIGGER_KEYWORDS) >= 2:
         guides.append(COMBAT_WRITING_GUIDE)
-    if _has_any(summary or "", VULGAR_TRIGGER_KEYWORDS) or _has_any(genre or "", VULGAR_GENRE_HINTS):
+    if _score_keywords(summary, VULGAR_TRIGGER_KEYWORDS) >= 2 or _has_any(genre or "", VULGAR_GENRE_HINTS):
         guides.append(VULGAR_DIALOGUE_GUIDE)
     return guides
 

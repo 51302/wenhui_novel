@@ -59,21 +59,25 @@ async def lifespan(application: FastAPI):
     # ====== 启动后台 Worker 线程（消费 Redis 任务队列） ======
     # 各队列并发数从 config.yaml → task_queue.workers.* 读取
     try:
-        from app.service.chapter_service import ChapterService
-        def _worker_concurrency(queue_name: str, default: int) -> int:
-            return int(cfg_get(f"task_queue.workers.{queue_name}", default))
+        worker_enabled = os.environ.get("WORKER_ENABLED", "true").lower()
+        if worker_enabled in ("false", "0"):
+            system_logger.info("WORKER_ENABLED=false，跳过Worker启动（仅API模式）")
+        else:
+            from app.service.chapter_service import ChapterService
+            def _worker_concurrency(queue_name: str, default: int) -> int:
+                return int(cfg_get(f"task_queue.workers.{queue_name}", default))
 
-        TaskQueue.start_worker("ai:extract",      ChapterService._worker_extract_info,  concurrency=_worker_concurrency("ai:extract", 2))
-        TaskQueue.start_worker("ai:generate",     ChapterService._worker_generate,      concurrency=_worker_concurrency("ai:generate", 2))
-        TaskQueue.start_worker("ai:continue",     ChapterService._worker_continue,      concurrency=_worker_concurrency("ai:continue", 2))
-        TaskQueue.start_worker("ai:regenerate",   ChapterService._worker_regenerate,    concurrency=_worker_concurrency("ai:regenerate", 1))
-        TaskQueue.start_worker("ai:screenplay",   ChapterService._worker_generate_screenplay, concurrency=_worker_concurrency("ai:screenplay", 1))
-        TaskQueue.start_worker("ai:outline",      ChapterService._worker_generate_outline, concurrency=_worker_concurrency("ai:outline", 1))
-        system_logger.info(
-            f"后台Worker线程启动完成 "
-            f"(max_concurrency={TaskQueue._max_concurrency}, "
-            f"workers={ {q: _worker_concurrency(q, 0) for q in ['ai:extract','ai:generate','ai:continue','ai:regenerate','ai:screenplay','ai:outline']} })"
-        )
+            TaskQueue.start_worker("ai:extract",      ChapterService._worker_extract_info,  concurrency=_worker_concurrency("ai:extract", 2))
+            TaskQueue.start_worker("ai:generate",     ChapterService._worker_generate,      concurrency=_worker_concurrency("ai:generate", 2))
+            TaskQueue.start_worker("ai:continue",     ChapterService._worker_continue,      concurrency=_worker_concurrency("ai:continue", 2))
+            TaskQueue.start_worker("ai:regenerate",   ChapterService._worker_regenerate,    concurrency=_worker_concurrency("ai:regenerate", 1))
+            TaskQueue.start_worker("ai:screenplay",   ChapterService._worker_generate_screenplay, concurrency=_worker_concurrency("ai:screenplay", 1))
+            TaskQueue.start_worker("ai:outline",      ChapterService._worker_generate_outline, concurrency=_worker_concurrency("ai:outline", 1))
+            system_logger.info(
+                f"后台Worker线程启动完成 "
+                f"(max_concurrency={TaskQueue._max_concurrency}, "
+                f"workers={ {q: _worker_concurrency(q, 0) for q in ['ai:extract','ai:generate','ai:continue','ai:regenerate','ai:screenplay','ai:outline']} })"
+            )
     except Exception as e:
         system_logger.error(f"启动Worker线程失败: {e}")
 

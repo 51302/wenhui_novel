@@ -386,24 +386,6 @@
         <div class="draft-content">
           <textarea v-model="d.content" rows="10" />
         </div>
-        <!-- AI提取信息面板 -->
-        <div class="draft-info-panel">
-          <button class="btn-extract" @click="extractDraftInfo(d)" :disabled="extracting[d.chapter_unique_id]">
-            <span v-if="extracting[d.chapter_unique_id]" class="spinner"></span>
-            {{ extracting[d.chapter_unique_id] ? '正在提取...' : (d._info ? '重新提取信息' : '🔍 AI提取关键信息') }}
-          </button>
-          <div v-if="d._info" class="info-grid">
-            <div class="info-cell" v-if="d._info.人物 || extracting[d.chapter_unique_id]"><label>人物</label><input v-model="d._info.人物" /></div>
-            <div class="info-cell" v-if="d._info.组织 || extracting[d.chapter_unique_id]"><label>组织</label><input v-model="d._info.组织" /></div>
-            <div class="info-cell" v-if="d._info.功法技能 || extracting[d.chapter_unique_id]"><label>功法技能</label><input v-model="d._info.功法技能" /></div>
-            <div class="info-cell" v-if="d._info.关键事件 || extracting[d.chapter_unique_id]"><label>关键事件</label><input v-model="d._info.关键事件" /></div>
-            <div class="info-cell" v-if="d._info.地点 || extracting[d.chapter_unique_id]"><label>地点</label><input v-model="d._info.地点" /></div>
-            <div class="info-cell" v-if="d._info.时间 || extracting[d.chapter_unique_id]"><label>时间</label><input v-model="d._info.时间" /></div>
-            <div class="info-cell" v-if="d._info.关键物品 || extracting[d.chapter_unique_id]"><label>关键物品</label><input v-model="d._info.关键物品" /></div>
-            <div class="info-cell" v-if="d._info.实力变化 || extracting[d.chapter_unique_id]"><label>实力变化</label><input v-model="d._info.实力变化" /></div>
-            <div class="info-cell" v-if="d._info.伏笔 || extracting[d.chapter_unique_id]"><label>伏笔</label><input v-model="d._info.伏笔" /></div>
-          </div>
-        </div>
         <div class="draft-actions">
           <button @click="continueChapter(d)" :disabled="continuing[d.chapter_unique_id]">
             <span v-if="continuing[d.chapter_unique_id]" class="spinner"></span>
@@ -491,7 +473,14 @@
           <div class="sp-chapter-header">
             <label class="sp-check-all">后续剧情大框</label>
             <span class="sp-selected-count">概要缓存 24 小时，点「生成正文」随章节落库</span>
-            <button class="btn-generate" @click="outlineGenerate" :disabled="outlineGenerating || !outlineDirection.trim()">
+            <button
+              class="btn-generate"
+              :class="{ 'btn-generate-disabled': outlineResult.length > 0 }"
+              @click="outlineGenerate"
+              :disabled="outlineGenerating || !outlineDirection.trim()"
+              :aria-disabled="outlineResult.length > 0"
+              :title="outlineResult.length > 0 ? '请先清空章节概要列表后，再生成章节概要' : ''"
+            >
               <span v-if="outlineGenerating" class="spinner"></span>
               {{ outlineGenerating ? '生成中...' : '📝 生成章节概要' }}
             </button>
@@ -517,12 +506,47 @@
               📖 章节概要列表
               <span v-if="outlineLoading" class="outline-loading">加载中…</span>
             </div>
+            <div class="outline-batch-toolbar">
+              <label class="outline-select-all">
+                <input
+                  type="checkbox"
+                  :checked="outlineAllSelected"
+                  :disabled="outlineLoading || outlineGenerating || !outlineResult.length"
+                  @change="toggleOutlineSelectAll"
+                />
+                <span>全选</span>
+              </label>
+              <span class="outline-selected-count">已选 {{ outlineSelectedCount }} 条</span>
+              <button
+                class="btn-outline-batch-delete"
+                :disabled="outlineLoading || outlineSaving || outlineGenerating || !outlineSelectedCount"
+                @click="outlineDeleteSelected"
+              >
+                {{ outlineBatchDeleting ? '删除中...' : '删除选中' }}
+              </button>
+              <button
+                class="btn-outline-export"
+                :disabled="outlineLoading || outlineGenerating || !outlineResult.length"
+                @click="exportOutlines"
+                title="将所有章节概要导出为TXT文件"
+              >
+                📥 导出概要
+              </button>
+            </div>
 
             <!-- 临时缓存概要（Redis，24h，不落库） -->
             <template v-if="outlineResult.length">
               <div class="outline-group-title">🕐 章节概要（24小时内有效，共 {{ outlineResult.length }} 章）</div>
               <div v-for="(o, i) in outlineResult" :key="'preview-' + i" class="outline-item">
                 <div class="outline-item-head">
+                  <input
+                    v-model="outlineSelectedNumbers"
+                    class="outline-item-checkbox"
+                    type="checkbox"
+                    :value="o.chapter_number"
+                    :disabled="outlineLoading || outlineGenerating || outlineBatchDeleting"
+                    aria-label="选择章节概要"
+                  />
                   <span class="outline-item-num">第{{ o.chapter_number }}章</span>
                   <span class="outline-item-name">{{ outlineEditNum === o.chapter_number ? outlineEditName : o.chapter_name }}</span>
                   <span class="outline-tag pending">临时缓存</span>
@@ -536,6 +560,7 @@
                   <div class="form-row">
                     <label>概要内容</label>
                     <textarea v-model="outlineEditSummary" class="outline-edit-textarea" rows="4"></textarea>
+                    <div class="outline-char-count" :class="{ 'char-warn': isOutlineTooShort(outlineEditSummary) }">{{ getOutlineCharCount(outlineEditSummary) }} 字 {{ isOutlineTooShort(outlineEditSummary) ? '（不足170字）' : '' }}</div>
                   </div>
                   <div class="outline-item-actions">
                     <button class="btn-outline-save" @click="outlineUpdateOne(o)" :disabled="outlineSaving">
@@ -547,12 +572,13 @@
                 <!-- 查看态 -->
                 <template v-else>
                   <div class="outline-item-summary">{{ o.chapter_summary }}</div>
+                  <div class="outline-char-count" :class="{ 'char-warn': isOutlineTooShort(o.chapter_summary) }">{{ getOutlineCharCount(o.chapter_summary) }} 字 {{ isOutlineTooShort(o.chapter_summary) ? '（不足170字）' : '' }}</div>
                   <div class="outline-item-actions">
-                    <button class="btn-outline-save" @click="outlineGenerateChapter(o)" :disabled="generating">
+                    <button class="btn-outline-save" @click="outlineGenerateChapter(o)" :disabled="generating || outlineLoading || outlineBatchDeleting">
                       📝 生成正文
                     </button>
-                    <button class="btn-outline-edit" @click="startOutlineEditOne(o)">✏️ 修改</button>
-                    <button class="btn-outline-cancel" @click="outlineDeleteOne(o)" :disabled="outlineSaving">
+                    <button class="btn-outline-edit" @click="startOutlineEditOne(o)" :disabled="outlineLoading || outlineBatchDeleting">✏️ 修改</button>
+                    <button class="btn-outline-cancel" @click="outlineDeleteOne(o)" :disabled="outlineSaving || outlineLoading || outlineBatchDeleting">
                       🗑 删除
                     </button>
                   </div>
@@ -966,37 +992,19 @@ export default {
         if (res.状态码 === 200 && res.数据 && res.数据.task_id) {
           // 刷新用户信息（更新免费次数）
           try { const mu = await api.get('/auth/me'); if (mu.状态码===200) { Object.assign(user, mu.数据); localStorage.setItem('novel_user', JSON.stringify(user)) } } catch {}
-          // 轮询任务状态，直到完成
+          // 轮询任务状态，直到完成（LLM生成+记忆提取可达300秒）
           const taskId = res.数据.task_id
-          const maxWait = 120000
-          const pollInterval = 3000
-          let waited = 0
-          let done = false
-          while (waited < maxWait) {
-            await new Promise(r => setTimeout(r, pollInterval))
-            waited += pollInterval
-            try {
-              const statusRes = await api.get('/chapters/tasks/' + taskId)
-              if (statusRes.状态码 === 200 && statusRes.数据) {
-                const taskStatus = statusRes.数据.status
-                if (taskStatus === 'done') {
-                  done = true
-                  break
-                } else if (taskStatus === 'failed') {
-                  alert(statusRes.数据.error || 'AI生成失败')
-                  return
-                }
-              }
-            } catch { /* ignore polling errors */ }
-          }
-          if (done) {
-            // 概要缓存保留到发布成功后才自动消费（发布时转入 MySQL 并移除缓存），此处不删除
+          const task = await waitForTask(taskId, 300000, 3000)
+          if (task.status === 'done') {
             tab.value = 'drafts'
             await fetchDrafts()
+          } else if (task.status === 'failed') {
+            alert(task.error || 'AI生成失败')
+            return
           } else {
             alert('AI生成超时，请稍后到草稿箱查看')
             tab.value = 'drafts'
-            fetchDrafts()
+            await fetchDrafts()
           }
         } else {
           alert('生成失败: ' + (res.消息 || '提交失败'))
@@ -1017,6 +1025,19 @@ export default {
     const outlineResult = ref([])        // Redis 缓存概要（24h，不落库）
     const outlineLoading = ref(false)
     const outlineSaving = ref(false)
+    const outlineBatchDeleting = ref(false)
+    const outlineSelectedNumbers = ref([])
+    const outlineSelectedCount = computed(() => outlineSelectedNumbers.value.length)
+    const outlineAllSelected = computed(() => (
+      outlineResult.value.length > 0 && outlineResult.value.every(o => outlineSelectedNumbers.value.includes(o.chapter_number))
+    ))
+    const getOutlineCharCount = (text) => String(text || '').length
+    const isOutlineTooShort = (text) => getOutlineCharCount(text) < 170
+    const toggleOutlineSelectAll = (event) => {
+      outlineSelectedNumbers.value = event.target.checked
+        ? outlineResult.value.map(o => o.chapter_number)
+        : []
+    }
     const outlineEditNum = ref(null)     // 正在编辑的缓存概要章节号
     const outlineEditName = ref('')
     const outlineEditSummary = ref('')
@@ -1032,6 +1053,9 @@ export default {
         } else {
           outlineResult.value = []
         }
+        outlineSelectedNumbers.value = outlineSelectedNumbers.value.filter(number =>
+          outlineResult.value.some(o => o.chapter_number === number)
+        )
       } catch (e) {
         console.error('[加载章节概要失败]', e)
         outlineResult.value = []
@@ -1043,14 +1067,20 @@ export default {
     // 切换作品：清空缓存预览并加载该作品概要
     const onOutlineNovelChange = () => {
       outlineResult.value = []
+      outlineSelectedNumbers.value = []
       loadOutlineList()
     }
 
     const outlineGenerate = async () => {
+      if (outlineResult.value.length > 0) {
+        alert('请先清空章节概要列表后，再生成章节概要')
+        return
+      }
       if (!outlineNovelId.value) return alert('请先选择作品')
       if (!outlineDirection.value.trim()) return alert('请输入后续剧情大框')
       outlineGenerating.value = true
       outlineResult.value = []
+      outlineSelectedNumbers.value = []
       try {
         const res = await api.post('/chapters/outline/generate', {
           novel_unique_id: outlineNovelId.value,
@@ -1059,29 +1089,15 @@ export default {
         })
         if (res.状态码 === 200 && res.数据 && res.数据.task_id) {
           const taskId = res.数据.task_id
-          const maxWait = 150000
-          const pollInterval = 3000
-          let waited = 0
-          let done = false
-          while (waited < maxWait) {
-            await new Promise(r => setTimeout(r, pollInterval))
-            waited += pollInterval
-            try {
-              const statusRes = await api.get('/chapters/tasks/' + taskId)
-              if (statusRes.状态码 === 200 && statusRes.数据) {
-                const taskStatus = statusRes.数据.status
-                if (taskStatus === 'done') {
-                  await loadOutlineList()
-                  done = true
-                  break
-                } else if (taskStatus === 'failed') {
-                  alert(statusRes.数据.error || '概要生成失败')
-                  return
-                }
-              }
-            } catch { /* ignore polling errors */ }
+          const task = await waitForTask(taskId, 150000, 3000)
+          if (task.status === 'done') {
+            await loadOutlineList()
+          } else if (task.status === 'failed') {
+            alert(task.error || '概要生成失败')
+            return
+          } else {
+            alert('概要生成超时，请稍后重试')
           }
-          if (!done) alert('概要生成超时，请稍后重试')
         } else {
           alert('提交失败: ' + (res.消息 || '未知错误'))
         }
@@ -1103,6 +1119,51 @@ export default {
         chapter_summary: o.chapter_summary || ''
       })
       tab.value = 'my'
+    }
+
+    // 批量删除临时缓存概要：逐条调用现有删除接口，全部完成后刷新列表
+    const outlineDeleteSelected = async () => {
+      if (!outlineSelectedCount.value || outlineBatchDeleting.value) return
+      if (!confirm(`确定删除选中的 ${outlineSelectedCount.value} 条章节概要吗？此操作不可恢复。`)) return
+      outlineBatchDeleting.value = true
+      try {
+        const selected = outlineResult.value.filter(o => outlineSelectedNumbers.value.includes(o.chapter_number))
+        let failedCount = 0
+        for (const o of selected) {
+          try {
+            const res = await api.delete('/chapters/outline/cache', {
+              data: { novel_unique_id: outlineNovelId.value, chapter_number: o.chapter_number }
+            })
+            if (res.状态码 !== 200) failedCount++
+          } catch (e) {
+            failedCount++
+          }
+        }
+        alert(failedCount ? `删除完成，${failedCount} 条概要删除失败，请稍后重试` : '选中概要已删除')
+        await loadOutlineList()
+      } catch (e) {
+        const msg = e.response ? (e.response.数据 || e.response.消息 || JSON.stringify(e.response.data)) : (e.message || '网络错误')
+        alert('批量删除失败: ' + msg)
+        await loadOutlineList()
+      } finally {
+        outlineBatchDeleting.value = false
+      }
+    }
+
+    // 导出所有章节概要为TXT文件
+    const exportOutlines = () => {
+      if (!outlineResult.value.length) return
+      const lines = outlineResult.value.map(o => {
+        return `第${o.chapter_number}章 ${o.chapter_name}\n${'─'.repeat(40)}\n${o.chapter_summary}\n`
+      })
+      const content = `章节概要导出\n${'═'.repeat(50)}\n共 ${outlineResult.value.length} 章\n${'═'.repeat(50)}\n\n${lines.join('\n')}`
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `章节概要_${new Date().toISOString().slice(0, 10)}.txt`
+      a.click()
+      URL.revokeObjectURL(url)
     }
 
     // 删除单条临时缓存概要（不落库，直接丢弃）
@@ -1164,71 +1225,42 @@ export default {
     // 草稿
     const drafts = ref([])
     const continuing = reactive({})
-    const extracting = reactive({})
     const publishing = reactive({})
     const publishOverlay = reactive({ visible: false, name: '', step: 0 })
 
-    // 判断提取结果是否包含有效维度数据（排除空串/无）
-    const hasMemoryFields = (info) => {
-      if (!info) return false
-      const keys = ['人物', '组织', '功法技能', '关键事件', '地点', '时间', '关键物品', '实力变化', '伏笔']
-      return keys.some(k => info[k] && String(info[k]).trim() && String(info[k]).trim() !== '无')
-    }
-
-    // 轮询异步提取/生成任务，返回任务结果 data（失败或超时返回 null）
-    const pollExtractResult = async (taskId, maxWait = 120000, pollInterval = 3000) => {
+    const waitForTask = async (taskId, maxWait = 120000, pollInterval = 3000) => {
       let waited = 0
+      let consecutiveFailures = 0
       while (waited < maxWait) {
         await new Promise(r => setTimeout(r, pollInterval))
         waited += pollInterval
         try {
           const statusRes = await api.get('/chapters/tasks/' + taskId)
           if (statusRes.状态码 === 200 && statusRes.数据) {
-            const st = statusRes.数据.status
-            if (st === 'done') return statusRes.数据.result?.data || null
-            if (st === 'failed') return null
+            consecutiveFailures = 0
+            const task = statusRes.数据
+            if (task.status === 'done') return { status: 'done', result: task.result?.data || null }
+            if (task.status === 'failed') return { status: 'failed', error: task.error || '任务执行失败' }
+          } else {
+            consecutiveFailures++
           }
-        } catch { /* ignore polling errors */ }
+        } catch (e) {
+          consecutiveFailures++
+          console.warn(`[任务轮询] 第${consecutiveFailures}次失败`, e)
+        }
+        if (consecutiveFailures >= 5) {
+          return { status: 'failed', error: '任务状态连续5次查询失败，请稍后重试' }
+        }
       }
-      return null
+      return { status: 'timeout', result: null }
     }
+
     const fetchDrafts = async () => {
       try {
         const res = await api.get('/chapters/drafts')
         if (res.状态码 === 200) drafts.value = (res.数据 || []).slice().reverse()  // 倒序展示：最新草稿在最上方
         else console.error('获取草稿列表失败:', res)
       } catch (e) { console.error('获取草稿列表异常:', e) }
-    }
-
-    const extractDraftInfo = async (d) => {
-      if (!d.content || d.content.trim() === '') {
-        alert('章节内容为空，无法提取')
-        return
-      }
-      extracting[d.chapter_unique_id] = true
-      try {
-        const res = await api.post('/chapters/extract-info', { content: d.content, chapter_name: d.chapter_name, novel_unique_id: d.novel_unique_id })
-        if (res.状态码 === 200 && res.数据 && res.数据.task_id) {
-          // 接口为异步任务，轮询等待真实提取结果
-          const info = await pollExtractResult(res.数据.task_id, 120000, 3000)
-          if (info && hasMemoryFields(info)) {
-            const idx = drafts.value.findIndex(item => item.chapter_unique_id === d.chapter_unique_id)
-            if (idx !== -1) {
-              drafts.value[idx] = { ...drafts.value[idx], _info: info }
-            }
-          } else {
-            alert('提取失败或超时，请稍后重试')
-          }
-        } else {
-          alert('提取失败: ' + (res.消息 || JSON.stringify(res)))
-        }
-      } catch (e) {
-        console.error('[提取信息] 异常:', e)
-        const detail = e.response?.data?.detail || e.response?.data?.消息 || e.message
-        alert('提取失败: ' + detail)
-      } finally {
-        extracting[d.chapter_unique_id] = false
-      }
     }
 
     const publishChapter = async (d) => {
@@ -1257,35 +1289,6 @@ export default {
 
       try {
         const body = { content: d.content }
-        // 附带 AI 提取的信息（未提取或无有效数据时自动提取，确保记忆体同步保存成功）
-        let info = d._info
-        if (!hasMemoryFields(info)) {
-          try {
-            const extRes = await api.post('/chapters/extract-info', { content: d.content, chapter_name: d.chapter_name, novel_unique_id: d.novel_unique_id })
-            if (extRes.状态码 === 200 && extRes.数据 && extRes.数据.task_id) {
-              info = await pollExtractResult(extRes.数据.task_id, 120000, 3000)
-            }
-          } catch (e) {
-            console.error('[发布-自动提取] 异常:', e)
-            info = null
-          }
-          if (!hasMemoryFields(info)) {
-            publishOverlay.visible = false
-            alert('AI 提取章节关键信息失败，无法保证记忆体保存成功，请稍后重试发布')
-            return
-          }
-        }
-        if (info) {
-          body.characters_involved = info.人物 || ''
-          body.organizations = info.组织 || ''
-          body.skills = info.功法技能 || ''
-          body.locations = info.地点 || ''
-          body.events = info.关键事件 || ''
-          body.time_info = info.时间 || ''
-          body.key_items = info.关键物品 || ''
-          body.power_changes = info.实力变化 || ''
-          body.foreshadowing = info.伏笔 || ''
-        }
 
         // 阶段2：调用后端 API（后端内部三阶段验证：txt→MySQL→ChromaDB）
         publishOverlay.step = 2
@@ -1429,36 +1432,20 @@ export default {
         if (res.状态码 === 200 && res.数据 && res.数据.task_id) {
           // 异步任务：轮询结果（重新生成耗时可达数分钟，同步请求会被公网隧道/浏览器掐断）
           const taskId = res.数据.task_id
-          const maxWait = 300000
-          const pollInterval = 3000
-          let waited = 0
-          let done = false
-          while (waited < maxWait) {
-            await new Promise(r => setTimeout(r, pollInterval))
-            waited += pollInterval
-            try {
-              const statusRes = await api.get('/chapters/tasks/' + taskId)
-              if (statusRes.状态码 === 200 && statusRes.数据) {
-                const taskStatus = statusRes.数据.status
-                if (taskStatus === 'done') {
-                  const newContent = statusRes.数据.result?.data?.content
-                  if (newContent) {
-                    editChapterForm.content = newContent
-                    alert('重新生成成功，内容已更新到编辑区')
-                  } else {
-                    alert('重新生成成功，但未能获取内容')
-                  }
-                  done = true
-                  break
-                } else if (taskStatus === 'failed') {
-                  alert('AI重新生成失败: ' + (statusRes.数据.error || '未知错误'))
-                  done = true
-                  break
-                }
-              }
-            } catch { /* ignore polling errors */ }
+          const task = await waitForTask(taskId, 300000, 3000)
+          if (task.status === 'done') {
+            const newContent = task.result?.content
+            if (newContent) {
+              editChapterForm.content = newContent
+              alert('重新生成成功，内容已更新到编辑区')
+            } else {
+              alert('重新生成成功，但未能获取内容')
+            }
+          } else if (task.status === 'failed') {
+            alert('AI重新生成失败: ' + task.error)
+          } else {
+            alert('AI重新生成超时，请稍后查看章节内容')
           }
-          if (!done) alert('AI重新生成超时，请稍后查看章节内容')
         } else {
           alert('重新生成失败: ' + (res.消息 || '提交失败'))
         }
@@ -1483,37 +1470,25 @@ export default {
         if (res.状态码 === 200 && res.数据?.task_id) {
           // 异步任务：轮询续写结果
           const taskId = res.数据.task_id
-          const maxWait = 300000
-          const pollInterval = 3000
-          let waited = 0
-          let done = false
-          while (waited < maxWait) {
-            await new Promise(r => setTimeout(r, pollInterval))
-            waited += pollInterval
-            try {
-              const statusRes = await api.get('/chapters/tasks/' + taskId)
-              if (statusRes.状态码 === 200 && statusRes.数据) {
-                const taskStatus = statusRes.数据.status
-                if (taskStatus === 'done') {
-                  const result = statusRes.数据.result?.data
-                  await fetchDrafts()
-                  const added = result?.total_word_count || result?.word_count || '?'
-                  alert(`续写成功！新增 ${added} 字`)
-                  done = true
-                  break
-                } else if (taskStatus === 'failed') {
-                  alert('AI续写失败: ' + (statusRes.数据.error || '未知错误'))
-                  done = true
-                  break
-                }
-              }
-            } catch { /* ignore polling errors */ }
+          const task = await waitForTask(taskId, 300000, 3000)
+          if (task.status === 'done') {
+            const result = task.result
+            await fetchDrafts()
+            const added = result?.total_word_count || result?.word_count || '?'
+            alert(`续写成功！新增 ${added} 字`)
+          } else if (task.status === 'failed') {
+            alert('AI续写失败: ' + task.error)
+          } else {
+            alert('AI续写超时，请稍后查看章节内容')
           }
-          if (!done) alert('AI续写超时，请稍后查看章节内容')
         } else {
           alert(res.消息 || '提交失败')
         }
-      } catch (e) { alert('续写失败') }
+      } catch (e) {
+        const data = e.response?.data || e.response || {}
+        const msg = data.数据 || data.消息 || data.detail || e.message || '网络错误，请检查后端是否启动'
+        alert('续写失败: ' + (typeof msg === 'string' ? msg : JSON.stringify(msg)))
+      }
       finally { continuing[d.chapter_unique_id] = false }
     }
 
@@ -1700,7 +1675,7 @@ export default {
       msStyleOpen, msTemplateOpen, msEditStyleOpen, msEditTemplateOpen, toggleMulti,
       chapterPage, chapterPageSize, chapterPaged, chapterPageCount, chapterPageNums,
       drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, editChapter, saveChapterEdit, regenerateChapter, continueChapter, continuing, deleteNovel, downloadNovel, formatTime, saving, regenerating, showChapterEditModal, editChapterForm,
-      extracting, extractDraftInfo, publishing, publishOverlay,
+      publishing, publishOverlay,
       genreOptions, selectedGenres, toggleGenre, handleCoverUpload,
       showEditModal, editForm, editSelectedGenres, editError, editSuccess,
       openEditModal, toggleEditGenre, handleEditCoverUpload, handleUpdateNovel,
@@ -1708,6 +1683,8 @@ export default {
       spAllSelected, initScreenplay, spLoadChapters, spToggleAll, spGenerate, spCopyResult,
       outlineNovelId, outlineDirection, outlineCount, outlineGenerating, outlineResult,
       outlineLoading, outlineSaving,
+      outlineSelectedNumbers, outlineSelectedCount, outlineAllSelected, outlineBatchDeleting,
+      getOutlineCharCount, isOutlineTooShort, toggleOutlineSelectAll, outlineDeleteSelected, exportOutlines,
       outlineEditNum, outlineEditName, outlineEditSummary,
       startOutlineEditOne, cancelOutlineEditOne, outlineUpdateOne,
       loadOutlineList, onOutlineNovelChange, outlineGenerate, outlineGenerateChapter, outlineDeleteOne,
@@ -2075,16 +2052,6 @@ export default {
 .empty { text-align: center; padding: 60px 0; color: var(--text-muted); font-size: 14px; }
 
 /* Draft Info Panel */
-.draft-info-panel { margin-top: 12px; }
-.btn-extract { padding: 8px 18px; border-radius: 8px; cursor: pointer; font-size: 12px; font-weight: 500; background: var(--btn-bg); color: var(--accent-text); border: 1px solid var(--border-hover); transition: all 0.3s; }
-.btn-extract:hover { background: var(--border); box-shadow: 0 2px 12px var(--border); }
-.btn-extract:disabled { opacity: 0.6; cursor: not-allowed; }
-.info-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; }
-.info-cell { display: flex; flex-direction: column; }
-.info-cell label { font-size: 11px; color: var(--info-text); margin-bottom: 4px; font-weight: 500; }
-.info-cell input { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; background: var(--bg-input); color: var(--text-primary); transition: border-color 0.3s; }
-.info-cell input:focus { outline: none; border-color: var(--border-focus); }
-@media (max-width: 768px) { .info-grid { grid-template-columns: repeat(2, 1fr); } }
 
 /* 发布加载遮罩 */
 .publish-overlay { z-index: 300; }
@@ -2274,6 +2241,29 @@ export default {
 .outline-hint { font-size: 12px; color: var(--text-muted); margin-left: 10px; }
 .outline-result { margin-top: 20px; padding: 16px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; }
 .outline-result-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; color: #22c55e; }
+.outline-batch-toolbar {
+  display: flex; align-items: center; gap: 14px; margin: 0 0 12px; padding: 9px 10px;
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px;
+}
+.outline-select-all { display: inline-flex; align-items: center; gap: 7px; color: var(--text-secondary); font-size: 13px; cursor: pointer; }
+.outline-select-all input, .outline-item-checkbox { accent-color: #22c55e; cursor: pointer; }
+.outline-select-all input:disabled, .outline-item-checkbox:disabled { cursor: not-allowed; }
+.outline-selected-count { font-size: 12px; color: var(--text-muted); }
+.btn-outline-batch-delete {
+  margin-left: auto; padding: 5px 12px; border: 1px solid rgba(248,113,113,.55); border-radius: 6px;
+  background: transparent; color: #f87171; font-size: 12px; cursor: pointer; transition: all .15s;
+}
+.btn-outline-batch-delete:hover:not(:disabled) { background: rgba(248,113,113,.12); }
+.btn-outline-batch-delete:disabled { opacity: .45; cursor: not-allowed; }
+.btn-outline-export {
+  margin-left: 8px; padding: 5px 12px; border: 1px solid rgba(96,165,250,.55); border-radius: 6px;
+  background: transparent; color: #60a5fa; font-size: 12px; cursor: pointer; transition: all .15s;
+}
+.btn-outline-export:hover:not(:disabled) { background: rgba(96,165,250,.12); }
+.btn-outline-export:disabled { opacity: .45; cursor: not-allowed; }
+.outline-item-checkbox { flex: 0 0 auto; margin: 0 2px 0 0; }
+.outline-char-count { margin-top: 5px; text-align: right; color: var(--text-muted); font-size: 12px; }
+.outline-char-count.char-warn { color: #ef4444; font-weight: 600; }
 .outline-loading { font-size: 12px; font-weight: 400; color: var(--text-muted); margin-left: 10px; }
 .outline-group-title {
   font-size: 13px;
@@ -2305,6 +2295,7 @@ export default {
   color: #fff;
 }
 .btn-outline-save:hover, .btn-outline-edit:hover { opacity: 0.9; transform: translateY(-1px); }
+.btn-outline-save:disabled, .btn-outline-edit:disabled, .btn-outline-cancel:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 .btn-outline-save:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 .btn-outline-edit { background: linear-gradient(135deg, #3b82f6, #2563eb); }
 .btn-outline-cancel {

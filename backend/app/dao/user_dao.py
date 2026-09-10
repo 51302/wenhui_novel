@@ -3,6 +3,8 @@ from sqlalchemy.orm import Session
 from app.models.user import User
 from typing import Optional
 
+# 避免循环导入，在方法内部按需导入 Chapter
+
 
 # 各等级 AI 生成配额（免费用户总共6次，不重置；VIP/SVIP每日重置）
 DAILY_QUOTA_MAP = {
@@ -148,6 +150,49 @@ class UserDAO:
         user.free_generate_quota -= 1
         db.commit()
         return user.free_generate_quota
+
+    @staticmethod
+    def count_today_published(db: Session, user_id: int) -> int:
+        """统计用户今日已发布的章节数（北京时间当天0:00起）
+        :param db: 数据库会话
+        :param user_id: 用户ID
+        :return: 今日已发布章节数
+        """
+        from app.models.chapter import Chapter
+        now_bj = _beijing_now()
+        today_start_bj = now_bj.replace(hour=0, minute=0, second=0, microsecond=0)
+        # 转换为 UTC 用于数据库查询（created_at 存储的是 UTC 时间）
+        today_start_utc = today_start_bj.astimezone(timezone.utc).replace(tzinfo=None)
+        count = db.query(Chapter).filter(
+            Chapter.user_id == user_id,
+            Chapter.is_published == 1,
+            Chapter.created_at >= today_start_utc,
+        ).count()
+        return count
+
+    @staticmethod
+    def decrement_publish_quota(db: Session, user_id: int) -> int:
+        """发布成功后更新配额缓存（基于今日已发布章节数计算剩余配额）
+        注意：调用此方法时，章节已标记为 is_published=1 并已 commit，
+        因此 count_today_published 返回的已包含本次发布的章节。
+        :param db: 数据库会话
+        :param user_id: 用户ID
+        :return: 剩余可用配额
+        """
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return -1
+        # 跨天自动重置配额（更新 quota_date 和 free_generate_quota）
+        UserDAO._reset_daily_quota(user)
+        # 根据今日已发布数重新计算剩余配额（published_today 已包含本次发布）
+        published_today = UserDAO.count_today_published(db, user_id)
+        max_quota = DAILY_QUOTA_MAP.get(user.vip_level, 6)
+        remaining = max_quota - published_today
+        if remaining < 0:
+            remaining = 0
+        user.free_generate_quota = remaining
+        db.commit()
+        return remaining
 
     @staticmethod
     def get_max_daily_quota(vip_level: int) -> int:

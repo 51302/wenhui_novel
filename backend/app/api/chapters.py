@@ -6,6 +6,7 @@ from app.models.chapter import Chapter
 from app.models.novel import Novel
 from app.service.chapter_service import ChapterService
 from app.api.deps import get_current_user, check_generate_permission, require_svip
+from app.dao.user_dao import UserDAO
 from fastapi.responses import StreamingResponse
 from app.utils.response import fail, success
 from app.utils.logger import system_logger
@@ -60,9 +61,10 @@ class OutlineGenerateBody(BaseModel):
 def generate_outline(
     body: OutlineGenerateBody,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(check_generate_permission),
+    current_user: dict = Depends(get_current_user),
 ):
     """章节概要规划：根据作品已有章节概要 + 用户剧情大框，生成后续 N 章概要（异步，不自动入库）
+    概要生成不消耗配额（配额仅在 AI 生成正文时扣减）
 
     提交队列返回 task_id，前端轮询 /chapters/tasks/{task_id} 获取结果。
     """
@@ -364,7 +366,7 @@ def publish_chapter(
     """
     发布章节到作品圈
     附带 AI 提取的关键信息（人物/组织/地点/技能/事件等）
-    发布不扣减配额（配额仅在 AI 生成时扣减）
+    发布成功后消耗1次配额（以今日已发布章节数为准）
     """
     result = ChapterService.publish_chapter(
         db, chapter_unique_id,
@@ -382,6 +384,12 @@ def publish_chapter(
     if result.get("状态码") == 200:
         ch_name = result.get("数据", {}).get("chapter_name", "")
         system_logger.info(f"章节发布成功: {ch_name} (ID={chapter_unique_id}, 用户={current_user['username']})")
+        # 发布成功后扣减配额（以今日已发布章节数为准）
+        try:
+            remaining = UserDAO.decrement_publish_quota(db, current_user["user_id"])
+            system_logger.info(f"配额扣减完成: 用户={current_user['username']}, 剩余配额={remaining}")
+        except Exception as e:
+            system_logger.warning(f"配额扣减失败（非致命）: 用户={current_user['username']}, 错误={e}")
     else:
         system_logger.warning(f"章节发布失败: ID={chapter_unique_id} → {result.get('消息', '')}")
     return result
@@ -426,7 +434,9 @@ def delete_chapter(
     current_user: dict = Depends(get_current_user),
 ):
     """删除指定章节"""
-    return ChapterService.delete_chapter(db, chapter_unique_id)
+    return ChapterService.delete_chapter(
+        db, chapter_unique_id, user_id=current_user["user_id"]
+    )
 
 
 @router.get("/novel/{novel_unique_id}")

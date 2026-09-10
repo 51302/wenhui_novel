@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>需求修改记录</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #333; line-height: 1.6; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+  h1 { text-align: center; color: #1a1a2e; margin-bottom: 10px; font-size: 28px; }
+  .subtitle { text-align: center; color: #666; margin-bottom: 30px; font-size: 14px; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 30px; }
+  .stat-card { background: white; border-radius: 12px; padding: 20px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  .stat-number { font-size: 36px; font-weight: bold; color: #667eea; }
+  .stat-label { font-size: 14px; color: #888; margin-top: 5px; }
+  .category { background: white; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); overflow: hidden; }
+  .category-header { padding: 15px 20px; font-size: 18px; font-weight: bold; color: white; display: flex; align-items: center; gap: 10px; }
+  .category-header .icon { font-size: 24px; }
+  .category-body { padding: 0; }
+  table { width: 100%; border-collapse: collapse; }
+  th { background: #f8f9fa; padding: 12px 15px; text-align: left; font-size: 13px; color: #666; border-bottom: 2px solid #eee; }
+  td { padding: 12px 15px; border-bottom: 1px solid #f0f0f0; font-size: 14px; vertical-align: top; }
+  tr:hover { background: #f8f9ff; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; }
+  .tag-done { background: #d4edda; color: #155724; }
+  .tag-priority { background: #fff3cd; color: #856404; }
+  .tag-category { background: #e7e3ff; color: #4a3d8f; }
+  .tag-l1 { background: #f8d7da; color: #721c24; }
+  .tag-l2 { background: #d1ecf1; color: #0c5460; }
+  .file-path { font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; color: #e83e8c; background: #fce4ec; padding: 2px 6px; border-radius: 3px; }
+  .section-title { font-size: 15px; font-weight: bold; color: #333; margin: 8px 0; }
+  .detail { color: #666; font-size: 13px; margin-top: 4px; }
+  .color-1 { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+  .color-2 { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
+  .color-3 { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); }
+  .color-4 { background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); }
+  .color-5 { background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); }
+  .color-6 { background: linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%); }
+  .color-7 { background: linear-gradient(135deg, #fccb90 0%, #d57eeb 100%); }
+  .timeline { position: relative; padding-left: 30px; }
+  .timeline::before { content: ''; position: absolute; left: 10px; top: 0; bottom: 0; width: 2px; background: #ddd; }
+  .timeline-item { position: relative; margin-bottom: 20px; }
+  .timeline-item::before { content: ''; position: absolute; left: -24px; top: 8px; width: 10px; height: 10px; border-radius: 50%; background: #667eea; border: 2px solid white; box-shadow: 0 0 0 2px #667eea; }
+  @media (max-width: 768px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>小说AI平台 - 需求修改记录</h1>
+  <p class="subtitle">共计 32 项修改需求 | 涵盖记忆体、提示词、代码、性能优化等 7 大类</p>
+
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-number">32</div>
+      <div class="stat-label">总修改需求</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">7</div>
+      <div class="stat-label">大类</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">12</div>
+      <div class="stat-label">涉及文件</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-number">100%</div>
+      <div class="stat-label">已完成</div>
+    </div>
+  </div>
+
+  <!-- 1. 记忆体相关 -->
+  <div class="category">
+    <div class="category-header color-1">
+      <span class="icon">🧠</span> 一、记忆体相关（3项）
+    </div>
+    <div class="category-body">
+      <table>
+        <tr><th width="5%">#</th><th width="25%">需求</th><th width="35%">修改内容</th><th width="20%">涉及文件</th><th width="15%">状态</th></tr>
+        <tr>
+          <td>1</td>
+          <td><div class="section-title">取消记忆体注入限制</div><div class="detail">用户原话："不准限制记忆体注入，检索出多少就注入多少"</div></td>
+          <td>移除 <code>MAX_INJECT_CHARS=8000</code> 限制，记忆体检索出多少字数就注入多少token</td>
+          <td><span class="file-path">chapter_service.py</span><br><span class="file-path">chapter_gen_service.py</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td><div class="section-title">修复14万字记忆体膨胀</div><div class="detail">用户原话："记忆体章节概要提示词为啥都这么多"</div></td>
+          <td>Redis加载时按维度名去重（合并同名维度）+ 每维度最多保留20行（MAX_LINES_PER_DIM=20）</td>
+          <td><span class="file-path">chapter_gen_graph.py</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td><div class="section-title">实体驱动记忆检索</div><div class="detail">用户原话："不管是人还是事，只要是维度里面的一种，就自动搜索"</div></td>
+          <td>从章节概要提取实体 → 搜索全部11个维度 → 按相关度排序 → 注入最相关的记忆</td>
+          <td><span class="file-path">chapter_service.py</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- 2. 提示词规则 -->
+  <div class="category">
+    <div class="category-header color-2">
+      <span class="icon">📝</span> 二、提示词规则（8项）
+    </div>
+    <div class="category-body">
+      <table>
+        <tr><th width="5%">#</th><th width="8%">级别</th><th width="22%">需求</th><th width="35%">修改内容</th><th width="15%">涉及文件</th><th width="15%">状态</th></tr>
+        <tr>
+          <td>4</td>
+          <td><span class="tag tag-l1">L1</span></td>
+          <td><div class="section-title">境界体系铁律</div><div class="detail">用户原话："不要出现练气期、金仙"</div></td>
+          <td>新增 L1 #8：禁止使用练气期、筑基、金丹、元婴、化神、合体、大乘、渡劫、金仙等违规境界，必须使用小说设定的地仙→真仙→天仙→金仙→太乙金仙→大罗金仙→准圣→圣人</td>
+          <td><span class="file-path">prompts.yaml</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>5</td>
+          <td><span class="tag tag-l1">L1</span></td>
+          <td><div class="section-title">称谓辈分铁律</div><div class="detail">用户原话："辈分不能错乱"</div></td>
+          <td>新增 L1 #9：17类辈分关系、200+称谓，禁止辈分错乱（如薛峰不能叫夏语"夏师姐"）</td>
+          <td><span class="file-path">prompts.yaml</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>6</td>
+          <td><span class="tag tag-l1">L1</span></td>
+          <td><div class="section-title">剧情不重复铁律</div><div class="detail">用户原话："不要重复之前的剧情"</div></td>
+          <td>新增 L1 #10：禁止重复之前已写过的剧情（如反复"向夏语坦白喜欢沈清岚"）</td>
+          <td><span class="file-path">prompts.yaml</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>7</td>
+          <td><span class="tag tag-l1">L1</span></td>
+          <td><div class="section-title">旧事禁区铁律</div><div class="detail">用户原话："旧事不能扩写，只能引用"</div></td>
+          <td>新增 L1 #13：独立醒目的禁区规则，含6组正反示例，旧事只能一句话带过，禁止展开经过/对话/细节</td>
+          <td><span class="file-path">prompts.yaml</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>8</td>
+          <td><span class="tag tag-l1">L1</span></td>
+          <td><div class="section-title">概要事件覆盖铁律</div><div class="detail">用户原话："概要事件必须在章节中出现"</div></td>
+          <td>新增 L1 #11：每个事件独立成段，情感类必须有明确对话/行动体现，写完后必须对照清单逐条打钩</td>
+          <td><span class="file-path">prompts.yaml</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>9</td>
+          <td><span class="tag tag-l1">L1</span></td>
+          <td><div class="section-title">概要边界铁律</div><div class="detail">用户原话："扩写只能在概要范围内"</div></td>
+          <td>新增 L1 #12：概要=唯一骨架，扩写=填充血肉，禁止添加概要外的回忆/闪回/新事件，含4组正反示例</td>
+          <td><span class="file-path">prompts.yaml</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>10</td>
+          <td><span class="tag tag-l2">L2</span></td>
+          <td><div class="section-title">写饱写透铁律</div><div class="detail">用户原话："每个事件要写透"</div></td>
+          <td>新增 L2：每个事件写透，禁止跳过，含正反示例</td>
+          <td><span class="file-path">prompts.yaml</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>11</td>
+          <td><span class="tag tag-l2">L2</span></td>
+          <td><div class="section-title">字数分配铁律</div><div class="detail">用户原话："字数要达标"</div></td>
+          <td>新增 L2：动态计算目标字数，每个事件平均分配</td>
+          <td><span class="file-path">prompts.yaml</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- 3. 代码修改 -->
+  <div class="category">
+    <div class="category-header color-3">
+      <span class="icon">💻</span> 三、代码修改（7项）
+    </div>
+    <div class="category-body">
+      <table>
+        <tr><th width="5%">#</th><th width="25%">需求</th><th width="35%">修改内容</th><th width="20%">涉及文件</th><th width="15%">状态</th></tr>
+        <tr>
+          <td>12</td>
+          <td><div class="section-title">动态max_tokens计算</div><div class="detail">用户原话："max_tokens要根据输入动态计算"</div></td>
+          <td>新增 <code>_calculate_dynamic_max_tokens()</code>，根据输入大小分4档计算：&lt;5000字→1.0x，&lt;10000字→1.1x，&lt;20000字→1.2x，&gt;20000字→1.3x</td>
+          <td><span class="file-path">chapter_gen_service.py</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>13</td>
+          <td><div class="section-title">角色设定动态注入</div><div class="detail">用户原话："角色设定要动态注入"</div></td>
+          <td>根据章节概要中出现的实体动态选择角色卡，不再固定注入5个角色</td>
+          <td><span class="file-path">chapter_gen_service.py</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>14</td>
+          <td><div class="section-title">记忆体维度数据合并</div><div class="detail">用户原话："记忆体维度数据要合并到角色卡"</div></td>
+          <td>将Redis记忆体中的角色信息（性格、说话风格等）合并到原始角色卡中注入</td>
+          <td><span class="file-path">chapter_gen_service.py</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>15</td>
+          <td><div class="section-title">生成耗时统计</div><div class="detail">用户原话："看看生成了多少时间"</div></td>
+          <td>新增 <code>[AI调用耗时]</code> 和 <code>[章节生成耗时]</code> 日志</td>
+          <td><span class="file-path">chapter_gen_graph.py</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>16</td>
+          <td><div class="section-title">Token成本统计</div><div class="detail">用户原话："一章需要多少钱"</div></td>
+          <td>新增 <code>[Token预估]</code> 日志，显示输入/输出token数和预估成本</td>
+          <td><span class="file-path">ai_chat_service.py</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>17</td>
+          <td><div class="section-title">修复续写参数bug</div><div class="detail">用户原话："AI续写失败: missing 1 required positional argument"</div></td>
+          <td>修复 <code>_read_chapter_content_from_file</code> 调用时缺少 <code>chapter_unique_id</code> 参数</td>
+          <td><span class="file-path">chapter_gen_graph.py</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>18</td>
+          <td><div class="section-title">修复章节号计算错误</div><div class="detail">用户原话："UPDATE statement expected to update 1 row(s); 0 were matched"</div></td>
+          <td>删除孤立TXT文件（第86章），修复 next_num 计算逻辑</td>
+          <td>TXT文件</td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- 4. 记忆体数据修复 -->
+  <div class="category">
+    <div class="category-header color-4">
+      <span class="icon">🔧</span> 四、记忆体数据修复（4项）
+    </div>
+    <div class="category-body">
+      <table>
+        <tr><th width="5%">#</th><th width="25%">问题</th><th width="40%">修复内容</th><th width="15%">涉及位置</th><th width="15%">状态</th></tr>
+        <tr>
+          <td>19</td>
+          <td><div class="section-title">境界违规</div><div class="detail">AI使用"练气期""金仙"等违规境界</div></td>
+          <td>清理8个TXT文件中的9处违规境界 + 清理Redis中的违规词汇 + 提示词中新增境界铁律</td>
+          <td>TXT文件 + Redis + prompts.yaml</td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>20</td>
+          <td><div class="section-title">辈分错乱</div><div class="detail">薛峰叫夏语"夏师姐"（实际他是师兄）</div></td>
+          <td>在Redis记忆体中添加完整人物辈分关系（17类200+称谓）</td>
+          <td>Redis记忆体</td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>21</td>
+          <td><div class="section-title">感情线错误</div><div class="detail">AI认为顾平安深爱夏语，实际是曾暗恋已放下</div></td>
+          <td>修正情感状态：顾平安对夏语→曾暗恋（白月光），对沈清岚→深爱（朱砂痣）</td>
+          <td>Redis记忆体</td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>22</td>
+          <td><div class="section-title">情感状态提取不准</div><div class="detail">AI将"曾暗恋"误判为"深爱"</div></td>
+          <td>更新提取提示词：新增感情线提取铁律，区分过去/现在、暗恋/爱情、表白结果</td>
+          <td><span class="file-path">prompts.yaml</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- 5. 新功能 -->
+  <div class="category">
+    <div class="category-header color-5">
+      <span class="icon">✨</span> 五、新功能（3项）
+    </div>
+    <div class="category-body">
+      <table>
+        <tr><th width="5%">#</th><th width="25%">需求</th><th width="45%">功能说明</th><th width="15%">涉及文件</th><th width="10%">状态</th></tr>
+        <tr>
+          <td>23</td>
+          <td><div class="section-title">导出章节概要</div><div class="detail">用户原话："一键导出所有章节概要"</div></td>
+          <td>前端"导出概要"按钮，点击后导出所有章节概要为TXT文件</td>
+          <td><span class="file-path">Creation.vue</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>24</td>
+          <td><div class="section-title">全量需求测试</div><div class="detail">用户原话："测试所有需求"</div></td>
+          <td>生成测试章节，验证境界、称谓、旧事禁区、概要覆盖等12项规则</td>
+          <td>测试文件</td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>25</td>
+          <td><div class="section-title">规则文档生成</div><div class="detail">用户原话："生成包含正反对比示例的完整规则文档"</div></td>
+          <td>生成HTML格式的完整规则文档，包含12项规则、20+组正反示例</td>
+          <td>HTML文件</td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- 6. 配置修改 -->
+  <div class="category">
+    <div class="category-header color-6">
+      <span class="icon">⚙️</span> 六、配置修改（3项）
+    </div>
+    <div class="category-body">
+      <table>
+        <tr><th width="5%">#</th><th width="25%">问题</th><th width="45%">修改内容</th><th width="15%">涉及文件</th><th width="10%">状态</th></tr>
+        <tr>
+          <td>26</td>
+          <td><div class="section-title">fact_check仍在运行</div><div class="detail">用户原话："为啥还有AI调用-事实核查"</div></td>
+          <td>修正YAML缩进错误，将 <code>enabled: false</code> 放到正确的父级下</td>
+          <td><span class="file-path">config.yaml</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>27</td>
+          <td><div class="section-title">章节被截断</div><div class="detail">用户原话："为啥写的字数这么少了"</div></td>
+          <td>设置 <code>max_tokens_min: 4000</code>，确保最小输出长度</td>
+          <td><span class="file-path">config.yaml</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>28</td>
+          <td><div class="section-title">脏话限制移除</div><div class="detail">用户原话："脏话每章最多2-3次可以去掉"</div></td>
+          <td>移除脏话频率限制规则</td>
+          <td><span class="file-path">prompts.yaml</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- 7. 性能优化 -->
+  <div class="category">
+    <div class="category-header color-7">
+      <span class="icon">⚡</span> 七、性能优化（4项）
+    </div>
+    <div class="category-body">
+      <table>
+        <tr><th width="5%">#</th><th width="25%">需求</th><th width="45%">优化内容</th><th width="15%">涉及文件</th><th width="10%">状态</th></tr>
+        <tr>
+          <td>29</td>
+          <td><div class="section-title">生成时间优化</div><div class="detail">用户原话："生成时间69秒，要&lt;60秒"</div></td>
+          <td>分析优化空间：max_tokens优化、检索去重、跳过后处理</td>
+          <td>多文件</td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>30</td>
+          <td><div class="section-title">max_tokens降低</div><div class="detail">用户原话："max_tokens 3500→3000 试试"</div></td>
+          <td>将max_tokens从3500降到3000，后改为动态计算</td>
+          <td><span class="file-path">config.yaml</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>31</td>
+          <td><div class="section-title">记忆体检索去重</div><div class="detail">用户原话："记忆体检索去重优化"</div></td>
+          <td>优化检索算法，减少重复计算</td>
+          <td><span class="file-path">chapter_service.py</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+        <tr>
+          <td>32</td>
+          <td><div class="section-title">跳过后处理</div><div class="detail">用户原话："跳过非必要后处理"</div></td>
+          <td>设置 <code>skip_repair_on_generate: true</code></td>
+          <td><span class="file-path">config.yaml</span></td>
+          <td><span class="tag tag-done">✅ 完成</span></td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- 涉及文件汇总 -->
+  <div class="category">
+    <div class="category-header" style="background: linear-gradient(135deg, #333 0%, #555 100%);">
+      <span class="icon">📁</span> 涉及文件汇总
+    </div>
+    <div class="category-body">
+      <table>
+        <tr><th>文件</th><th>修改次数</th><th>主要修改内容</th></tr>
+        <tr><td><span class="file-path">prompts.yaml</span></td><td>8次</td><td>境界铁律、称谓铁律、旧事禁区、概要边界、感情线提取等</td></tr>
+        <tr><td><span class="file-path">chapter_gen_service.py</span></td><td>5次</td><td>动态max_tokens、角色动态注入、记忆体合并</td></tr>
+        <tr><td><span class="file-path">chapter_gen_graph.py</span></td><td>4次</td><td>Redis去重、耗时统计、bug修复</td></tr>
+        <tr><td><span class="file-path">chapter_service.py</span></td><td>3次</td><td>实体检索、称谓注入、检索去重</td></tr>
+        <tr><td><span class="file-path">config.yaml</span></td><td>5次</td><td>max_tokens、fact_check、skip_repair等</td></tr>
+        <tr><td><span class="file-path">ai_chat_service.py</span></td><td>1次</td><td>Token成本统计</td></tr>
+        <tr><td><span class="file-path">Creation.vue</span></td><td>1次</td><td>导出概要按钮</td></tr>
+        <tr><td>TXT章节文件</td><td>8个文件</td><td>境界违规词汇替换</td></tr>
+        <tr><td>Redis记忆体</td><td>多次</td><td>辈分关系、感情线、维度去重</td></tr>
+      </table>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

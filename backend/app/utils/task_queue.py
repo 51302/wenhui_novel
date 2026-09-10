@@ -20,6 +20,15 @@ TASK_QUEUE_PREFIX = "task:queue:"
 TASK_STATUS_PREFIX = "task:status:"
 TASK_RESULT_PREFIX = "task:result:"
 TASK_DATA_PREFIX = "task:data:"
+TASK_IDEMPOTENT_PREFIX = "task:idempotent:"
+NOVEL_LOCK_PREFIX = "novel:lock:"
+NOVEL_LOCK_RELEASE_SCRIPT = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+else
+    return 0
+end
+"""
 
 
 def run_async(async_func, *args, **kwargs):
@@ -38,6 +47,31 @@ def _redis():
     return redis_mod.redis_client
 
 
+def acquire_novel_lock(novel_id: str, timeout: int = 600) -> str | None:
+    r = _redis()
+    if not r or not r.client:
+        return None
+    lock_token = uuid.uuid4().hex
+    key = f"{NOVEL_LOCK_PREFIX}{novel_id}"
+    try:
+        acquired = r.client.set(key, lock_token, nx=True, ex=timeout)
+        return lock_token if acquired else None
+    except Exception:
+        return None
+
+
+def release_novel_lock(novel_id: str, lock_token: str):
+    r = _redis()
+    if not r or not r.client:
+        return
+    key = f"{NOVEL_LOCK_PREFIX}{novel_id}"
+    try:
+        script = r.client.register_script(NOVEL_LOCK_RELEASE_SCRIPT)
+        script(keys=[key], args=[lock_token])
+    except Exception:
+        pass
+
+
 class TaskQueue:
 
     # 并发控制上限从 config.yaml → task_queue.max_concurrency 读取（默认 3）
@@ -47,17 +81,25 @@ class TaskQueue:
     _worker_threads = []
 
     @staticmethod
-    def push(queue_name: str, task_data: dict, ttl: int = 3600) -> str:
+    def push(queue_name: str, task_data: dict, ttl: int = 3600, idempotency_key: str = None) -> str:
         """提交任务到队列，返回task_id
         :param queue_name: 队列名，如 'ai:generate'
         :param task_data: 任务参数字典
         :param ttl: 结果保留时间（秒）
+        :param idempotency_key: 幂等键（可选），相同键在 TTL 内不会重复创建任务
         :return: task_id
         """
-        task_id = uuid.uuid4().hex[:16]
         r = _redis()
         if not r:
             return ""
+
+        if idempotency_key:
+            idem_key = f"{TASK_IDEMPOTENT_PREFIX}{idempotency_key}"
+            existing = r.client.get(idem_key)
+            if existing:
+                return existing
+
+        task_id = uuid.uuid4().hex[:16]
 
         # 存储任务数据
         r.set(f"{TASK_DATA_PREFIX}{task_id}", json.dumps(task_data), ttl=ttl)
@@ -69,6 +111,9 @@ class TaskQueue:
         if not rpush_result:
             from app.utils.logger import system_logger
             system_logger.warning(f"rpush失败: key={queue_key} task_id={task_id}")
+
+        if idempotency_key:
+            r.client.setex(f"{TASK_IDEMPOTENT_PREFIX}{idempotency_key}", ttl, task_id)
 
         return task_id
 
@@ -99,11 +144,17 @@ class TaskQueue:
         return task_id, task_data
 
     @staticmethod
-    def set_status(task_id: str, status: str):
+    def set_status(task_id: str, status: str, ttl: int = 3600):
         """更新任务状态（存储为 JSON，确保 RedisCache.get() 正确反序列化）"""
         r = _redis()
         if r:
             r.set(f"{TASK_STATUS_PREFIX}{task_id}", json.dumps(status))
+            if r.client:
+                try:
+                    r.client.expire(f"{TASK_STATUS_PREFIX}{task_id}", ttl)
+                    r.client.expire(f"{TASK_DATA_PREFIX}{task_id}", ttl)
+                except Exception:
+                    pass
 
     @staticmethod
     def set_result(task_id: str, result_data: dict):

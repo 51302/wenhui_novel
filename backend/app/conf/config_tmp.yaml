@@ -73,9 +73,8 @@ ai:
     word_count: 2500           # 默认目标字数（前端创建章节时的默认值）
     word_count_max: 3000       # 前端字数输入上限（超过会提示并自动调整）
     word_count_ratio: 1.0      # prompt 要求字数上浮倍数（目标×ratio=上限，2500×1.0=2500，严格控制在2000-2500）
-    max_tokens_multiplier: 1.8   # max_tokens 倍数（2500×1.8=4500，确保不截断）
-    max_tokens_min: 4000       # max_tokens 下限（4000，确保写完所有概要事件）
-    max_tokens_max: 6000       # max_tokens 上限（动态计算不超过此值）
+    max_tokens_multiplier: 1.4 # max_tokens 倍数（2500×1.4=3500，2500字中文≈3500 token足够）
+    max_tokens_min: 3500       # max_tokens 下限（3500，节省输出成本但不牺牲字数）
     hard_cap_ratio: 1.2        # 超长截断倍数（2500×1.2=3000，硬截断上限）
     hard_cap_min_extra: 500    # 超长截断保底（2500+500=3000）
     api_timeout: 90            # 正文生成API超时（秒），90秒内必须完成

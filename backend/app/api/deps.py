@@ -140,6 +140,7 @@ def check_creation_access(
     db: Session = Depends(get_db)
 ):
     """创作权限检查：检查各等级每日配额是否用完（不扣减，仅检查）
+    配额以"今日已发布章节数"为准。
     免费=共6次(用完即止), VIP=10章/天, SVIP=50章/天
     """
     user = UserDAO.get_by_id(db, current_user["user_id"])
@@ -155,14 +156,16 @@ def check_creation_access(
     current_user["vip_level"] = vip_level
     current_user["is_vip"] = vip_level >= 1
     current_user["is_svip"] = vip_level >= 2
-    quota = user.free_generate_quota
-    if quota <= 0:
-        max_quota = DAILY_QUOTA_MAP.get(vip_level, 6)
+    # 基于今日已发布章节数检查剩余配额
+    published_today = UserDAO.count_today_published(db, current_user["user_id"])
+    max_quota = DAILY_QUOTA_MAP.get(vip_level, 6)
+    remaining = max_quota - published_today
+    if remaining <= 0:
         level_name = "SVIP" if vip_level >= 2 else ("VIP" if vip_level >= 1 else "免费")
         if vip_level == 0:
-            raise HTTPException(status_code=403, detail="免费生成次数已用完(共6次)，请开通VIP继续使用")
-        raise HTTPException(status_code=403, detail=f"今日{level_name}生成次数已用完({max_quota}次)，请开通VIP")
-    current_user["free_generate_quota"] = quota
+            raise HTTPException(status_code=403, detail="免费发布次数已用完(共6次)，请开通VIP继续使用")
+        raise HTTPException(status_code=403, detail=f"今日{level_name}发布次数已用完({max_quota}次)，请开通VIP")
+    current_user["free_generate_quota"] = remaining
     return current_user
 
 
@@ -170,7 +173,9 @@ def check_generate_permission(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """发布权限检查：检查各等级配额并扣减1次
+    """生成/续写/重新生成权限检查（仅检查，不扣减配额）
+    配额以"今日已发布章节数"为准，只有发布成功后才扣减。
+    生成正文、续写、重新生成等操作不消耗配额，只要发布数量未达上限就应该允许。
     免费=共6次(用完即止), VIP=10章/天, SVIP=50章/天
     """
     user = UserDAO.get_by_id(db, current_user["user_id"])
@@ -178,19 +183,22 @@ def check_generate_permission(
         raise HTTPException(status_code=401, detail="用户不存在")
     # 检查会员过期
     UserDAO.check_and_downgrade_expired(db, current_user["user_id"])
-    # 扣减配额（内部会自动跨天重置）
-    remaining = UserDAO.decrement_generate_quota(db, current_user["user_id"])
-    if remaining < 0:
+    # 跨天重置配额
+    UserDAO._reset_daily_quota(user)
+    db.commit()
+    # 基于今日已发布章节数检查剩余配额
+    published_today = UserDAO.count_today_published(db, current_user["user_id"])
+    max_quota = DAILY_QUOTA_MAP.get(user.vip_level, 6)
+    remaining = max_quota - published_today
+    if remaining <= 0:
         vip_level = user.vip_level
-        max_quota = DAILY_QUOTA_MAP.get(vip_level, 6)
         level_name = "SVIP" if vip_level >= 2 else ("VIP" if vip_level >= 1 else "免费")
         if vip_level == 0:
-            raise HTTPException(status_code=403, detail="免费生成次数已用完(共6次)，请开通VIP继续使用")
-        raise HTTPException(status_code=403, detail=f"今日{level_name}生成次数已用完({max_quota}次)，请开通VIP")
+            raise HTTPException(status_code=403, detail="免费发布次数已用完(共6次)，请开通VIP继续使用")
+        raise HTTPException(status_code=403, detail=f"今日{level_name}发布次数已用完({max_quota}次)，请开通VIP")
     # 更新 current_user 中的信息
     current_user["free_generate_quota"] = remaining
     current_user["vip_level"] = user.vip_level
     current_user["is_vip"] = user.vip_level >= 1
     current_user["is_svip"] = user.vip_level >= 2
-    current_user["generated_as_guest"] = True
     return current_user

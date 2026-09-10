@@ -266,9 +266,9 @@ class ChapterService:
                                   current_chapter_num: int = None) -> str:
         """按需检索注入：从全量记忆体中检索与本章概要相关的条目注入。
         - 实体命中：从人物/组织/功法/物品/地点维度提取实体名，概要中出现的实体
-          → 全维度行级精确匹配：记忆体各维度（人物/组织/功法/事件/时间线/地点/
-          伏笔/物品/实力）中，凡条目行内包含命中实体名的行全部注入。
-          做到"概要提到谁/什么，就取谁的记忆"，百分百对应章节概要
+          → 全维度行级精确匹配：记忆体各维度中，凡条目行内包含命中实体名的行注入。
+        - 每维度限行：高频实体（如主角名）会导致全维度全量命中，因此每个维度
+          最多注入 MAX_LINES_PER_DIM 行（按命中实体数降序），避免记忆体膨胀。
         - 兜底：概要无实体可匹配时，注入主要人物 top-15 + 时间线
         - 设定常驻：作品设定全量保留（激进档下做行级去重压缩）
         注：max_chars 默认 None —— 不截断。按需检索已限定为概要相关条目，
@@ -276,8 +276,6 @@ class ChapterService:
         """
         if not memory_body:
             return ""
-        # 无概要 → 全量；max_chars 非空且记忆体小 → 全量；否则走按需筛选
-        # （max_chars=None 表示按需筛选后不截断，绝不是全量注入）
         if not summary or (max_chars is not None and len(memory_body) <= max_chars):
             return memory_body
         sections = re.split(r'\n(?=【)', memory_body)
@@ -312,6 +310,26 @@ class ChapterService:
 
         # 2. 概要命中实体
         hit = {n for n in entity_names if n and n in (summary or "")}
+
+        # 2.1 从人物关系维度扩展关联实体
+        #     例：概要提到"沈清岚" → 关系维度有"沈清岚：与顾平安亦敌亦友" →
+        #     提取"顾平安"作为关联实体，确保相关记忆也被检索
+        related = set()
+        for line in dims.get("人物关系", []):
+            clean = re.sub(r'^\[[^\]]*\]\s*', '', line)
+            for h in hit:
+                if h in clean:
+                    parts = re.split(r'[：:]', clean, 1)
+                    if len(parts) > 1:
+                        rel_text = parts[1]
+                        for en in entity_names:
+                            if en != h and en in rel_text:
+                                related.add(en)
+
+        all_hit = hit | related
+        system_logger.info(
+            f"[记忆检索] 概要命中实体: {hit} | 关联扩展: {related if related else '无'}"
+        )
 
         # 3. 组装注入
         out, used = [], 0
@@ -351,35 +369,52 @@ class ChapterService:
         _add("作品设定", dedup)
 
         # 3.2 概要命中实体 → 全维度行级精确匹配（按需检索核心）
-        #     概要提到的人/物/事/时间/地点/组织/功法/伏笔，在记忆体各维度中按
-        #     "条目行内含实体名"精确匹配注入，做到"概要提谁，就取谁的记忆"，
-        #     不再无差别整章抽取，也不强制携带最近3章（命中即说明概要相关）。
-        #     命中行按"命中实体数"降序逐行注入：同时含多个概要实体的行最贴合
-        #     概要，绝对优先占用预算；主角高频导致命中行多时，最贴合的行先保住，
-        #     各维度的高相关条目都能进来，而不是被某一维度堆量行挤掉
-        if hit:
+        if all_hit:
             dim_order = {d: i for i, d in enumerate(
                 ("人物", "组织势力", "功法技能法宝", "关键事件", "时间线",
-                 "地点", "伏笔悬念", "关键物品", "实力变化"))}
-            cands = []  # (dim, line, hit_count)
+                 "地点", "伏笔悬念", "关键物品", "实力变化", "人物关系", "情感状态"))}
+            is_reveal = any(kw in (summary or "") for kw in
+                             ("身世", "来历", "出身", "身份之谜", "血脉之谜", "真实身份"))
+            cands = []  # (dim, line, hit_count, dim_priority)
             for dim in dim_order:
                 for ln in dims.get(dim, []):
-                    hc = sum(1 for n in hit if n in ln)
+                    hc = sum(1 for n in all_hit if n in ln)
                     if hc:
-                        cands.append((dim, ln, hc))
-            cands.sort(key=lambda t: (-t[2], dim_order[t[0]]))
-            cur_dim, cur_lines = None, []
-            def flush():
-                nonlocal cur_dim, cur_lines
-                if cur_lines:
-                    _add(cur_dim, cur_lines, truncate=True, from_end=True)
-                cur_dim, cur_lines = None, []
-            for dim, ln, hc in cands:
-                if dim != cur_dim:
-                    flush()
-                    cur_dim = dim
-                cur_lines.append(ln)
-            flush()
+                        if is_reveal and dim == "伏笔悬念":
+                            hc += 3
+                        cands.append((dim, ln, hc, dim_order[dim]))
+            cands.sort(key=lambda t: (-t[2], t[3]))
+            # 按总字符数限制注入（维度内按相关度排序，逐维度裁剪）
+            limit = max_chars or 999999  # 不限制，检索出多少注入多少
+            # 按维度分组，组内按hit_count降序
+            dim_lines_map = {}  # dim → [(line, hc)]
+            for dim, ln, hc, _ in cands:
+                dim_lines_map.setdefault(dim, []).append((ln, hc))
+            # 按维度优先级排序输出
+            for dim in ("作品设定", "人物", "关键事件", "人物关系", "地点",
+                        "功法技能法宝", "组织势力", "伏笔悬念", "关键物品",
+                        "时间线", "实力变化", "情感状态"):
+                pairs = dim_lines_map.get(dim)
+                if not pairs:
+                    continue
+                # 组内按hit_count降序（最相关的行优先）
+                pairs.sort(key=lambda t: -t[1])
+                lines = [p[0] for p in pairs]
+                block = f"【{dim}】\n" + "\n".join(lines)
+                if used + len(block) <= limit:
+                    out.append(block)
+                    used += len(block)
+                elif lines:
+                    # 放不下：逐行裁剪，只保留能放下的最相关行
+                    trimmed = []
+                    for ln in lines:
+                        test = f"【{dim}】\n" + "\n".join(trimmed + [ln])
+                        if used + len(test) <= limit:
+                            trimmed.append(ln)
+                    if trimmed:
+                        block = f"【{dim}】\n" + "\n".join(trimmed)
+                        out.append(block)
+                        used += len(block)
         else:
             # 兜底（概要无实体可精确匹配）：主要人物 top-15 + 时间线（全局脉络）
             _add("人物", sorted(dims.get("人物", []), key=len, reverse=True)[:15])
@@ -387,7 +422,8 @@ class ChapterService:
 
         result = "\n".join(out)
         system_logger.info(
-            f"[按需检索] 输入{len(memory_body)}字符 → 注入{len(result)}字符，命中{len(hit)}个实体"
+            f"[按需检索] 输入{len(memory_body)}字符 → 注入{len(result)}字符，"
+            f"命中{len(hit)}个实体，关联{len(related)}个"
         )
         return result
 
@@ -432,33 +468,28 @@ class ChapterService:
         prompt = MEMORY_EXTRACT_PROMPT.format(chapter_texts=chapters_text)
         full_prompt = f"以下小说的作品设定：\n{novel_settings}\n\n{prompt}"
 
-        async with httpx.AsyncClient(timeout=180) as client:
-            response = await client.post(
-                deepseek_base_url(),
-                headers={
-                    "Authorization": f"Bearer {deepseek_api_key()}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": deepseek_model(),
-                    "messages": [
-                        {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
-                        {"role": "user", "content": full_prompt}
-                    ],
-                    "thinking": {"type": "disabled"},
-                    "max_tokens": 4096,
-                    "temperature": 0.3
-                }
-            )
-            data = response.json()
-            if "choices" not in data or not data["choices"]:
-                system_logger.error(f"[记忆体] AI提取失败: {data.get('error', {})}")
-
-                return ""
-            result = data["choices"][0]["message"]["content"]
-            system_logger.info(f"[记忆体] AI提取完成，{len(result)} 字符")
-
-            return result
+        from app.config import get as cfg
+        from app.service.ai_chat_service import chat_completion, log_ai_call
+        _ei = cfg("ai.api_params.extract", {})
+        msgs = [
+            {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
+            {"role": "user", "content": full_prompt},
+        ]
+        result, err, usage = await chat_completion(
+            messages=msgs,
+            model=deepseek_model(),
+            max_tokens=_ei.get("max_tokens", 4096),
+            timeout=_ei.get("timeout", 180),
+            thinking={"type": "disabled"},
+            temperature=_ei.get("temperature", 0.3),
+        )
+        log_ai_call("初始记忆提取", msgs, result, err, usage,
+                    model=deepseek_model(),
+                    extra_info={"章节文本字数": len(chapters_text), "设定字数": len(novel_settings)})
+        if not result:
+            system_logger.error(f"[记忆体] AI提取失败: {err}")
+            return ""
+        return result
 
     # ----------------------------------------------------------------
     #  增量记忆体：发布/更新章节时从单个新章节提取并追加
@@ -882,22 +913,31 @@ class ChapterService:
         # 2. 用 AI 重新提取
         info_data = {}
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                _genre = ChapterService._get_novel_genre(novel_unique_id)
-                prompt = FULL_EXTRACT_PROMPT.replace("{content}", content[-15000:]).replace("{novel_genre}", _genre)
-                response = await client.post(
-                    deepseek_base_url(),
-                    headers={"Authorization": f"Bearer {deepseek_api_key()}", "Content-Type": "application/json"},
-                    json={"model": deepseek_model(), "messages": [
-                        {"role": "system", "content": EXTRACT_FULL_SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt}
-                    ], "thinking": {"type": "disabled"}, "max_tokens": 8000, "temperature": 0.2},
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    content_resp = data["choices"][0]["message"]["content"]
-                    info_data = ChapterService._parse_extract_result(content_resp)
-                    system_logger.info(f"[记忆体重建] AI 提取完成: {len(info_data)} 个维度")
+            from app.config import get as cfg
+            from app.service.ai_chat_service import chat_completion, log_ai_call
+            _ef = cfg("ai.api_params.extract", {})
+            _genre = ChapterService._get_novel_genre(novel_unique_id)
+            prompt = FULL_EXTRACT_PROMPT.replace("{content}", content[-15000:]).replace("{novel_genre}", _genre)
+            ef_msgs = [
+                {"role": "system", "content": EXTRACT_FULL_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt}
+            ]
+            result, err, usage = await chat_completion(
+                messages=ef_msgs,
+                model=deepseek_model(),
+                max_tokens=_ef.get("max_tokens", 8000),
+                timeout=_ef.get("timeout", 120),
+                thinking={"type": "disabled"},
+                temperature=_ef.get("temperature", 0.2),
+            )
+            log_ai_call("全量记忆提取", ef_msgs, result, err, usage,
+                        model=deepseek_model(),
+                        extra_info={"内容字数": len(content[-15000:])})
+            if not err:
+                info_data = ChapterService._parse_extract_result(result)
+                ChapterService._log_extract_dimensions(info_data, "全量提取")
+            else:
+                system_logger.error(f"[记忆体重建] AI 提取失败: {err}")
         except Exception as e:
             system_logger.error(f"[记忆体重建] AI 提取失败: {e}")
             if chapter_summary:
@@ -914,26 +954,33 @@ class ChapterService:
         """发布章节时后台 AI 提取维度信息并写入 Redis 记忆体"""
         info_data = {}
         try:
-            async with httpx.AsyncClient(timeout=180) as client:
-                # 使用 FULL_EXTRACT_PROMPT 提取更详细的信息，内容不截断
-                extract_content = content if len(content) <= 15000 else content[:7500] + "\n...\n" + content[-7500:]
-                _genre = ChapterService._get_novel_genre(novel_unique_id)
-                prompt = FULL_EXTRACT_PROMPT.replace("{content}", extract_content).replace("{novel_genre}", _genre)
-                response = await client.post(
-                    deepseek_base_url(),
-                    headers={"Authorization": f"Bearer {deepseek_api_key()}", "Content-Type": "application/json"},
-                    json={"model": deepseek_model(), "messages": [
-                        {"role": "system", "content": EXTRACT_FULL_STRICT_SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt}
-                    ], "thinking": {"type": "disabled"}, "max_tokens": 8000, "temperature": 0.2},
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    content_resp = data["choices"][0]["message"]["content"]
-                    info_data = ChapterService._parse_extract_result(content_resp)
-                    system_logger.info(f"[发布-提取] AI 提取完成: {len(info_data)} 个维度")
-                else:
-                    system_logger.error(f"[发布-提取] AI 请求失败: {response.status_code}")
+            from app.config import get as cfg
+            from app.service.ai_chat_service import chat_completion, log_ai_call
+            _efs = cfg("ai.api_params.extract", {})
+            # 使用 FULL_EXTRACT_PROMPT 提取更详细的信息，内容不截断
+            extract_content = content if len(content) <= 15000 else content[:7500] + "\n...\n" + content[-7500:]
+            _genre = ChapterService._get_novel_genre(novel_unique_id)
+            prompt = FULL_EXTRACT_PROMPT.replace("{content}", extract_content).replace("{novel_genre}", _genre)
+            efs_msgs = [
+                {"role": "system", "content": EXTRACT_FULL_STRICT_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt}
+            ]
+            result, err, usage = await chat_completion(
+                messages=efs_msgs,
+                model=deepseek_model(),
+                max_tokens=_efs.get("max_tokens", 8000),
+                timeout=_efs.get("timeout", 180),
+                thinking={"type": "disabled"},
+                temperature=_efs.get("temperature", 0.2),
+            )
+            log_ai_call("发布记忆提取", efs_msgs, result, err, usage,
+                        model=deepseek_model(),
+                        extra_info={"内容字数": len(extract_content), "章节名": chapter_name})
+            if not err:
+                info_data = ChapterService._parse_extract_result(result)
+                ChapterService._log_extract_dimensions(info_data, f"发布提取-{chapter_name}")
+            else:
+                system_logger.error(f"[发布-提取] AI 提取失败: {err}")
         except Exception as e:
             system_logger.error(f"[发布-提取] AI 提取异常: {e}")
             if chapter_summary:
@@ -982,6 +1029,8 @@ class ChapterService:
             "关键物品": "关键物品",
             "实力变化": "实力变化",
             "伏笔": "伏笔", "伏笔/悬念": "伏笔",
+            "人物关系": "人物关系",
+            "情感状态": "情感状态",
         }
 
         # 按 ---xxx--- 切分
@@ -1001,6 +1050,20 @@ class ChapterService:
                 result[front_field] = "\n".join(lines)
 
         return result
+
+    @staticmethod
+    def _log_extract_dimensions(info_data: dict, tag: str = ""):
+        """记录记忆体提取后各维度的字数统计"""
+        if not info_data:
+            system_logger.info(f"[记忆体维度] {tag} 无数据")
+            return
+        parts = []
+        total = 0
+        for dim, content in info_data.items():
+            char_count = len(content) if content else 0
+            total += char_count
+            parts.append(f"{dim}={char_count}字")
+        system_logger.info(f"[记忆体维度] {tag} 共{len(info_data)}个维度 | {' | '.join(parts)} | 总计={total}字")
 
     @staticmethod
     async def _incremental_memory_update(novel_unique_id: str, db: Session,
@@ -1057,46 +1120,31 @@ class ChapterService:
 
         full_prompt = f"以下小说的作品设定：\n{settings_text}\n\n 只参考设定不重复输出，只提取本章新增内容。\n\n{prompt}"
 
-        # Mock 模式（压测用）：跳过 AI 增量提取，避免消耗真实 DeepSeek
         from app.config import get as cfg_get
+        from app.service.ai_chat_service import chat_completion, log_ai_call
         if cfg_get("ai.mock_generate", False):
             system_logger.info("[记忆体] Mock模式，跳过增量提取")
             return
 
-        # 调 AI 提取本章新增信息
-        async with httpx.AsyncClient(timeout=120) as client:
-            try:
-                response = await client.post(
-                    deepseek_base_url(),
-                    headers={
-                        "Authorization": f"Bearer {deepseek_api_key()}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": deepseek_model(),
-                        "messages": [
-                            {"role": "system", "content": EXTRACT_INCREMENTAL_SYSTEM_PROMPT},
-                            {"role": "user", "content": full_prompt}
-                        ],
-                        "thinking": {"type": "disabled"},
-                        "max_tokens": 8000,
-                        "temperature": 0.3
-                    }
-                )
-                data = response.json()
-                if "choices" not in data or not data["choices"]:
-                    system_logger.error(f"[记忆体] 增量提取失败: {data.get('error', {})}")
-
-                    return
-                result = data["choices"][0]["message"]["content"]
-                system_logger.info(f"[记忆体] 增量提取完成，{len(result)} 字符")
-
-                system_logger.info(f"[记忆体] 提取内容预览：\n{result[:300]}...")
-
-            except Exception as e:
-                system_logger.error(f"[记忆体] 增量提取异常: {e}")
-
-                return
+        _einc = cfg("ai.api_params.extract", {})
+        inc_msgs = [
+            {"role": "system", "content": EXTRACT_INCREMENTAL_SYSTEM_PROMPT},
+            {"role": "user", "content": full_prompt},
+        ]
+        result, err, usage = await chat_completion(
+            messages=inc_msgs,
+            model=deepseek_model(),
+            max_tokens=_einc.get("max_tokens", 8000),
+            timeout=_einc.get("timeout", 120),
+            thinking={"type": "disabled"},
+            temperature=_einc.get("temperature", 0.3),
+        )
+        log_ai_call("增量记忆提取", inc_msgs, result, err, usage,
+                    model=deepseek_model(),
+                    extra_info={"章节名": chapter_name, "已有记忆字数": len(existing_for_ai or "")})
+        if not result:
+            system_logger.error(f"[记忆体] 增量提取失败: {err}")
+            return
 
         # 解析并按维度追加
         sections = re.split(r'\n(?=【)', result)
@@ -1549,63 +1597,53 @@ class ChapterService:
         missing_redis = [tc for tc in txt_chapters.values() if tc["num"] not in redis_nums]
 
         if missing_redis:
-            max_concurrency = cfg("redis.memory_extract_threads", 10)
-            sem = asyncio.Semaphore(max_concurrency)
             _novel_genre = ChapterService._get_novel_genre(novel_unique_id)
 
             async def _extract_only(name: str, content: str) -> tuple:
                 """仅做 AI 提取，不写 Redis"""
-                async with sem:
-                    # Mock 模式（压测用）：不调用真实 DeepSeek
-                    from app.config import get as cfg_get
-                    if cfg_get("ai.mock_generate", False):
-                        from app.prompts.chapter_prompts import get_memory_category_names
-                        return name, {d: [] for d in get_memory_category_names()}
-                    info_data = {}
-                    try:
-                        async with httpx.AsyncClient(timeout=120) as client:
-                            prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-5000:]).replace("{novel_genre}", _novel_genre)
-                            resp = await client.post(
-                                deepseek_base_url(),
-                                headers={
-                                    "Authorization": f"Bearer {deepseek_api_key()}",
-                                    "Content-Type": "application/json"
-                                },
-                                json={
-                                    "model": deepseek_model(),
-                                    "messages": [
-                                        {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
-                                        {"role": "user", "content": prompt}
-                                    ],
-                                    "thinking": {"type": "disabled"},
-                                    "max_tokens": 3000, "temperature": 0.2
-                                },
-                            )
-                            if resp.status_code == 200:
-                                data = resp.json()
-                                text = data["choices"][0]["message"]["content"]
-                                info_data = ChapterService._parse_extract_result(text)
-                    except Exception as e:
-                        system_logger.error(f"[并发修复] AI提取异常 {name}: {e}")
-                    return name, info_data
+                from app.config import get as cfg_get
+                from app.service.ai_chat_service import chat_completion
+                if cfg_get("ai.mock_generate", False):
+                    from app.prompts.chapter_prompts import get_memory_category_names
+                    return name, {d: [] for d in get_memory_category_names()}
+                info_data = {}
+                try:
+                    _el2 = cfg("ai.api_params.extract_light", {})
+                    prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-5000:]).replace("{novel_genre}", _novel_genre)
+                    text, err = await chat_completion(
+                        messages=[
+                            {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt},
+                        ],
+                        model=deepseek_model(),
+                        max_tokens=_el2.get("max_tokens", 3000),
+                        timeout=_el2.get("timeout", 120),
+                        thinking={"type": "disabled"},
+                        temperature=_el2.get("temperature", 0.2),
+                    )
+                    if text:
+                        info_data = ChapterService._parse_extract_result(text)
+                        ChapterService._log_extract_dimensions(info_data, f"串行修复-{name}")
+                    elif err:
+                        system_logger.error(f"[串行修复] AI提取失败 {name}: {err}")
+                except Exception as e:
+                    system_logger.error(f"[串行修复] AI提取异常 {name}: {e}")
+                return name, info_data
 
+            # 串行逐章提取（不并发，避免多章同时请求API导致超时）
             system_logger.info(
-                f"[三源校验] 以txt为准并发修复 {len(missing_redis)} 章记忆体"
-                f"（DeepSeek 提取，并发数={max_concurrency}）"
+                f"[三源校验] 以txt为准串行修复 {len(missing_redis)} 章记忆体"
+                f"（DeepSeek 提取，串行执行）"
             )
-            results = await asyncio.gather(*[
-                _extract_only(tc["name"], tc["content"])
-                for tc in missing_redis
-            ])
-
-            # 串行写入 Redis（避免并发 HSET 覆盖；save_extracted_to_memory 幂等防重复追加）
             written = 0
-            for name, info_data in results:
+            for i, tc in enumerate(missing_redis):
+                name, info_data = await _extract_only(tc["name"], tc["content"])
                 if info_data:
                     ChapterService.save_extracted_to_memory(novel_unique_id, info_data, name)
                     written += 1
+                system_logger.info(f"[三源校验] 串行提取进度: {i+1}/{len(missing_redis)} {name}")
             system_logger.info(
-                f"[三源校验] 修复完成: 共提取 {len(results)} 章，写入 Redis {written} 章"
+                f"[三源校验] 修复完成: 共提取 {len(missing_redis)} 章，写入 Redis {written} 章"
             )
 
         # 存量记忆体治理（幂等：超上限才裁剪，防止全量累加膨胀）
@@ -1629,16 +1667,21 @@ class ChapterService:
         """AI生成章节后，更新记忆体
 
         - is_regenerate=False（新章节）：增量追加，只调用1次API
-        - is_regenerate=True（重新生成）：全量重建，确保 Redis 与 TXT/MySQL 严格一致
+        - is_regenerate=True（重新生成）：移除当前章节旧记忆后增量更新
         """
         if not chapter_content:
             # 无内容时走全量重建（兜底）
             await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
             return
         if is_regenerate:
-            # 重新生成时旧内容已被覆盖，必须全量重建才能与 TXT 严格一致
-            system_logger.info(f"[记忆体] 重新生成: 全量重建记忆体 {novel_unique_id}")
-            await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
+            chapter_num = ChapterService._chapter_num_from_name(chapter_name)
+            for category in get_memory_category_names():
+                ChapterService._remove_from_dimension(
+                    novel_unique_id, category, chapter_name, chapter_num
+                )
+            await ChapterService._incremental_memory_update(
+                novel_unique_id, db, chapter_content, chapter_name, chapter_summary
+            )
         else:
             await ChapterService._incremental_memory_update(
                 novel_unique_id, db, chapter_content, chapter_name, chapter_summary
@@ -1653,35 +1696,29 @@ class ChapterService:
             from app.prompts.chapter_prompts import get_memory_category_names
             return {"success": True, "data": {d: [] for d in get_memory_category_names()}}
         _genre = novel_genre or "小说"
+        from app.service.ai_chat_service import chat_completion
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-5000:]).replace("{novel_genre}", _genre)
-                resp = await client.post(
-                    deepseek_base_url(),
-                    headers={
-                        "Authorization": f"Bearer {deepseek_api_key()}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": deepseek_model(),
-                        "messages": [
-                            {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
-                            {"role": "user", "content": prompt}
-                        ],
-                        "thinking": {"type": "disabled"},
-                        "max_tokens": 3000, "temperature": 0.2
-                    },
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    text = data["choices"][0]["message"]["content"]
-                    parsed = ChapterService._parse_extract_result(text)
-                    if not parsed:
-                        system_logger.warning(f"[AI提取] 解析结果为空，原始响应前500字: {text[:500]}")
-                    return {"success": True, "data": parsed}
-                else:
-                    system_logger.error(f"[AI提取] DeepSeek返回非200: status={resp.status_code}, body={resp.text[:500]}")
-                    return {"success": False, "data": {}}
+            _el = cfg("ai.api_params.extract", {})
+            prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-5000:]).replace("{novel_genre}", _genre)
+            text, err = await chat_completion(
+                messages=[
+                    {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                model=deepseek_model(),
+                max_tokens=_el.get("max_tokens", 3000),
+                timeout=_el.get("timeout", 120),
+                thinking={"type": "disabled"},
+                temperature=_el.get("temperature", 0.2),
+            )
+            if text:
+                parsed = ChapterService._parse_extract_result(text)
+                ChapterService._log_extract_dimensions(parsed, "轻量提取")
+                if not parsed:
+                    system_logger.warning(f"[AI提取] 解析结果为空，原始响应前500字: {text[:500]}")
+                return {"success": True, "data": parsed}
+            system_logger.error(f"[AI提取] 失败: {err}")
+            return {"success": False, "data": {}}
         except Exception as e:
             system_logger.error(f"[AI提取] 异常: {e}")
             return {"success": False, "data": {}}
@@ -2236,64 +2273,32 @@ class ChapterService:
         :param genre: 作品题材（网感题材常驻网感指南）
         :return: (content, error_message)；content 为空表示调用失败
         """
-        # Mock 模式（压测用，config.yaml ai.mock_generate=true）：不调用真实 DeepSeek
-        from app.config import get as cfg
+        from app.config import get as cfg, gen_api_timeout
+        from app.service.ai_chat_service import chat_completion, log_ai_call
         if cfg("ai.mock_generate", False):
             return ("压测用模拟章节内容，仅用于接口压力测试，不包含真实剧情。" * 200), ""
         try:
-            async with httpx.AsyncClient(timeout=180) as client:
-                # 正文生成用长文本模型（flash 句子过平滑易被 AI 检测标记，改用 v4；其余功能仍用 flash）
-                gen_model = deepseek_long_model()
-                resp = await client.post(
-                    deepseek_base_url(),
-                    headers={
-                        "Authorization": f"Bearer {deepseek_api_key()}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": gen_model,
-                        "messages": [
-                            # system 前缀 = 恒定核心 + 按需场景指南（战斗/静态/网感按概要推荐）
-                            {"role": "system", "content": build_generate_system_prompt(summary, genre)},
-                            # SELF_CHECK_LIST 统一收口注入 user 末尾（近因效应）：
-                            # 生成/重生成路径此前漏拼，导致 AI 检测硬性执行令完全未生效，
-                            # 这里统一拼上（续写路径已单独拼接，两处口径一致）
-                            {"role": "user", "content": prompt + "\n\n" + SELF_CHECK_LIST},
-                        ],
-                        "thinking": {"type": "disabled"},
-                        "max_tokens": max_tokens,
-                        "temperature": cfg("ai.generation.temperature", 0.85),
-                        "top_p": 0.92,
-                        "frequency_penalty": cfg("ai.generation.frequency_penalty", 0.5),
-                        "presence_penalty": cfg("ai.generation.presence_penalty", 0.5),
-                    },
-                )
-            raw_text = resp.text
-            if not raw_text or not raw_text.strip():
-                system_logger.error(f"AI生成 接口返回空响应: HTTP {resp.status_code}")
-                return "", f"AI接口返回空响应(HTTP {resp.status_code})，请重试"
-            try:
-                data = json.loads(raw_text)
-            except json.JSONDecodeError:
-                system_logger.error(f"AI生成 接口返回非JSON: HTTP {resp.status_code} body={raw_text[:200]}")
-                return "", f"AI接口返回格式异常(HTTP {resp.status_code})，请重试"
-            if resp.status_code != 200:
-                err_msg = str(data.get("error", {}).get("message", f"HTTP {resp.status_code}"))
-                system_logger.error(f"AI生成 接口错误: HTTP {resp.status_code} {err_msg}")
-                return "", f"AI接口错误: {err_msg}"
-            if "choices" not in data or not data["choices"]:
-                err_msg = str(data.get("error", {}).get("message", "未知错误"))
-                system_logger.error(f"AI生成 API错误: {err_msg}")
-                return "", err_msg
-            text = (data["choices"][0]["message"].get("content") or "").strip()
-            finish_reason = data["choices"][0].get("finish_reason", "")
+            gen_model = deepseek_long_model()
+            msgs = [
+                {"role": "system", "content": build_generate_system_prompt(summary, genre)},
+                {"role": "user", "content": prompt + "\n\n" + SELF_CHECK_LIST},
+            ]
+            text, err, usage = await chat_completion(
+                messages=msgs,
+                model=gen_model,
+                max_tokens=max_tokens,
+                timeout=gen_api_timeout(),
+                thinking={"type": "disabled"},
+                temperature=cfg("ai.api_params.generation.temperature", cfg("ai.generation.temperature", 0.85)),
+                top_p=cfg("ai.api_params.generation.top_p", 0.92),
+                frequency_penalty=cfg("ai.generation.frequency_penalty", 0.5),
+                presence_penalty=cfg("ai.generation.presence_penalty", 0.5),
+            )
+            log_ai_call("正文生成", msgs, text, err, usage,
+                        model=deepseek_long_model(),
+                        extra_info={"概要字数": len(summary), "max_tokens": max_tokens})
             if not text:
-                system_logger.warning(f"AI生成 空正文 finish_reason={finish_reason}")
-                return "", "模型返回空内容（可能只输出思考内容）"
-            # 只调用一次：无论字数多少都直接返回，不重试、不扩写
-            system_logger.info(
-                f"AI生成 单次完成 model={gen_model} finish_reason={finish_reason} len={len(text)} "
-                f"usage={data.get('usage', {})}")
+                return "", err
             return text, ""
         except httpx.TimeoutException:
             system_logger.warning("AI生成 接口调用超时")
@@ -2351,6 +2356,8 @@ class ChapterService:
                                 "并沿【故事线】主干推进；【后续剧情大框】是唯一剧情边界，概要不超出大框范围；"
                                 "不凭空新增人物、组织、地点、功法、事件，不偏离大纲主线。")
             task_desc = (f"根据作品设定、故事线和已有章节概要，规划接下来从第{start_num}章开始的 {chapter_count} 章概要。"
+                         f"【后续剧情大框】是你唯一的剧本蓝图——将大框中每个事件/冲突/转折拆解为具体的章节事件，"
+                         f"补全因果链条、角色视角、情绪节奏和场景细节，动态填充血肉；"
                          f"每章剧情必须与已有章节概要因果衔接，严格限定在【后续剧情大框】范围内推进，"
                          f"大框未提及的情节一律不写，绝不允许超出大框另起剧情。")
         else:
@@ -2424,17 +2431,32 @@ class ChapterService:
             chapter_count=chapter_count,
         )
 
+        system_logger.info(
+            f"[AI调用-概要生成] 已有概要={len(existing_outlines)}字 | "
+            f"剧情大框={len(story_direction)}字 | 提示词={len(system_prompt) + len(user_prompt)}字 | "
+            f"生成章节数={chapter_count}")
         outline_text, err = await ChapterService._call_outline_api(system_prompt, user_prompt)
         if not outline_text:
             return fail(f"概要生成失败：{err or 'AI接口无返回'}", code=502)
 
         # ---- 5. 解析 JSON 数组（不落库，写入 Redis 临时缓存，24小时有效） ----
+        MIN_OUTLINE_CHARS = 170  # 章节概要最少字数
         outlines = ChapterService._parse_outline_json(outline_text, chapter_count)
         if not outlines:
             system_logger.warning(f"[概要规划] JSON解析失败，原始返回: {outline_text[:500]}")
             return fail("AI返回格式无法解析，请重试", code=502)
-        # 截断到需求数量
-        outlines = outlines[:chapter_count]
+        # 过滤掉少于 MIN_OUTLINE_CHARS 字的概要
+        valid_outlines = []
+        for o in outlines:
+            s = (o.get("chapter_summary") or "").strip()
+            if len(s) >= MIN_OUTLINE_CHARS:
+                valid_outlines.append(o)
+            else:
+                name = (o.get("chapter_name") or "未知").strip()
+                system_logger.warning(f"[概要规划] 概要字数不足{MIN_OUTLINE_CHARS}字，已过滤: {name}（{len(s)}字）")
+        if not valid_outlines:
+            return fail(f"生成的概要均少于{MIN_OUTLINE_CHARS}字，请重新生成", code=502)
+        outlines = valid_outlines[:chapter_count]
 
         preview = []
         for i, o in enumerate(outlines):
@@ -2587,47 +2609,36 @@ class ChapterService:
     async def _call_outline_api(system_prompt: str, user_prompt: str,
                                 max_tokens: int = 4000) -> tuple:
         """调用 DeepSeek 生成概要文本；返回 (text, err)。轻量调用，无字数重试逻辑"""
+        from app.config import get as cfg
+        from app.service.ai_chat_service import chat_completion, log_ai_call
+        _ol = cfg("ai.api_params.outline", {})
         import asyncio
-        last_err = ""
         for attempt in range(1, 3):
-            try:
-                async with httpx.AsyncClient(timeout=120) as client:
-                    resp = await client.post(
-                        deepseek_base_url(),
-                        headers={
-                            "Authorization": f"Bearer {deepseek_api_key()}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "model": deepseek_model(),
-                            "messages": [
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": user_prompt},
-                            ],
-                            "thinking": {"type": "disabled"},
-                            "max_tokens": max_tokens,
-                            "temperature": 0.8,
-                            "top_p": 0.9,
-                            "frequency_penalty": 0.3,
-                            "presence_penalty": 0.2,
-                        },
-                    )
-                data = resp.json()
-                if resp.status_code != 200:
-                    err_msg = str(data.get("error", {}).get("message", f"HTTP {resp.status_code}"))
-                    if resp.status_code in {400, 401, 402, 403, 404}:
-                        return "", err_msg
-                    last_err = err_msg
-                    await asyncio.sleep(1)
-                    continue
-                text = (data["choices"][0]["message"].get("content") or "").strip()
-                if text:
-                    return text, ""
-                last_err = "模型返回空内容"
-            except Exception as e:
-                last_err = str(e)
-            await asyncio.sleep(1)
-        return "", last_err
+            ol_msgs = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+            text, err, usage = await chat_completion(
+                messages=ol_msgs,
+                model=deepseek_model(),
+                max_tokens=max_tokens,
+                timeout=_ol.get("timeout", 120),
+                thinking={"type": "disabled"},
+                temperature=_ol.get("temperature", 0.8),
+                top_p=_ol.get("top_p", 0.9),
+                frequency_penalty=_ol.get("frequency_penalty", 0.3),
+                presence_penalty=_ol.get("presence_penalty", 0.2),
+            )
+            log_ai_call("概要生成", ol_msgs, text, err, usage,
+                        model=deepseek_model(),
+                        extra_info={"max_tokens": max_tokens})
+            if text:
+                return text, ""
+            if "HTTP" in err and any(c in err for c in {"400", "401", "402", "403", "404"}):
+                return "", err
+            if attempt < 2:
+                await asyncio.sleep(1)
+        return "", err
 
     @staticmethod
     def _parse_outline_json(text: str, expected_count: int) -> list:
@@ -3028,6 +3039,7 @@ class ChapterService:
             info_data = {}
             if characters_involved: info_data["人物"] = characters_involved
             if organizations: info_data["组织"] = organizations
+            if locations: info_data["地点"] = locations
             if skills: info_data["功法技能"] = skills
             if events: info_data["关键事件"] = events
             if time_info: info_data["时间"] = time_info
@@ -3070,25 +3082,26 @@ class ChapterService:
                     t3_ok = True
                     system_logger.info("[发布-验证] ✅ 记忆体已有完整数据，跳过后台AI提取")
                 else:
-                    # 后台 AI 提取后写入 Redis
-                    t3_ok = True
-                    system_logger.info("[发布-验证] ✅ 记忆体缺失，启动后台 AI 提取")
+                    # Redis记忆体缺失 → 同步执行AI提取（不后台，确保三源一致）
+                    system_logger.info("[发布-验证] 记忆体缺失，同步执行AI维度提取")
                     try:
-                        import threading, asyncio
-                        _nid = novel_unique_id
-                        _ct = content_to_save
-                        _cn = chapter_name
-                        _cs = chapter.chapter_summary or ""
-                        def _extract_and_save():
-                            try:
-                                asyncio.run(ChapterService._extract_and_append_to_memory(
-                                    _nid, _ct, _cn, _cs
-                                ))
-                            except BaseException as e:
-                                system_logger.error(f"[发布-验证] 后台AI提取失败: {e}")
-                        threading.Thread(target=_extract_and_save, daemon=True).start()
+                        import asyncio
+                        loop = asyncio.new_event_loop()
+                        try:
+                            loop.run_until_complete(ChapterService._extract_and_append_to_memory(
+                                novel_unique_id, content_to_save, chapter_name, chapter.chapter_summary or ""
+                            ))
+                        finally:
+                            loop.close()
+                        # 同步提取完成后，执行三源校验确保一致
+                        counts = ChapterGenService.count_sources(novel_unique_id, db)
+                        if counts.get("consistent", False):
+                            t3_ok = True
+                            system_logger.info("[发布-验证] ✅ 同步AI提取完成，三源校验通过")
+                        else:
+                            system_logger.error(f"[发布-验证] ❌ 同步AI提取完成，但三源校验不通过: {counts}")
                     except Exception as e:
-                        system_logger.error(f"[发布-验证] 启动后台AI提取线程失败: {e}")
+                        system_logger.error(f"[发布-验证] ❌ 同步AI提取失败: {e}")
             elif not (r and r.ping()):
                 system_logger.error("[发布-验证] ❌ Redis 不可用")
             else:
@@ -3279,15 +3292,18 @@ class ChapterService:
             system_logger.error(f"[编辑保存] 记忆体重建异常: {e}")
 
     @staticmethod
-    def delete_chapter(db: Session, chapter_unique_id: str) -> dict:
+    def delete_chapter(db: Session, chapter_unique_id: str, user_id: int = None) -> dict:
         """删除章节及其本地文件和数据库记录，后台重建记忆体
         :param db: 数据库会话
         :param chapter_unique_id: 章节唯一ID
+        :param user_id: 当前用户ID，仅允许章节作者删除
         :return: 操作结果
         """
         chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
         if not chapter:
             return fail("章节不存在", code=404)
+        if user_id is not None and chapter.user_id != user_id:
+            return fail("无权删除该章节", code=403)
 
         novel_unique_id = chapter.novel_unique_id
         chapter_name = chapter.chapter_name
@@ -3618,63 +3634,41 @@ class ChapterService:
         system_prompt = SCREENPLAY_SYSTEM_PROMPT
 
         # 6. 调用 AI
+        from app.service.ai_chat_service import chat_completion
+        _sc = cfg("ai.api_params.script", {})
         MAX_RETRIES = 2
         generated_text = ""
+        last_err = ""
 
         for attempt in range(MAX_RETRIES + 1):
-            try:
-                async with httpx.AsyncClient(timeout=300) as client:
-                    response = await client.post(
-                        deepseek_base_url(),
-                        headers={
-                            "Authorization": f"Bearer {deepseek_api_key()}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "model": deepseek_model(),
-                            "messages": [
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": prompt}
-                            ],
-                            "thinking": {"type": "disabled"},
-                            "max_tokens": 16384,
-                            "temperature": cfg("ai.generation.temperature", 0.85),
-                            "top_p": 0.9,
-                            "frequency_penalty": cfg("ai.generation.frequency_penalty", 0.5),
-                            "presence_penalty": cfg("ai.generation.presence_penalty", 0.5),
-                        }
-                    )
-
-                    data = response.json()
-                    if "choices" not in data or not data["choices"]:
-                        err_msg = str(data.get("error", {}).get("message", "未知错误"))
-                        system_logger.error(f"[剧本] AI 调用失败: {err_msg}")
-                        if attempt < MAX_RETRIES:
-                            continue
-                        return fail("剧本生成失败: " + err_msg, code=500)
-
-                    generated_text = data["choices"][0]["message"]["content"]
-
-                    if generated_text and len(generated_text) > 100:
-                        system_logger.info(f"[剧本] 生成成功 ({len(generated_text)}字)")
-                        break
-                    else:
-                        if attempt < MAX_RETRIES:
-                            system_logger.warning(f"[剧本] 重试 {attempt+1}: 内容过短")
-                            continue
-                        return fail("生成内容过短，请重试", code=500)
-
-            except httpx.TimeoutException:
-                system_logger.error("[剧本] AI 调用超时")
-                if attempt < MAX_RETRIES:
-                    continue
-                return fail("AI接口调用超时，请重试", code=500)
-            except Exception as e:
-                system_logger.error(f"[剧本] AI 调用异常: {e}")
-                traceback.print_exc()
-                if attempt < MAX_RETRIES:
-                    continue
-                return fail(f"AI调用异常: {str(e)}", code=500)
+            result, err = await chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                model=deepseek_model(),
+                max_tokens=_sc.get("max_tokens", 16384),
+                timeout=_sc.get("timeout", 300),
+                thinking={"type": "disabled"},
+                temperature=cfg("ai.generation.temperature", 0.85),
+                top_p=_sc.get("top_p", 0.9),
+                frequency_penalty=cfg("ai.generation.frequency_penalty", 0.5),
+                presence_penalty=cfg("ai.generation.presence_penalty", 0.5),
+            )
+            if not err and result and len(result) > 100:
+                generated_text = result
+                system_logger.info(f"[剧本] 生成成功 ({len(generated_text)}字)")
+                break
+            if err:
+                system_logger.error(f"[剧本] AI 调用失败: {err}")
+                last_err = err
+            elif result:
+                system_logger.warning(f"[剧本] 重试 {attempt+1}: 内容过短")
+                last_err = "生成内容过短，请重试"
+            if attempt < MAX_RETRIES:
+                continue
+        if not generated_text:
+            return fail("剧本生成失败: " + last_err, code=500)
 
         # 7. 返回结果
         return success({
