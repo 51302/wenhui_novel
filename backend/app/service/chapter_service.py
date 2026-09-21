@@ -307,6 +307,23 @@ class ChapterService:
             lines = [ln.strip() for ln in sec.split("\n")[1:] if ln.strip()]
             dims[name] = lines
 
+        # 0. 章号过滤：传入 current_chapter_num 时，排除章号 >= 当前章的记忆条目。
+        #    场景：AI 重新生成第14章时，Redis 里仍保留着上一版第14章的记忆
+        #    （旧条目要到保存后才会被删除），若不过滤，旧剧情会作为记忆注入、
+        #    导致重写被旧版本带偏。新章生成时 next_num 之后的条目不存在，无影响。
+        if current_chapter_num and current_chapter_num > 0:
+            from app.service.chapter_gen_service import ChapterGenService
+            def _line_chapter_num(line: str) -> int:
+                m = re.match(r'^\[第\s*([^\]]*?)\s*章[^\]]*\]', line)
+                if not m:
+                    return -1
+                return ChapterGenService._extract_chapter_num(m.group(0))
+            for dim in list(dims.keys()):
+                dims[dim] = [
+                    ln for ln in dims[dim]
+                    if not (0 < _line_chapter_num(ln) >= current_chapter_num)
+                ]
+
         # 1. 实体名提取（行首字段，去掉 [第X章 标题] 前缀）
         #    注意章号可能是汉字数字（第一章/第二章…），必须用 [^\]]* 兼容标题；
         #    提取维度覆盖"行首是名称"的人物/组织/功法/物品/地点，保证概要提到
