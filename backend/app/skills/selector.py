@@ -13,6 +13,9 @@ from app.skills.loader import SkillDocument, SkillLoader
 class SkillSelection:
     documents: tuple[SkillDocument, ...]
     reasons: dict[str, tuple[str, ...]]
+    # 用户显式指定的 Skill（章节 skill_ids / author_style / 作品默认风格）。
+    # 合并阶段的长度上限不得把它们整段省略——显式选择优先于关键词启发式命中。
+    explicit_ids: frozenset[str] = frozenset()
 
     @property
     def ids(self) -> list[str]:
@@ -33,14 +36,25 @@ class SkillSelector:
         "都市": ("novel-urban-romance", "novel-urban-subgenres"),
         "言情": ("novel-urban-romance", "novel-romance-settings"),
         "恋爱": ("novel-romance-settings",),
+        "纯爱": ("novel-romance-settings",),
+        "现言": ("novel-urban-romance", "novel-urban-subgenres"),
+        "总裁": ("novel-urban-romance", "novel-urban-subgenres"),
+        "女强": ("novel-urban-romance",),
         "悬疑": ("novel-mystery",),
         "推理": ("novel-mystery",),
         "刑侦": ("novel-mystery",),
         "末世": ("novel-apocalypse",),
         "灾难": ("novel-apocalypse",),
         "奇幻": ("novel-fantasy",),
+        "幻想": ("novel-fantasy",),
         "科幻": ("novel-sci-fi",),
         "校园": ("novel-light-novel",),
+        "轻小说": ("novel-light-novel",),
+        "历史": ("novel-historical-politics",),
+        "古言": ("novel-historical-politics",),
+        "宫斗": ("novel-historical-politics",),
+        "宅斗": ("novel-historical-politics",),
+        "清穿": ("novel-historical-politics",),
         "游戏": ("novel-game",),
         "网游": ("novel-game",),
         "无限流": ("novel-infinite-flow",),
@@ -60,6 +74,17 @@ class SkillSelector:
         "灵异": ("novel-supernatural",),
         "恐怖": ("novel-supernatural",),
     }
+
+    # 「只有标签、没有内容」的设定行（如标准设定模板里的 "世界观设定："、"剧情发展路线："）。
+    # 这类空标签会命中别名/元数据触发器，把和本章正文无关的 Skill 拖进来——历史实测：
+    # 设定模板固定带的 "剧情发展路线：" 命中了 novel-outline 的触发器，
+    # 于是每章正文都注入了一份"章节概要规划"规则。
+    _EMPTY_LABEL_RE = re.compile(r"^\s*[^：:\s]{1,16}[：:]\s*$", re.MULTILINE)
+
+    # 规划/设计类 Skill：只在各自规划流程里用（章节概要规划由
+    # ChapterService.generate_outline_with_ai 直接走提示词，不经过本选择器），
+    # 注入正文生成只会污染写作规则。
+    _BODY_EXCLUDED = frozenset({"novel-outline"})
 
     def __init__(self, loader: SkillLoader | None = None):
         self.loader = loader or SkillLoader()
@@ -84,7 +109,8 @@ class SkillSelector:
             return SkillSelection((), {})
 
         context = " ".join(
-            value.strip() for value in (genre, summary, settings, character_text)
+            value.strip() for value in (
+                genre, summary, self._content_only(settings), character_text)
             if value
         )
         selected: dict[str, SkillDocument] = {}
@@ -108,8 +134,8 @@ class SkillSelector:
                 if document.layer == "quality":
                     add(skill_id, "质量控制 Skill（全量注入）")
 
-        explicit_ids = self._normalize_explicit(explicit, documents)
-        for skill_id in explicit_ids:
+        explicit_choices = self._normalize_explicit(explicit, documents)
+        for skill_id in explicit_choices:
             add(skill_id, "用户明确指定")
 
         for keyword, skill_ids in self._ALIASES.items():
@@ -129,13 +155,26 @@ class SkillSelector:
                     break
 
         ordered = sorted(
-            selected.values(),
+            (document for skill_id, document in selected.items()
+             if skill_id not in self._BODY_EXCLUDED),
             key=lambda doc: (doc.layer != "base", doc.priority, doc.skill_id),
         )
+        kept = {document.skill_id for document in ordered}
         return SkillSelection(
             tuple(ordered),
-            {key: tuple(value) for key, value in reasons.items()},
+            {key: tuple(value) for key, value in reasons.items() if key in kept},
+            frozenset(skill_id for skill_id in explicit_choices if skill_id in kept),
         )
+
+    @classmethod
+    def _content_only(cls, settings: str) -> str:
+        """剔除"只有标签没有内容"的设定行后再参与关键词匹配。
+
+        取值不为空的标签行原样保留（其内容仍可作为题材线索）。
+        """
+        if not settings:
+            return ""
+        return cls._EMPTY_LABEL_RE.sub("", settings)
 
     @staticmethod
     def _normalize_explicit(
