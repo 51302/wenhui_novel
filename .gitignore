@@ -65,3 +65,17 @@ vector_db_data/
 # Temporary files
 *.tmp
 *.temp
+
+# 运行时数据（MySQL/Redis/ES/SeaweedFS 数据目录、生成的小说正文与作品设定）
+# 含真实用户数据与数据库二进制，只应在本地/部署机存在，不入库。
+# 例外：data/backend/novel_structure_data/c6e434.../需求修改记录.html 在加入本规则前
+# 已被跟踪，gitignore 不影响已跟踪文件，它会继续保留在仓库中。
+data/
+
+# 第三方技能仓库克隆（各自自带 .git，仅作参考素材）
+# SkillLoader._is_vendored 已按 .git 祖先目录把它们排除出运行时，不入库。
+backend/skills/ai_detection_skills/
+backend/skills/inkcraft-writing-skills/
+backend/skills/novel-style-skills/
+backend/skills/novel-writer/
+backend/skills/novelist/
