@@ -3,7 +3,7 @@
  * 用法: import { useTheme } from '../stores/themeStore'
  *       const { theme, setTheme } = useTheme()
  */
-import { ref, watch } from 'vue'
+import { ref } from 'vue'
 
 const THEMES = [
   { key: 'purple', label: '星空紫',   desc: '青紫渐变·深邃科技' },
@@ -34,6 +34,28 @@ function setTheme(key) {
   document.documentElement.setAttribute('data-theme', key)
 }
 
+const defaultEffects = {
+  stars: true,
+  grid: true,
+  bottomLine: true,
+}
+
+function loadEffects() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('novel_effects') || '{}')
+    return { ...defaultEffects, ...saved }
+  } catch (e) {
+    return { ...defaultEffects }
+  }
+}
+
+const effects = ref(loadEffects())
+
+function setEffects(nextEffects) {
+  effects.value = { ...effects.value, ...nextEffects }
+  localStorage.setItem('novel_effects', JSON.stringify(effects.value))
+}
+
 // 初始化
 document.documentElement.setAttribute('data-theme', currentTheme.value)
 
@@ -42,5 +64,7 @@ export function useTheme() {
     theme: currentTheme,
     themes: THEMES,
     setTheme,
+    effects,
+    setEffects,
   }
 }

@@ -142,7 +142,7 @@
             <span class="toggle-desc">页面背景动态星云装饰</span>
           </div>
           <label class="switch">
-            <input type="checkbox" v-model="effects.stars" checked>
+            <input type="checkbox" :checked="effects.stars" @change="setEffects({ stars: $event.target.checked })">
             <span class="slider"></span>
           </label>
         </div>
@@ -152,7 +152,7 @@
             <span class="toggle-desc">底层网格科技感纹理</span>
           </div>
           <label class="switch">
-            <input type="checkbox" v-model="effects.grid" checked>
+            <input type="checkbox" :checked="effects.grid" @change="setEffects({ grid: $event.target.checked })">
             <span class="slider"></span>
           </label>
         </div>
@@ -162,7 +162,7 @@
             <span class="toggle-desc">页面底部渐变装饰线</span>
           </div>
           <label class="switch">
-            <input type="checkbox" v-model="effects.bottomLine" checked>
+            <input type="checkbox" :checked="effects.bottomLine" @change="setEffects({ bottomLine: $event.target.checked })">
             <span class="slider"></span>
           </label>
         </div>
@@ -179,15 +179,9 @@ import api from '../api'
 export default {
   name: 'Settings',
   setup() {
-    const { theme, themes, setTheme } = useTheme()
+    const { theme, themes, setTheme, effects, setEffects } = useTheme()
 
-    const effects = ref({
-      stars: true,
-      grid: true,
-      bottomLine: true,
-    })
-
-    const user = ref({})
+    const user = ref(null)
     const vipLevel = ref(0)
     const expireTime = ref('')
     const remainingText = ref('')
@@ -250,7 +244,7 @@ export default {
       }
     }
 
-    return { theme, themes, setTheme, effects, user, vipLevel, vipLevelName, vipLevelClass, expireTime, remainingText, isExpired }
+    return { theme, themes, setTheme, effects, setEffects, user, vipLevel, vipLevelName, vipLevelClass, expireTime, remainingText, isExpired }
   }
 }
 </script>

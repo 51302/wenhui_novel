@@ -1,9 +1,10 @@
 <template>
-  <div id="app-root">
-    <!-- 星空背景 -->
-    <div class="stars-layer"></div>
-    <!-- 科技网格背景 -->
-    <div class="tech-grid"></div>
+  <div id="app-root" :class="{ 'writing-mode': isWritingMode }">
+    <div v-if="effects.stars" class="stars-layer"></div>
+    <div v-if="effects.grid" class="tech-grid"></div>
+    <div v-if="effects.stars" class="particle-layer" :class="`particle-${particleType}`" aria-hidden="true">
+      <span v-for="particle in particleCount" :key="particle" class="particle" :style="particleStyle(particle)"></span>
+    </div>
 
     <!-- ===== Dashboard 侧边栏 ===== -->
     <aside v-if="!hideSidebar" class="sidebar" :class="{ collapsed: sidebarCollapsed }">
@@ -100,13 +101,14 @@
     </div>
 
     <!-- 底部科技装饰线 -->
-    <div class="bottom-line"></div>
+    <div v-if="effects.bottomLine" class="bottom-line"></div>
   </div>
 </template>
 
 <script>
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useTheme } from './stores/themeStore'
 import api from './api'
 
 export default {
@@ -114,11 +116,28 @@ export default {
   setup() {
     const router = useRouter()
     const route = useRoute()
+    const { theme, effects } = useTheme()
     const user = ref(null)
     const authChecking = ref(true)
     const showAllWorks = ref(true)
     const sidebarCollapsed = ref(false)
     const hideSidebar = computed(() => ['/login', '/register'].includes(route.path))
+    const isWritingMode = computed(() => route.meta.bodyClass === 'writing-mode')
+    const particleType = computed(() => {
+      if (['sakura', 'pink'].includes(theme.value)) return 'sakura'
+      if (['light', 'blue'].includes(theme.value)) return 'snow'
+      if (['warm', 'orange', 'gold'].includes(theme.value)) return 'leaf'
+      return 'dust'
+    })
+    const particleCount = computed(() => isWritingMode.value ? 28 : 16)
+    const particleStyle = (particle) => ({
+      '--particle-delay': `${(particle * 0.37) % 6}s`,
+      '--particle-duration': `${8 + (particle % 7)}s`,
+      '--particle-drift': `${((particle * 29) % 80) - 40}px`,
+      left: `${(particle * 41) % 100}%`,
+      top: `${-12 - ((particle * 17) % 40)}px`,
+      '--particle-scale': `${0.7 + ((particle * 13) % 7) / 10}`,
+    })
 
     const fetchConfig = async () => {
       try {
@@ -173,7 +192,7 @@ export default {
       router.push('/login')
     }
 
-    return { user, authChecking, showAllWorks, sidebarCollapsed, hideSidebar, onLoginSuccess, logout }
+    return { user, authChecking, showAllWorks, sidebarCollapsed, hideSidebar, effects, isWritingMode, particleType, particleCount, particleStyle, onLoginSuccess, logout }
   }
 }
 </script>
@@ -202,11 +221,57 @@ input, textarea, select, button { font-family: inherit; }
 /* ===== 科技网格背景 ===== */
 .tech-grid {
   position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 0; pointer-events: none;
-  opacity: 0.03;
+  opacity: 0.05;
   background-image:
     linear-gradient(var(--border) 1px, transparent 1px),
     linear-gradient(90deg, var(--border) 1px, transparent 1px);
   background-size: 50px 50px;
+}
+
+.particle-layer {
+  position: fixed; inset: 0; z-index: 1; pointer-events: none; overflow: hidden;
+}
+.particle {
+  position: absolute; display: block; width: 4px; height: 4px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 10px var(--accent-glow-strong);
+  opacity: 0; animation: particleFall var(--particle-duration) linear var(--particle-delay) infinite;
+}
+.particle-dust .particle { width: 4px; height: 4px; }
+.particle-snow .particle {
+  width: 9px; height: 9px; border-radius: 50%; background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.8); animation-name: snowFall;
+}
+.particle-sakura .particle {
+  width: 11px; height: 7px; border-radius: 70% 20% 70% 20%;
+  background: #f7a8c4; box-shadow: 0 0 8px rgba(247, 168, 196, 0.55); animation-name: petalFall;
+}
+.particle-leaf .particle {
+  width: 12px; height: 7px; border-radius: 90% 10% 90% 10%;
+  background: #e89b42; box-shadow: 0 0 8px rgba(232, 155, 66, 0.45); animation-name: leafFall;
+}
+.writing-mode .particle { filter: saturate(1.15); }
+@keyframes particleFall {
+  0% { opacity: 0; transform: translate3d(0, -10px, 0) scale(var(--particle-scale)); }
+  12%, 82% { opacity: 0.75; }
+  100% { opacity: 0; transform: translate3d(var(--particle-drift), 105vh, 0) scale(calc(var(--particle-scale) * 0.8)); }
+}
+@keyframes snowFall {
+  0% { opacity: 0; transform: translate3d(0, -10px, 0) scale(var(--particle-scale)); }
+  12%, 82% { opacity: 0.8; }
+  50% { transform: translate3d(calc(var(--particle-drift) * -0.5), 50vh, 0) rotate(180deg) scale(var(--particle-scale)); }
+  100% { opacity: 0; transform: translate3d(var(--particle-drift), 105vh, 0) rotate(360deg) scale(var(--particle-scale)); }
+}
+@keyframes petalFall {
+  0% { opacity: 0; transform: translate3d(0, -10px, 0) rotate(0deg) scale(var(--particle-scale)); }
+  12%, 82% { opacity: 0.85; }
+  50% { transform: translate3d(calc(var(--particle-drift) * -0.35), 50vh, 0) rotate(220deg) scale(var(--particle-scale)); }
+  100% { opacity: 0; transform: translate3d(var(--particle-drift), 105vh, 0) rotate(480deg) scale(var(--particle-scale)); }
+}
+@keyframes leafFall {
+  0% { opacity: 0; transform: translate3d(0, -10px, 0) rotate(0deg) scale(var(--particle-scale)); }
+  12%, 82% { opacity: 0.8; }
+  50% { transform: translate3d(calc(var(--particle-drift) * -0.7), 50vh, 0) rotate(-180deg) scale(var(--particle-scale)); }
+  100% { opacity: 0; transform: translate3d(var(--particle-drift), 105vh, 0) rotate(-420deg) scale(var(--particle-scale)); }
 }
 
 /* ===== 底部科技装饰线 ===== */
