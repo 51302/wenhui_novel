@@ -38,7 +38,8 @@ class NovelService:
                      realm_setting: str = None, characters: str = None,
                      genre: str = None, cover_image: str = None,
                      plot_development: str = None, created_by: str = None,
-                     sign_type: str = "non_exclusive") -> dict:
+                     sign_type: str = "non_exclusive",
+                     writing_style_id: str = None) -> dict:
         """创建新作品，保存设定文件并同步到ES索引
         :param db: 数据库会话
         :param author_user_id: 作者用户ID
@@ -74,7 +75,8 @@ class NovelService:
             cover_image=cover_image,
             plot_development=plot_development,
             created_by=created_by,
-            sign_type=sign_type
+            sign_type=sign_type,
+            writing_style_id=writing_style_id
         )
         novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
         os.makedirs(novel_dir, exist_ok=True)
@@ -239,6 +241,7 @@ class NovelService:
             "author_user_id": novel.author_user_id,
             "target_reader": novel.target_reader,
             "genre": novel.genre,
+            "writing_style_id": novel.writing_style_id,
             "description": novel.description,
             "story_background": novel.story_background,
             "world_setting": novel.world_setting,
@@ -326,7 +329,8 @@ class NovelService:
                      story_background: str = None, world_setting: str = None,
                      realm_setting: str = None, characters: str = None,
                      genre: str = None, cover_image: str = None,
-                     plot_development: str = None, sign_type: str = None) -> dict:
+                     plot_development: str = None, sign_type: str = None,
+                     writing_style_id: str = None) -> dict:
         """局部更新作品信息，只更新提供的字段并刷新ES索引
         :param db: 数据库会话
         :param novel_unique_id: 作品唯一ID
@@ -369,6 +373,8 @@ class NovelService:
             novel.plot_development = plot_development
         if sign_type is not None:
             novel.sign_type = sign_type
+        if writing_style_id is not None:
+            novel.writing_style_id = writing_style_id or None
 
         db.commit()
 

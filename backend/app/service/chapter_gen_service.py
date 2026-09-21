@@ -351,7 +351,7 @@ class ChapterGenService:
                      last_chapter_ending: str, chapter_summary: str, word_count: int,
                      include_combat_meme: bool = True, author_style: str = "",
                      chapter_template: str = "", character_cards: list = None,
-                     recent_duplicate_text: str = "") -> str:
+                     recent_duplicate_text: str = "", skill_context: str = "") -> str:
         """组装章节生成 Prompt（提示词工程内容不变）
 
         :param include_combat_meme: 是否包含 战斗写作指南 + 网梗风格指南
@@ -510,6 +510,11 @@ class ChapterGenService:
             prompt += "\n\n" + protagonist_guide
         if side_roles_guide:
             prompt += "\n\n" + side_roles_guide
+        if skill_context:
+            prompt += (
+                "\n\n【本次作品/章节 Skill 规则 —— 仅在不违背作品既有设定时执行】\n"
+                + skill_context
+            )
         # 跨章查重铁律：紧跟人设硬约束注入（高权重区域），只注入上一章结尾，
         # 明确点名禁止复用的句子，防止 AI 把查重文本当"风格样本"照抄
         # （历史问题：注入最近3章各400字过长 + 位置靠后，AI 无视禁令，导致

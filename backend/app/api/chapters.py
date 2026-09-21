@@ -9,6 +9,8 @@ from app.api.deps import get_current_user, check_generate_permission, require_sv
 from app.dao.user_dao import UserDAO
 from fastapi.responses import StreamingResponse
 from app.utils.response import fail, success
+import asyncio
+import json
 from app.utils.logger import system_logger
 from app.utils.task_queue import TaskQueue, run_async
 from pydantic import BaseModel
@@ -23,6 +25,33 @@ router = APIRouter(prefix="/api/chapters", tags=["章节"])
 # ============================================================
 # 任务状态查询（供前端轮询异步任务结果）
 # ============================================================
+
+@router.get("/tasks/{task_id}/stream")
+def stream_task(task_id: str, current_user: dict = Depends(get_current_user)):
+    task_data = TaskQueue.get_data(task_id)
+    if not task_data or task_data.get("user_id") != current_user["user_id"]:
+        return fail("无权访问该任务", code=403)
+
+    async def events():
+        cursor = 0
+        while True:
+            stream_events, cursor = TaskQueue.get_stream_events(task_id, cursor)
+            for event in stream_events:
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                if event.get("type") in ("done", "error"):
+                    return
+            status = TaskQueue.get_status(task_id)
+            if status.get("status") == "failed":
+                yield f"data: {json.dumps({'type': 'error', 'error': status.get('error', '任务执行失败')}, ensure_ascii=False)}\n\n"
+                return
+            if status.get("status") == "done":
+                result = status.get("result") or {}
+                yield f"data: {json.dumps({'type': 'done', 'result': result.get('data', result)}, ensure_ascii=False)}\n\n"
+                return
+            await asyncio.sleep(0.25)
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
 
 @router.get("/tasks/{task_id}")
 def get_task_status(task_id: str):
@@ -49,6 +78,33 @@ def list_chapter_templates():
     """返回章节写作模板下拉框选项 [{id, name, category}]"""
     from app.prompts.chapter_prompts import get_chapter_template_list
     return success(get_chapter_template_list(), "查询成功")
+
+
+@router.get("/skills")
+def list_runtime_skills():
+    """返回后端运行时可用的创作 Skill 及版本信息。"""
+    from app.skills.loader import SkillLoader
+
+    loader = SkillLoader()
+    errors = loader.validate()
+    if errors:
+        system_logger.warning(f"[Skill校验] 发现问题: {errors}")
+    try:
+        documents = loader.load_all()
+    except (OSError, ValueError) as exc:
+        return fail(f"Skill配置不可用: {exc}", code=500)
+    return success([
+        {
+            "id": document.skill_id,
+            "name": document.name,
+            "description": document.description,
+            "version": document.version,
+            "layer": document.layer,
+            "priority": document.priority,
+            "content_hash": document.content_hash,
+        }
+        for document in sorted(documents.values(), key=lambda item: item.skill_id)
+    ], "查询成功")
 
 
 class OutlineGenerateBody(BaseModel):
@@ -208,8 +264,10 @@ class GenerateChapterBody(BaseModel):
     skills: str = None
     word_count: int = 2500
     chapter_summary: str = None
+    skill_ids: str = ""
     author_style: str = ""
     chapter_template: str = ""
+    use_anti_ai: bool = True
 
 
 @router.post("/generate")
@@ -234,11 +292,13 @@ def generate_chapter(
         "organizations": body.organizations,
         "locations": body.locations,
         "skills": body.skills,
+        "skill_ids": body.skill_ids or "",
         "word_count": body.word_count,
         "chapter_summary": body.chapter_summary,
         "created_by": current_user["username"],
         "author_style": body.author_style or "",
         "chapter_template": body.chapter_template or "",
+        "use_anti_ai": body.use_anti_ai,
     }, ttl=1800)
     if not task_id:
         return fail("系统繁忙，请稍后重试", code=503)
@@ -263,8 +323,10 @@ def generate_chapter(
 class RegenerateBody(BaseModel):
     chapter_summary: str = None
     word_count: int = 2000
+    skill_ids: str = ""
     author_style: str = ""
     chapter_template: str = ""
+    use_anti_ai: bool = True
 
 
 @router.post("/regenerate/{chapter_unique_id}")
@@ -286,8 +348,10 @@ def regenerate_chapter(
         "user_id": current_user["user_id"],
         "word_count": body.word_count,
         "chapter_summary": body.chapter_summary,
+        "skill_ids": body.skill_ids or "",
         "author_style": body.author_style or "",
         "chapter_template": body.chapter_template or "",
+        "use_anti_ai": body.use_anti_ai,
     }, ttl=1800)
     if not task_id:
         return fail("系统繁忙，请稍后重试", code=503)
@@ -308,6 +372,7 @@ def continue_chapter(
     """AI续写指定章节（异步：提交队列后返回 task_id，前端轮询结果）"""
     task_id = TaskQueue.push("ai:continue", {
         "chapter_unique_id": chapter_unique_id,
+        "user_id": current_user["user_id"],
         "word_count": word_count,
     }, ttl=1800)
     if not task_id:

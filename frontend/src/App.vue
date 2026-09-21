@@ -155,6 +155,7 @@ export default {
       } catch (e) {
         user.value = null
         localStorage.removeItem('novel_user')
+        router.replace('/login')
       } finally {
         authChecking.value = false
       }

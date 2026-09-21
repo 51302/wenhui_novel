@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS `novels` (
   `title` VARCHAR(256) NOT NULL COMMENT '书名/作品名称',
   `target_reader` VARCHAR(16) NOT NULL COMMENT '作品类型/目标读者: 男频/女频',
   `genre` VARCHAR(64) DEFAULT NULL COMMENT '题材/标签',
+  `writing_style_id` VARCHAR(64) DEFAULT NULL COMMENT '作品默认写作风格 Skill ID',
   `description` TEXT COMMENT '作品简介',
   `story_background` TEXT COMMENT '故事背景',
   `world_setting` TEXT COMMENT '世界观设定',

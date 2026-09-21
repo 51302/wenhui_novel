@@ -100,10 +100,10 @@ class ChapterService:
         return {"content": combined, "path": settings_file if file_content else ""}
 
     @staticmethod
-    def _get_novel_genre(novel_unique_id: str) -> str:
-        """读取作品题材标签（novel.genre），用于提取 prompt 的 {novel_genre} 占位符。
+    def _read_novel(novel_unique_id: str, reader, default, log_tag: str):
+        """打开临时会话读取作品字段的公共封装：reader(novel)->值，失败/无作品返回 default。
 
-        :return: 题材字符串（如"仙侠""都市""玄幻"），读取失败返回通用默认值"小说"
+        统一 _get_novel_genre / _get_novel_writing_style 等的 SessionLocal 样板。
         """
         try:
             from app.dao.novel_dao import NovelDAO
@@ -111,15 +111,36 @@ class ChapterService:
             db = SessionLocal()
             try:
                 novel = NovelDAO.get_by_unique_id(db, novel_unique_id)
-                if novel:
-                    genre = (novel.genre or novel.target_reader or "").strip()
-                    if genre:
-                        return genre
+                return reader(novel) if novel else default
             finally:
                 db.close()
         except Exception as e:
-            system_logger.warning(f"[题材读取] 获取作品题材失败: {e}")
-        return "小说"
+            system_logger.warning(f"[{log_tag}] 读取作品字段失败: {e}")
+            return default
+
+    @staticmethod
+    def _get_novel_genre(novel_unique_id: str) -> str:
+        """读取作品题材标签（novel.genre），用于提取 prompt 的 {novel_genre} 占位符。
+
+        :return: 题材字符串（如"仙侠""都市""玄幻"），读取失败返回通用默认值"小说"
+        """
+        def _reader(novel):
+            return (novel.genre or novel.target_reader or "").strip() or "小说"
+        return ChapterService._read_novel(novel_unique_id, _reader, "小说", "题材读取")
+
+    @staticmethod
+    def _get_novel_writing_style(novel_unique_id: str) -> str:
+        """读取作品默认写作风格 ID（novel.writing_style_id）。
+
+        作品创建/编辑时选定的作家风格会存到 novel.writing_style_id，
+        章节生成未单独指定风格时自动继承这里。返回原始 style id（如 "chendong"
+        或 "writer-chendong"），读取失败返回空串。
+        """
+        return ChapterService._read_novel(
+            novel_unique_id,
+            lambda novel: (getattr(novel, "writing_style_id", "") or "").strip(),
+            "", "风格读取",
+        )
 
     @staticmethod
     def _load_character_cards(db: Session, novel_unique_id: str) -> list:
@@ -2262,7 +2283,7 @@ class ChapterService:
 
     @staticmethod
     async def _call_generation_api(prompt: str, max_tokens: int,
-                                   summary: str = "", genre: str = "") -> tuple:
+                                   summary: str = "", genre: str = "", on_chunk=None) -> tuple:
         """调用 DeepSeek 生成正文（只调用一次：不重试、不扩写）。
 
         生成结果无论字数多少（含低于目标字数）都直接返回，由调用方原样保存。
@@ -2274,21 +2295,30 @@ class ChapterService:
         :return: (content, error_message)；content 为空表示调用失败
         """
         from app.config import get as cfg, gen_api_timeout
-        from app.service.ai_chat_service import chat_completion, log_ai_call
+        from app.service.ai_chat_service import chat_completion, chat_completion_stream, log_ai_call
         if cfg("ai.mock_generate", False):
-            return ("压测用模拟章节内容，仅用于接口压力测试，不包含真实剧情。" * 200), ""
+            mock_text = "压测用模拟章节内容，仅用于接口压力测试，不包含真实剧情。" * 200
+            if on_chunk:
+                for index in range(0, len(mock_text), 80):
+                    await on_chunk(mock_text[index:index + 80])
+            return mock_text, ""
         try:
             gen_model = deepseek_long_model()
             msgs = [
                 {"role": "system", "content": build_generate_system_prompt(summary, genre)},
                 {"role": "user", "content": prompt + "\n\n" + SELF_CHECK_LIST},
             ]
-            text, err, usage = await chat_completion(
-                messages=msgs,
-                model=gen_model,
-                max_tokens=max_tokens,
-                timeout=gen_api_timeout(),
-                thinking={"type": "disabled"},
+            completion = chat_completion_stream if on_chunk else chat_completion
+            completion_params = {
+                "messages": msgs,
+                "model": gen_model,
+                "max_tokens": max_tokens,
+                "timeout": gen_api_timeout(),
+                "thinking": {"type": "disabled"},
+            }
+            if on_chunk:
+                completion_params["on_chunk"] = on_chunk
+            text, err, usage = await completion(**completion_params,
                 temperature=cfg("ai.api_params.generation.temperature", cfg("ai.generation.temperature", 0.85)),
                 top_p=cfg("ai.api_params.generation.top_p", 0.92),
                 frequency_penalty=cfg("ai.generation.frequency_penalty", 0.5),
@@ -2742,7 +2772,8 @@ class ChapterService:
                                locations: str = "", skills: str = "",
                                word_count: int = 2000, chapter_summary: str = "",
                                created_by: str = "", author_style: str = "",
-                               chapter_template: str = "") -> dict:
+                               chapter_template: str = "", skill_ids: str = "",
+                               use_anti_ai: bool = True, on_chunk=None) -> dict:
         """AI 生成新章节（异步任务入口）— LangGraph 图编排
 
         流程（与命令式版本一致，迁移到 StateGraph 显式编排）：
@@ -2760,11 +2791,15 @@ class ChapterService:
             "user_id": user_id,
             "chapter_name": chapter_name,
             "chapter_summary": chapter_summary,
+            "skills": skills,
+            "skill_ids": skill_ids,
+            "use_anti_ai": use_anti_ai,
             "word_count": word_count,
             "author_style": author_style,
             "chapter_template": chapter_template,
             "created_by": created_by,
             "db": db,
+            "on_chunk": on_chunk,
         }
         return await run_chapter_gen(state)
 
@@ -2810,7 +2845,9 @@ class ChapterService:
     @staticmethod
     async def regenerate_with_ai(db: Session, chapter_unique_id: str, user_id: int,
                                  word_count: int = 2000, chapter_summary: str = None,
-                                 author_style: str = "", chapter_template: str = "") -> dict:
+                                 skills: str = "",
+                                 author_style: str = "", chapter_template: str = "",
+                                 skill_ids: str = "", use_anti_ai: bool = True, on_chunk=None) -> dict:
         """AI 重新生成指定章节（章节编辑）— LangGraph 图编排
 
         流程（与命令式版本一致，迁移到 StateGraph 显式编排）：
@@ -2829,14 +2866,18 @@ class ChapterService:
             "user_id": user_id,
             "word_count": word_count,
             "chapter_summary": chapter_summary or "",
+            "skills": skills,
+            "skill_ids": skill_ids,
+            "use_anti_ai": use_anti_ai,
             "author_style": author_style,
             "chapter_template": chapter_template,
             "novel_unique_id": "",  # 由 node_assign 查章后填充
+            "on_chunk": on_chunk,
         }
         return await run_chapter_gen(state)
 
     @staticmethod
-    async def continue_with_ai(db: Session, chapter_unique_id: str, word_count: int = 2500) -> dict:
+    async def continue_with_ai(db: Session, chapter_unique_id: str, word_count: int = 2500, on_chunk=None) -> dict:
         """AI 续写指定章节 — LangGraph 图编排
 
         流程（与命令式版本一致，迁移到 StateGraph 显式编排）：
@@ -2852,6 +2893,7 @@ class ChapterService:
             "db": db,
             "chapter_unique_id": chapter_unique_id,
             "word_count": word_count,
+            "on_chunk": on_chunk,
         }
         return await run_chapter_gen(state)
 
@@ -3432,127 +3474,106 @@ class ChapterService:
 
 
     @staticmethod
-    def _worker_generate(task_id: str, task_data: dict) -> dict:
-        """Worker handler：AI 生成新章节（三源校验 → 一致生成 / 不一致修复）"""
+    def _run_db_worker(coro, label: str, fail_msg: str, *, trace: bool = False, task_id: str = None, **kwargs) -> dict:
+        """Worker 通用执行：开临时会话 → run_async(coro, db, **kwargs) → 归一化 success/error。
+
+        统一 _worker_generate / _worker_continue / _worker_regenerate /
+        _worker_generate_outline / _worker_generate_screenplay 的
+        SessionLocal + try/except/finally + 状态码判定样板。
+        """
         from app.models.base import SessionLocal
         db = SessionLocal()
         try:
-            result = run_async(
-                ChapterService.generate_with_ai,
-                db,
-                novel_unique_id=task_data["novel_unique_id"],
-                user_id=task_data["user_id"],
-                chapter_name=task_data.get("chapter_name", ""),
-                characters_involved=task_data.get("characters_involved", ""),
-                organizations=task_data.get("organizations", ""),
-                locations=task_data.get("locations", ""),
-                skills=task_data.get("skills", ""),
-                word_count=task_data.get("word_count", 2000),
-                chapter_summary=task_data.get("chapter_summary", ""),
-                created_by=task_data.get("created_by", ""),
-                author_style=task_data.get("author_style", ""),
-                chapter_template=task_data.get("chapter_template", ""),
-            )
+            from app.utils.task_queue import TaskQueue
+            if task_id:
+                TaskQueue.publish_stream(task_id, {"type": "status", "status": "processing"})
+
+                async def on_chunk(chunk):
+                    TaskQueue.publish_stream(task_id, {"type": "chunk", "content": chunk})
+
+                kwargs["on_chunk"] = on_chunk
+            result = run_async(coro, db, **kwargs)
             if result.get("状态码") == 200:
                 return {"success": True, "data": result.get("数据")}
-            return {"success": False, "error": result.get("消息", "生成失败")}
+            return {"success": False, "error": result.get("消息", fail_msg)}
         except Exception as e:
-            system_logger.error(f"[Worker-generate] 异常: {e}")
+            system_logger.error(f"[{label}] 异常: {e}")
+            if trace:
+                import traceback
+                traceback.print_exc()
             return {"success": False, "error": str(e)}
         finally:
             db.close()
+
+    @staticmethod
+    def _worker_generate(task_id: str, task_data: dict) -> dict:
+        """Worker handler：AI 生成新章节（三源校验 → 一致生成 / 不一致修复）"""
+        return ChapterService._run_db_worker(
+            ChapterService.generate_with_ai, "Worker-generate", "生成失败",
+            task_id=task_id,
+            novel_unique_id=task_data["novel_unique_id"],
+            user_id=task_data["user_id"],
+            chapter_name=task_data.get("chapter_name", ""),
+            characters_involved=task_data.get("characters_involved", ""),
+            organizations=task_data.get("organizations", ""),
+            locations=task_data.get("locations", ""),
+            skills=task_data.get("skills", ""),
+            word_count=task_data.get("word_count", 2000),
+            chapter_summary=task_data.get("chapter_summary", ""),
+            created_by=task_data.get("created_by", ""),
+            author_style=task_data.get("author_style", ""),
+            chapter_template=task_data.get("chapter_template", ""),
+            skill_ids=task_data.get("skill_ids", ""),
+            use_anti_ai=task_data.get("use_anti_ai", True),
+        )
 
     @staticmethod
     def _worker_continue(task_id: str, task_data: dict) -> dict:
         """Worker handler：AI 续写章节"""
-        from app.models.base import SessionLocal
-        db = SessionLocal()
-        try:
-            result = run_async(
-                ChapterService.continue_with_ai,
-                db,
-                chapter_unique_id=task_data["chapter_unique_id"],
-                word_count=task_data.get("word_count", 2000),
-            )
-            if result.get("状态码") == 200:
-                return {"success": True, "data": result.get("数据")}
-            return {"success": False, "error": result.get("消息", "续写失败")}
-        except Exception as e:
-            system_logger.error(f"[Worker-continue] 异常: {e}")
-            return {"success": False, "error": str(e)}
-        finally:
-            db.close()
+        return ChapterService._run_db_worker(
+            ChapterService.continue_with_ai, "Worker-continue", "续写失败",
+            task_id=task_id,
+            chapter_unique_id=task_data["chapter_unique_id"],
+            word_count=task_data.get("word_count", 2000),
+        )
 
     @staticmethod
     def _worker_regenerate(task_id: str, task_data: dict) -> dict:
         """Worker handler：AI 重新生成章节（异步化：避免长请求被公网隧道/浏览器掐断）"""
-        from app.models.base import SessionLocal
-        db = SessionLocal()
-        try:
-            result = run_async(
-                ChapterService.regenerate_with_ai,
-                db,
-                chapter_unique_id=task_data["chapter_unique_id"],
-                user_id=task_data["user_id"],
-                word_count=task_data.get("word_count", 2000),
-                chapter_summary=task_data.get("chapter_summary"),
-                author_style=task_data.get("author_style", ""),
-                chapter_template=task_data.get("chapter_template", ""),
-            )
-            if result.get("状态码") == 200:
-                return {"success": True, "data": result.get("数据")}
-            return {"success": False, "error": result.get("消息", "重新生成失败")}
-        except Exception as e:
-            system_logger.error(f"[Worker-regenerate] 异常: {e}")
-            return {"success": False, "error": str(e)}
-        finally:
-            db.close()
+        return ChapterService._run_db_worker(
+            ChapterService.regenerate_with_ai, "Worker-regenerate", "重新生成失败",
+            task_id=task_id,
+            chapter_unique_id=task_data["chapter_unique_id"],
+            user_id=task_data["user_id"],
+            word_count=task_data.get("word_count", 2000),
+            chapter_summary=task_data.get("chapter_summary"),
+            skills=task_data.get("skills", ""),
+            author_style=task_data.get("author_style", ""),
+            chapter_template=task_data.get("chapter_template", ""),
+            skill_ids=task_data.get("skill_ids", ""),
+            use_anti_ai=task_data.get("use_anti_ai", True),
+        )
 
     @staticmethod
     def _worker_generate_outline(task_id: str, task_data: dict) -> dict:
         """Worker handler：章节概要规划（生成后续 N 章概要并批量创建草稿）"""
-        from app.models.base import SessionLocal
-        db = SessionLocal()
-        try:
-            result = run_async(
-                ChapterService.generate_outline_with_ai,
-                db,
-                novel_unique_id=task_data["novel_unique_id"],
-                user_id=task_data["user_id"],
-                story_direction=task_data.get("story_direction", ""),
-                chapter_count=task_data.get("chapter_count", 5),
-            )
-            if result.get("状态码") == 200:
-                return {"success": True, "data": result.get("数据")}
-            return {"success": False, "error": result.get("消息", "概要生成失败")}
-        except Exception as e:
-            system_logger.error(f"[Worker-outline] 异常: {e}")
-            return {"success": False, "error": str(e)}
-        finally:
-            db.close()
+        return ChapterService._run_db_worker(
+            ChapterService.generate_outline_with_ai, "Worker-outline", "概要生成失败",
+            novel_unique_id=task_data["novel_unique_id"],
+            user_id=task_data["user_id"],
+            story_direction=task_data.get("story_direction", ""),
+            chapter_count=task_data.get("chapter_count", 5),
+        )
 
     @staticmethod
     def _worker_generate_screenplay(task_id: str, task_data: dict) -> dict:
         """Worker handler：将小说章节转换为剧本格式"""
-        from app.models.base import SessionLocal
-        db = SessionLocal()
-        try:
-            result = run_async(
-                ChapterService.generate_screenplay,
-                db,
-                novel_unique_id=task_data["novel_unique_id"],
-                chapter_ids=task_data["chapter_ids"],
-            )
-            if result.get("状态码") == 200:
-                return {"success": True, "data": result.get("数据")}
-            return {"success": False, "error": result.get("消息", "生成失败")}
-        except Exception as e:
-            system_logger.error(f"[Worker-screenplay] 异常: {e}")
-            import traceback
-            traceback.print_exc()
-            return {"success": False, "error": str(e)}
-        finally:
-            db.close()
+        return ChapterService._run_db_worker(
+            ChapterService.generate_screenplay, "Worker-screenplay", "生成失败",
+            trace=True,
+            novel_unique_id=task_data["novel_unique_id"],
+            chapter_ids=task_data["chapter_ids"],
+        )
 
     @staticmethod
     async def generate_screenplay(

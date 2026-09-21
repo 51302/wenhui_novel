@@ -21,6 +21,7 @@ TASK_STATUS_PREFIX = "task:status:"
 TASK_RESULT_PREFIX = "task:result:"
 TASK_DATA_PREFIX = "task:data:"
 TASK_IDEMPOTENT_PREFIX = "task:idempotent:"
+TASK_STREAM_PREFIX = "task:stream:"
 NOVEL_LOCK_PREFIX = "novel:lock:"
 NOVEL_LOCK_RELEASE_SCRIPT = """
 if redis.call("GET", KEYS[1]) == ARGV[1] then
@@ -164,6 +165,30 @@ class TaskQueue:
             r.set(f"{TASK_RESULT_PREFIX}{task_id}", json.dumps(result_data))
 
     @staticmethod
+    def publish_stream(task_id: str, event: dict, ttl: int = 3600):
+        r = _redis()
+        if r:
+            key = f"{TASK_STREAM_PREFIX}{task_id}"
+            r.rpush(key, json.dumps(event, ensure_ascii=False))
+            if r.client:
+                try:
+                    r.client.expire(key, ttl)
+                except Exception:
+                    pass
+
+    @staticmethod
+    def get_stream_events(task_id: str, start: int = 0) -> tuple:
+        r = _redis()
+        if not r:
+            return [], start
+        key = f"{TASK_STREAM_PREFIX}{task_id}"
+        try:
+            raw = r.client.lrange(key, start, -1)
+            return [json.loads(item) for item in raw], start + len(raw)
+        except Exception:
+            return [], start
+
+    @staticmethod
     def set_progress(task_id: str, current: int, total: int, message: str = ""):
         """更新任务进度"""
         r = _redis()
@@ -173,6 +198,14 @@ class TaskQueue:
             r.set(f"{TASK_STATUS_PREFIX}{task_id}", json.dumps("processing"))
             r.set(f"{TASK_RESULT_PREFIX}{task_id}:progress", json.dumps(progress_data))
             system_logger.info(f"[进度] task={task_id} {current}/{total} - {message}")
+
+    @staticmethod
+    def get_data(task_id: str) -> dict:
+        r = _redis()
+        if not r:
+            return {}
+        data = r.get(f"{TASK_DATA_PREFIX}{task_id}")
+        return data if isinstance(data, dict) else {}
 
     @staticmethod
     def get_status(task_id: str) -> dict:
@@ -231,8 +264,8 @@ class TaskQueue:
                     # 限制并发数
                     acquired = TaskQueue._semaphore.acquire(timeout=300)
                     if not acquired:
-                        TaskQueue.set_status(task_id, "failed")
                         TaskQueue.set_result(task_id, {"error": "等待超时，所有Worker繁忙"})
+                        TaskQueue.set_status(task_id, "failed")
                         _log.warning(f"[Worker-{queue_name}] 任务等待超时: task_id={task_id}")
                         continue
 
@@ -242,16 +275,16 @@ class TaskQueue:
                         result = handler_func(task_id, task_data)
                         is_ok = result.get("success") or result.get("状态码") == 200
                         if is_ok:
-                            TaskQueue.set_status(task_id, "done")
                             TaskQueue.set_result(task_id, result)
+                            TaskQueue.set_status(task_id, "done")
                             _log.info(f"[Worker-{queue_name}] 任务完成: task_id={task_id}")
                         else:
-                            TaskQueue.set_status(task_id, "failed")
                             TaskQueue.set_result(task_id, {"error": result.get("error") or result.get("消息", "处理失败")})
+                            TaskQueue.set_status(task_id, "failed")
                             _log.warning(f"[Worker-{queue_name}] 任务失败: task_id={task_id} error={result.get('error') or result.get('消息', '')}")
                     except Exception as e:
-                        TaskQueue.set_status(task_id, "failed")
                         TaskQueue.set_result(task_id, {"error": str(e)})
+                        TaskQueue.set_status(task_id, "failed")
                         _log.error(f"[Worker-{queue_name}] 任务异常: task_id={task_id} error={e}")
                     finally:
                         TaskQueue._semaphore.release()

@@ -45,6 +45,27 @@ async def lifespan(application: FastAPI):
 
     Base.metadata.create_all(bind=engine)
 
+    # ====== 轻量增量迁移：已有库自动补齐新增列（幂等，失败不阻塞启动） ======
+    try:
+        with engine.connect() as conn:
+            col_exists = conn.execute(text(
+                "SELECT COUNT(*) FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'novels' "
+                "AND COLUMN_NAME = 'writing_style_id'"
+            )).scalar()
+            if not col_exists:
+                conn.execute(text(
+                    "ALTER TABLE `novels` "
+                    "ADD COLUMN `writing_style_id` VARCHAR(64) DEFAULT NULL "
+                    "COMMENT '作品默认写作风格 Skill ID'"
+                ))
+                conn.commit()
+                system_logger.info("[迁移] novels.writing_style_id 列已自动补齐")
+            else:
+                system_logger.info("[迁移] novels.writing_style_id 列已存在，跳过")
+    except Exception as e:
+        system_logger.warning(f"[迁移] 自动补列失败（可手动执行 sql/migrations/20260920_add_writing_style_id.sql）: {e}")
+
     # ====== 服务启动日志 ======
     try:
         redis_ok = global_redis.ping() if global_redis else False

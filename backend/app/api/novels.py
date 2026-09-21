@@ -16,6 +16,7 @@ def create_novel(
     characters: str = Body(None), genre: str = Body(None),
     cover_image: str = Body(None), plot_development: str = Body(None),
     sign_type: str = Body("non_exclusive", description="签约类型：exclusive(独家)/non_exclusive(非独家)"),
+    writing_style_id: str = Body(None),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
     _perm=Depends(check_creation_access),
@@ -27,7 +28,7 @@ def create_novel(
         title, target_reader, description, story_background,
         world_setting, realm_setting, characters, genre, cover_image,
         plot_development=plot_development, created_by=current_user["username"],
-        sign_type=sign_type
+        sign_type=sign_type, writing_style_id=writing_style_id
     )
     if result.get("状态码") == 200:
         novel_id = result.get("数据", {}).get("novel_unique_id", "")
@@ -112,6 +113,7 @@ def update_novel(
     characters: str = Body(None), genre: str = Body(None),
     cover_image: str = Body(None), plot_development: str = Body(None),
     sign_type: str = Body(None, description="签约类型：exclusive(独家)/non_exclusive(非独家)"),
+    writing_style_id: str = Body(None),
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
     _vip=Depends(check_creation_access),
@@ -121,7 +123,8 @@ def update_novel(
     result = NovelService.update_novel(
         db, novel_unique_id, title, target_reader, description,
         story_background, world_setting, realm_setting, characters,
-        genre, cover_image, plot_development, sign_type=sign_type
+        genre, cover_image, plot_development, sign_type=sign_type,
+        writing_style_id=writing_style_id
     )
     if result.get("状态码") == 200:
         system_logger.info(f"小说更新成功: ID={novel_unique_id}, 用户={current_user['username']}")

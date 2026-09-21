@@ -21,7 +21,7 @@ import json
 import os
 import re
 import uuid
-from typing import TypedDict, Any
+from typing import TypedDict, Any, Awaitable, Callable
 
 from langgraph.graph import StateGraph, START, END
 from app.utils.logger import system_logger
@@ -64,6 +64,10 @@ class ChapterGenState(TypedDict, total=False):
     word_count: int
     author_style: str
     chapter_template: str
+    skills: str
+    skill_ids: str
+    use_anti_ai: bool
+    on_chunk: Callable[[str], Awaitable[None]] | None
     created_by: str
     db: Any                          # SQLAlchemy Session（LangGraph 不序列化 state，可直接持有）
     # regenerate 专属
@@ -83,6 +87,9 @@ class ChapterGenState(TypedDict, total=False):
     settings: dict
     character_cards: list
     prompt: str
+    skill_prompt: str
+    selected_skills: list
+    skill_versions: dict
     generated_text: str
     clean_stats: dict
     actual_word_count: int
@@ -269,6 +276,44 @@ async def node_prev_ending(state: dict) -> dict:
     return {"last_ending": last_ending, "dup_text": dup_text}
 
 
+def _join_character_text(character_cards) -> str:
+    """角色卡前 6 张的关键字段拼成文本，供 Skill 选择做题材/风格命中。"""
+    if not isinstance(character_cards, list):
+        return ""
+    return " ".join(
+        str(card.get(key) or "")
+        for card in character_cards[:6]
+        for key in ("name", "personality", "position", "intro")
+        if isinstance(card, dict)
+    )
+
+
+def _select_and_merge_skills(state: dict, novel_unique_id: str, character_cards,
+                             summary: str, settings_content: str):
+    """按作品/章节上下文选择并合并 Skill（新章生成与续写共用）。
+
+    显式风格 = 章节级 skill_ids + 章节级 author_style + 作品默认 writing_style（继承）；
+    反AI 质量层由 use_anti_ai 门控（默认开）。
+    """
+    from app.service.chapter_service import ChapterService
+    from app.skills.merger import SkillMerger
+    from app.skills.selector import SkillSelector
+    explicit = ",".join(p for p in [
+        state.get("skill_ids", "") or "",
+        state.get("author_style", "") or "",
+        ChapterService._get_novel_writing_style(novel_unique_id),
+    ] if p)
+    selection = SkillSelector().select(
+        genre=ChapterService._get_novel_genre(novel_unique_id),
+        summary=summary or "",
+        settings=settings_content or "",
+        character_text=_join_character_text(character_cards),
+        explicit=explicit,
+        include_quality=state.get("use_anti_ai", True),
+    )
+    return SkillMerger().merge(selection)
+
+
 async def node_build_prompt(state: dict) -> dict:
     """作品设定 + 角色卡 + 自动模板适配 + 提示词组装（提示词工程内容不变）"""
     from app.service.chapter_service import ChapterService
@@ -278,6 +323,9 @@ async def node_build_prompt(state: dict) -> dict:
     template = state.get("chapter_template") or ""
     if not template:
         template = ChapterService._resolve_default_template(state["db"], state["novel_unique_id"])
+    skill_result = _select_and_merge_skills(
+        state, state["novel_unique_id"], character_cards,
+        state.get("summary", ""), settings.get("content", ""))
     prompt = ChapterGenService.build_prompt(
         chapter_name=state.get("title") or state.get("chapter_name", ""),
         memory_body=state.get("memory_body", ""),
@@ -290,8 +338,20 @@ async def node_build_prompt(state: dict) -> dict:
         chapter_template=template,
         character_cards=character_cards,
         recent_duplicate_text=state.get("dup_text", ""),
+        skill_context=skill_result.prompt,
     )
-    return {"settings": settings, "character_cards": character_cards, "prompt": prompt}
+    system_logger.info(
+        f"[Skill选择] anti_ai={state.get('use_anti_ai', True)} "
+        f"selected={skill_result.skill_ids} versions={skill_result.versions}"
+    )
+    return {
+        "settings": settings,
+        "character_cards": character_cards,
+        "prompt": prompt,
+        "skill_prompt": skill_result.prompt,
+        "selected_skills": list(skill_result.skill_ids),
+        "skill_versions": skill_result.versions,
+    }
 
 
 async def node_call_llm(state: dict) -> dict:
@@ -339,8 +399,9 @@ async def node_call_llm(state: dict) -> dict:
     genre = ChapterService._get_novel_genre(state["novel_unique_id"])
     import time
     t_ai = time.time()
+    on_chunk = state.get("on_chunk")
     generated_text, err = await ChapterService._call_generation_api(
-        prompt_text, max_tokens, summary=summary, genre=genre)
+        prompt_text, max_tokens, summary=summary, genre=genre, on_chunk=on_chunk)
     ai_elapsed = time.time() - t_ai
     system_logger.info(f"[AI调用耗时] 正文生成={ai_elapsed:.1f}秒 | max_tokens={max_tokens} | 输入={input_chars}字")
     if not generated_text:
@@ -372,7 +433,30 @@ async def node_postprocess(state: dict) -> dict:
         text = cut
     # 程序化清洗（引号内对话整体保护）
     cleaned, stats = clean_generated_text(text)
-    return {"generated_text": cleaned, "clean_stats": stats, "actual_word_count": len(cleaned)}
+    # 生成后 AI 味评分（纯代码，只记录不改写；与 novel-anti-ai skill 口径一致）
+    ai_quality = {}
+    try:
+        from app.service.ai_detector import score_ai_taste
+        ai_quality = score_ai_taste(cleaned)
+        if ai_quality.get("score", 0) > 40:
+            names = [i.get("name", "") for i in ai_quality.get("items", [])[:6]]
+            system_logger.warning(
+                f"[AI味检测] score={ai_quality.get('score')}（{ai_quality.get('level')}）"
+                f" 命中项: {names}"
+            )
+        else:
+            system_logger.info(
+                f"[AI味检测] score={ai_quality.get('score')}（{ai_quality.get('level')}）"
+                f" burstiness={ai_quality.get('burstiness')}"
+            )
+    except Exception as e:
+        system_logger.warning(f"[AI味检测] 评分失败（不影响生成）: {e}")
+    return {
+        "generated_text": cleaned,
+        "clean_stats": stats,
+        "actual_word_count": len(cleaned),
+        "ai_quality_score": ai_quality,
+    }
 
 
 async def node_fact_check(state: dict) -> dict:
@@ -386,7 +470,7 @@ async def node_fact_check(state: dict) -> dict:
     """
     from app.config import get as cfg
     from app.prompts.prompt_loader import get_config as get_yaml_config
-    from app.service.ai_chat_service import chat_completion, log_ai_call
+    from app.service.ai_chat_service import chat_completion, chat_completion_stream, log_ai_call
     from app.config import deepseek_model
 
     generated_text = state.get("generated_text", "")
@@ -448,8 +532,8 @@ async def node_fact_check(state: dict) -> dict:
                     model=deepseek_model(),
                     extra_info={"正文字数": len(generated_text), "记忆体字数": len(memory_body)})
         if err:
-            system_logger.warning(f"[事实核查] AI调用失败: {err}")
-            return {"fact_check_result": "PASS", "hallucinations": []}
+            system_logger.error(f"[事实核查] AI调用失败: {err}")
+            return {"error": f"事实核查失败: {err}"}
 
         text = (text or "").strip()
         if text == "PASS" or "PASS" in text:
@@ -692,6 +776,10 @@ async def node_load_existing(state: dict) -> dict:
 
     # 角色卡 → 主角人设硬约束块
     character_cards = ChapterService._load_character_cards(state["db"], chapter.novel_unique_id)
+    skill_result = _select_and_merge_skills(
+        state, chapter.novel_unique_id, character_cards,
+        chapter.chapter_summary or "",
+        ChapterService._get_novel_settings(chapter.novel_unique_id).get("content", ""))
     protagonist_block = ""
     if isinstance(character_cards, list) and character_cards:
         try:
@@ -734,12 +822,17 @@ async def node_load_existing(state: dict) -> dict:
         word_count=state.get("word_count", 2500),
         min_words=max(state.get("word_count", 2500) - 500, 800),
     )
+    if skill_result.prompt:
+        prompt += "\n\n【本次章节 Skill 规则】\n" + skill_result.prompt
     return {
         "chapter": chapter,
         "existing_content": existing_content,
         "context_content": context_content,
         "prompt": prompt,
         "cur_num": cur_num,
+        "skill_prompt": skill_result.prompt,
+        "selected_skills": list(skill_result.skill_ids),
+        "skill_versions": skill_result.versions,
     }
 
 
@@ -747,7 +840,7 @@ async def node_call_continue_api(state: dict) -> dict:
     """调用 DeepSeek 续写（system=恒定核心+场景指南，user=续写 prompt+自查清单）→ 程序化清洗"""
     from app.config import get as cfg
     from app.config import deepseek_long_model, gen_api_timeout
-    from app.service.ai_chat_service import chat_completion, log_ai_call
+    from app.service.ai_chat_service import chat_completion, chat_completion_stream, log_ai_call
     from app.prompts.chapter_prompts import SELF_CHECK_LIST, build_generate_system_prompt
     from app.service.chapter_service import ChapterService
     from app.service.text_cleaner import clean_generated_text
@@ -778,17 +871,21 @@ async def node_call_continue_api(state: dict) -> dict:
             last_ending=existing_content, max_tokens=cw_max, word_count=word_count)
         log_token_estimate("续写", token_est)
 
-        generated_text, err, usage = await chat_completion(
-            messages=cw_msgs,
-            model=deepseek_long_model(),
-            max_tokens=cw_max,
-            timeout=cw_params.get("timeout", gen_api_timeout()),
-            thinking={"type": "disabled"},
-            temperature=cw_params.get("temperature", 0.85),
-            top_p=cw_params.get("top_p", 0.92),
-            frequency_penalty=cfg("ai.generation.frequency_penalty", 0.5),
-            presence_penalty=cfg("ai.generation.presence_penalty", 0.5),
-        )
+        completion = chat_completion_stream if state.get("on_chunk") else chat_completion
+        completion_params = {
+            "messages": cw_msgs,
+            "model": deepseek_long_model(),
+            "max_tokens": cw_max,
+            "timeout": cw_params.get("timeout", gen_api_timeout()),
+            "thinking": {"type": "disabled"},
+            "temperature": cw_params.get("temperature", 0.85),
+            "top_p": cw_params.get("top_p", 0.92),
+            "frequency_penalty": cfg("ai.generation.frequency_penalty", 0.5),
+            "presence_penalty": cfg("ai.generation.presence_penalty", 0.5),
+        }
+        if state.get("on_chunk"):
+            completion_params["on_chunk"] = state["on_chunk"]
+        generated_text, err, usage = await completion(**completion_params)
         log_ai_call("续写", cw_msgs, generated_text, err, usage,
                     model=deepseek_long_model(),
                     extra_info={"概要字数": len(chapter.chapter_summary or ""), "max_tokens": cw_max,
@@ -856,7 +953,7 @@ def build_chapter_gen_graph():
     builder.add_edge("build_prompt", "call_llm")
     builder.add_conditional_edges("call_llm", _route_on_error, {"ok": "postprocess", "error": END})
     builder.add_edge("postprocess", "fact_check")
-    builder.add_edge("fact_check", "save")
+    builder.add_conditional_edges("fact_check", _route_on_error, {"ok": "save", "error": END})
     builder.add_edge("save", END)
     return builder.compile()
 
@@ -940,4 +1037,6 @@ async def run_chapter_gen(state: dict) -> dict:
         "chapter_name": result.get("title", ""),
         "word_count": result.get("actual_word_count", 0),
         "content": result.get("generated_text", ""),
+        "skills": result.get("selected_skills", []),
+        "skill_versions": result.get("skill_versions", {}),
     }, f"{result.get('title', '')} 章节内容生成成功")

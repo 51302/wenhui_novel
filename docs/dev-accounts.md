@@ -125,6 +125,7 @@ https://cr.console.aliyun.com/cn-hangzhou/instance/repositories
 ### 登录命令
 ```bash
 docker login --username=aliyun8562152228 crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com
+账号： aliyun8562152228
 密码： lwp123.com
 ```
 

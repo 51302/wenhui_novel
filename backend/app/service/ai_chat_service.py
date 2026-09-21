@@ -1,4 +1,3 @@
-import asyncio
 import json
 
 import httpx
@@ -7,12 +6,57 @@ from app.config import deepseek_api_key, deepseek_base_url
 from app.utils.logger import system_logger
 
 
-_RETRYABLE_EXCEPTIONS = (
-    httpx.RemoteProtocolError,
-    httpx.ReadError,
-    httpx.ConnectError,
-    httpx.TimeoutException,
-)
+async def chat_completion_stream(messages: list, model: str, max_tokens: int, timeout: int = 180,
+                                 on_chunk=None, **params) -> tuple:
+    text_parts = []
+    usage = None
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream(
+                "POST", deepseek_base_url(),
+                headers={
+                    "Authorization": f"Bearer {deepseek_api_key()}",
+                    "Content-Type": "application/json",
+                },
+                json={"model": model, "messages": messages, "max_tokens": max_tokens,
+                      "stream": True, **params},
+            ) as response:
+                if response.status_code != 200:
+                    raw = await response.aread()
+                    try:
+                        data = json.loads(raw.decode())
+                        message = data.get("error", {}).get("message", f"HTTP {response.status_code}")
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        message = f"HTTP {response.status_code}"
+                    return "", f"AI接口错误: {message}", None
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    usage = data.get("usage") or usage
+                    choices = data.get("choices") or []
+                    delta = choices[0].get("delta", {}) if choices else {}
+                    chunk = delta.get("content") or ""
+                    if chunk:
+                        text_parts.append(chunk)
+                        if on_chunk:
+                            await on_chunk(chunk)
+        text = "".join(text_parts).strip()
+        if not text:
+            return "", "模型返回空内容", usage
+        return text, "", usage
+    except httpx.TimeoutException:
+        return "", "AI接口调用超时", None
+    except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError) as e:
+        return "", f"AI接口网络错误（{type(e).__name__}）: {e}", None
+    except Exception as e:
+        return "", str(e), None
 
 
 async def chat_completion(messages: list, model: str, max_tokens: int, timeout: int = 180,
@@ -20,65 +64,59 @@ async def chat_completion(messages: list, model: str, max_tokens: int, timeout: 
     """调用AI接口，返回 (text, err, usage_dict)。
 
     usage_dict 格式：{"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
-    失败时 usage_dict 为 None。
+    失败时 usage_dict 为 None；网络异常只发送一次请求并直接返回错误。
     """
-    max_retries = 2
-    for attempt in range(max_retries + 1):
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                deepseek_base_url(),
+                headers={
+                    "Authorization": f"Bearer {deepseek_api_key()}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                    **params,
+                },
+            )
+        raw_text = response.text
+        if not raw_text or not raw_text.strip():
+            return "", f"AI接口返回空响应(HTTP {response.status_code})，请重试", None
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
-                    deepseek_base_url(),
-                    headers={
-                        "Authorization": f"Bearer {deepseek_api_key()}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": model,
-                        "messages": messages,
-                        "max_tokens": max_tokens,
-                        **params,
-                    },
-                )
-            raw_text = response.text
-            if not raw_text or not raw_text.strip():
-                return "", f"AI接口返回空响应(HTTP {response.status_code})，请重试", None
-            try:
-                data = json.loads(raw_text)
-            except json.JSONDecodeError:
-                return "", f"AI接口返回格式异常(HTTP {response.status_code})，请重试", None
-            if response.status_code != 200:
-                err_msg = str(data.get("error", {}).get("message", f"HTTP {response.status_code}"))
-                return "", f"AI接口错误: {err_msg}", None
-            choices = data.get("choices")
-            if not isinstance(choices, list) or not choices:
-                err_msg = str(data.get("error", {}).get("message", "未知错误"))
-                return "", err_msg, None
-            message = choices[0].get("message")
-            if not isinstance(message, dict):
-                return "", "模型返回内容格式异常", None
-            text = (message.get("content") or "").strip()
-            if not text:
-                return "", "模型返回空内容（可能只输出思考内容）", None
-            # 提取 token 用量
-            usage = data.get("usage") or {}
-            usage_dict = {
-                "prompt_tokens": usage.get("prompt_tokens", 0),
-                "completion_tokens": usage.get("completion_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            }
-            return text, "", usage_dict
-        except _RETRYABLE_EXCEPTIONS as e:
-            exception_type = type(e).__name__
-            system_logger.warning(
-                f"[AI接口] 网络瞬态异常 {exception_type}（第{attempt + 1}次尝试）: {e}")
-            if attempt < max_retries:
-                await asyncio.sleep(2 ** attempt)
-                continue
-            if isinstance(e, httpx.TimeoutException):
-                return "", "AI接口调用超时", None
-            return "", f"AI接口网络错误（{exception_type}），请重试", None
-        except Exception as e:
-            return "", str(e), None
+            data = json.loads(raw_text)
+        except json.JSONDecodeError:
+            return "", f"AI接口返回格式异常(HTTP {response.status_code})，请重试", None
+        if response.status_code != 200:
+            err_msg = str(data.get("error", {}).get("message", f"HTTP {response.status_code}"))
+            return "", f"AI接口错误: {err_msg}", None
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            err_msg = str(data.get("error", {}).get("message", "未知错误"))
+            return "", err_msg, None
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            return "", "模型返回内容格式异常", None
+        text = (message.get("content") or "").strip()
+        if not text:
+            return "", "模型返回空内容（可能只输出思考内容）", None
+        usage = data.get("usage") or {}
+        usage_dict = {
+            "prompt_tokens": usage.get("prompt_tokens", 0),
+            "completion_tokens": usage.get("completion_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+        }
+        return text, "", usage_dict
+    except httpx.TimeoutException as e:
+        system_logger.error(f"[AI接口] 请求超时: {e}")
+        return "", "AI接口调用超时", None
+    except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError) as e:
+        exception_type = type(e).__name__
+        system_logger.error(f"[AI接口] 网络错误 {exception_type}: {e}")
+        return "", f"AI接口网络错误（{exception_type}）: {e}", None
+    except Exception as e:
+        return "", str(e), None
 
 
 def log_ai_call(tag: str, messages: list, text: str, err: str = None,

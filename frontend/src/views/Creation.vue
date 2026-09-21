@@ -29,126 +29,57 @@
 
     <!-- ==================== 新建作品 ==================== -->
     <div v-if="tab === 'create'" class="tab-content">
-      <form class="create-form" @submit.prevent="handleCreateNovel">
+      <form class="create-form creation-canvas" @submit.prevent="handleCreateNovel">
+        <div class="canvas-intro">
+          <div>
+            <span class="eyebrow">NEW STORY / 03</span>
+            <h1>把灵感铺成一张作品地图</h1>
+            <p>从标题、气质到人物关系，逐格搭建属于你的世界。</p>
+          </div>
+          <div class="canvas-progress"><strong>{{ creationCompleted }}/5</strong><span>模块已完成</span><i><b :style="{ width: creationProgress + '%' }"></b></i></div>
+        </div>
 
-        <div class="form-section">
-          <div class="section-title"><span class="section-icon">📖</span>基本信息</div>
-          <div class="form-two-col">
-            <div class="col-left">
-              <div class="form-row">
-                <label>作品名称</label><input v-model="novelForm.title" required placeholder="请输入作品名称" />
-              </div>
-              <div class="form-row">
-                <label>目标读者</label>
-                <select v-model="novelForm.target_reader" required>
-                  <option value="">请选择</option><option value="男频">男频</option><option value="女频">女频</option>
-                </select>
-              </div>
-              <div class="form-row">
-                <label>签约类型</label>
-                <select v-model="novelForm.sign_type" required>
-                  <option value="non_exclusive">非独家（作品可在作品圈和首页展示）</option>
-                  <option value="exclusive">独家（仅自己可见）</option>
-                </select>
-              </div>
-              <div class="form-row">
-                <label>标签/题材</label>
-                <div class="genre-select">
-                  <div v-for="genre in genreOptions" :key="genre" 
-                       :class="['genre-tag', { active: selectedGenres.includes(genre) }]"
-                       @click="toggleGenre(genre)">
-                    {{ genre }}
-                  </div>
+        <section class="canvas-card card-identity" :class="{ collapsed: !creationSections.identity }">
+          <button type="button" class="card-heading" @click="creationSections.identity = !creationSections.identity">
+            <span class="card-index">01</span><span class="section-icon">📖</span><span class="card-title"><strong>作品身份</strong><small>先让故事有一个清晰的名字与气质</small></span><span class="card-state">{{ creationIdentitySummary }}</span><span class="card-toggle">{{ creationSections.identity ? '收起' : '展开' }}</span>
+          </button>
+          <div v-show="creationSections.identity" class="card-body">
+            <div class="identity-layout">
+              <div class="identity-fields">
+                <div class="form-row"><label>作品名称</label><input v-model="novelForm.title" required placeholder="请输入作品名称" /></div>
+                <div class="field-grid">
+                  <div class="form-row"><label>目标读者</label><select v-model="novelForm.target_reader" required><option value="">请选择</option><option value="男频">男频</option><option value="女频">女频</option></select></div>
+                  <div class="form-row"><label>签约类型</label><select v-model="novelForm.sign_type" required><option value="non_exclusive">非独家（作品可在作品圈和首页展示）</option><option value="exclusive">独家（仅自己可见）</option></select></div>
                 </div>
+                <div class="form-row"><label>标签/题材</label><div class="genre-select"><div v-for="genre in genreOptions" :key="genre" :class="['genre-tag', { active: selectedGenres.includes(genre) }]" @click="toggleGenre(genre)">{{ genre }}</div></div></div>
+                <div class="form-row"><label>写作风格（作家）<span class="multi-tip">（可选，选定后本作品后续章节默认按此风格写）</span></label><select v-model="novelForm.writing_style_id"><option value="">不指定（默认，按题材自动写）</option><option v-for="s in authorStyles" :key="s.id" :value="s.id">{{ s.name }}{{ s.brief ? ' · ' + s.brief : '' }}</option></select></div>
               </div>
-            </div>
-            <div class="col-right">
-              <div class="form-row">
-                <label>封面图片</label>
-                <div class="image-upload">
-                  <div v-if="novelForm.cover_image" class="preview">
-                    <img :src="novelForm.cover_image" alt="封面预览" @error="novelForm.cover_image = ''" />
-                    <button type="button" class="btn-remove" @click="novelForm.cover_image = ''">删除</button>
-                  </div>
-                  <template v-else>
-                    <input type="file" accept="image/*" @change="handleCoverUpload" />
-                  </template>
-                </div>
-              </div>
+              <div class="cover-stage"><span class="stage-label">COVER ART</span><div class="image-upload"><div v-if="novelForm.cover_image" class="preview"><img :src="novelForm.cover_image" alt="封面预览" @error="novelForm.cover_image = ''" /><button type="button" class="btn-remove" @click="novelForm.cover_image = ''">删除</button></div><template v-else><div class="upload-placeholder"><span>✦</span><b>上传封面</b><small>建议使用竖版图片 · 10MB以内</small><input type="file" accept="image/*" @change="handleCoverUpload" /></div></template></div></div>
             </div>
           </div>
-        </div>
+        </section>
 
-        <div class="form-section">
-          <div class="section-title"><span class="section-icon">📝</span>作品简介</div>
-          <div class="form-row">
-            <textarea v-model="novelForm.description" rows="4" :class="{ over: novelForm.description.length > 600 }" placeholder="不超过600字" />
-            <div class="form-row-meta">
-              <span class="char-count" :class="{ over: novelForm.description.length > 600 }">{{ novelForm.description.length }}/600</span>
-              <span v-if="novelForm.description.length > 600" class="field-error">作品简介不能超过600字</span>
-            </div>
-          </div>
-        </div>
+        <section class="canvas-card card-summary" :class="{ collapsed: !creationSections.summary }">
+          <button type="button" class="card-heading" @click="creationSections.summary = !creationSections.summary"><span class="card-index">02</span><span class="section-icon">📝</span><span class="card-title"><strong>故事序章</strong><small>用一段简介留下第一枚钩子</small></span><span class="card-state">{{ novelForm.description ? novelForm.description.length + ' / 600 字' : '待填写' }}</span><span class="card-toggle">{{ creationSections.summary ? '收起' : '展开' }}</span></button>
+          <div v-show="creationSections.summary" class="card-body"><div class="form-row"><textarea v-model="novelForm.description" rows="5" :class="{ over: novelForm.description.length > 600 }" placeholder="不超过600字，写下故事最想被看见的那一刻" /><div class="form-row-meta"><span class="char-count" :class="{ over: novelForm.description.length > 600 }">{{ novelForm.description.length }}/600</span><span v-if="novelForm.description.length > 600" class="field-error">作品简介不能超过600字</span></div></div></div>
+        </section>
 
-        <div class="form-section">
-          <div class="section-title"><span class="section-icon">🌍</span>作品设定</div>
-          <div class="form-two-col">
-            <div class="col-left">
-              <div class="form-row">
-                <label>故事背景</label><textarea v-model="novelForm.story_background" rows="4" placeholder="描述故事的时代背景、地点等" />
-              </div>
-            </div>
-            <div class="col-right">
-              <div class="form-row">
-                <label>世界观设定</label><textarea v-model="novelForm.world_setting" rows="4" placeholder="描述世界观体系，如修炼体系、社会结构等" />
-              </div>
-            </div>
-          </div>
-        </div>
+        <section class="canvas-card card-world" :class="{ collapsed: !creationSections.world }">
+          <button type="button" class="card-heading" @click="creationSections.world = !creationSections.world"><span class="card-index">03</span><span class="section-icon">🌍</span><span class="card-title"><strong>世界底稿</strong><small>故事发生在哪里，规则又是什么</small></span><span class="card-state">{{ creationWorldSummary }}</span><span class="card-toggle">{{ creationSections.world ? '收起' : '展开' }}</span></button>
+          <div v-show="creationSections.world" class="card-body"><div class="field-grid"><div class="form-row"><label>故事背景</label><textarea v-model="novelForm.story_background" rows="5" placeholder="描述故事的时代背景、地点等" /></div><div class="form-row"><label>世界观设定</label><textarea v-model="novelForm.world_setting" rows="5" placeholder="描述世界观体系，如修炼体系、社会结构等" /></div></div></div>
+        </section>
 
-        <div class="form-section">
-          <div class="section-title"><span class="section-icon">⚡</span>境界体系</div>
-          <div class="form-row">
-            <div class="realm-list">
-              <div v-for="(realm, ri) in novelForm.realms" :key="ri" class="realm-item">
-                <input v-model="realm.name" placeholder="体系名称(如：A体系)" />
-                <textarea v-model="realm.value" placeholder="该体系的境界设定" rows="2" />
-                <button type="button" class="btn-remove" @click="novelForm.realms.splice(ri, 1)">删除</button>
-              </div>
-              <button type="button" class="btn-add" @click="novelForm.realms.push({ name: '', value: '' })">+ 添加境界体系</button>
-            </div>
-          </div>
-        </div>
+        <section class="canvas-card card-realm" :class="{ collapsed: !creationSections.realm }">
+          <button type="button" class="card-heading" @click="creationSections.realm = !creationSections.realm"><span class="card-index">04</span><span class="section-icon">⚡</span><span class="card-title"><strong>力量坐标</strong><small>定义角色如何成长、突破与冒险</small></span><span class="card-state">{{ creationRealmSummary }}</span><span class="card-toggle">{{ creationSections.realm ? '收起' : '展开' }}</span></button>
+          <div v-show="creationSections.realm" class="card-body"><div class="realm-list"><div v-for="(realm, ri) in novelForm.realms" :key="ri" class="realm-item"><div class="realm-number">{{ String(ri + 1).padStart(2, '0') }}</div><div class="realm-fields"><input v-model="realm.name" placeholder="体系名称(如：A体系)" /><textarea v-model="realm.value" placeholder="该体系的境界设定" rows="2" /></div><button type="button" class="btn-remove" @click="novelForm.realms.splice(ri, 1)">删除</button></div><button type="button" class="btn-add" @click="novelForm.realms.push({ name: '', value: '' })">+ 添加境界体系</button></div></div>
+        </section>
 
-        <div class="form-section">
-          <div class="section-title"><span class="section-icon">👥</span>角色设定</div>
-          <div class="form-row">
-            <div class="char-list">
-              <div v-for="(ch, ci) in novelForm.characters" :key="ci" class="char-card">
-                <div class="char-header"><strong>角色{{ String.fromCharCode(65+ci) }}</strong><button type="button" class="btn-remove" @click="novelForm.characters.splice(ci, 1)">删除</button></div>
-                <div class="char-fields">
-                  <div class="half"><label>角色名称</label><input v-model="ch.name" /></div>
-                  <div class="half"><label>性别</label><select v-model="ch.gender"><option value="">请选择</option><option value="男">男</option><option value="女">女</option></select></div>
-                  <div class="full"><label>角色定位</label><input v-model="ch.position" placeholder="男主，天云宗圣子" /></div>
-                  <div class="full"><label>角色性格</label><input v-model="ch.personality" /></div>
-                  <div class="full"><label>角色简介</label><textarea v-model="ch.intro" rows="2" /></div>
-                  <div class="half"><label>伴侣</label><input v-model="ch.partner" /></div>
-                  <div class="half"><label>子女</label><input v-model="ch.children" /></div>
-                  <div class="half"><label>亲人</label><input v-model="ch.relatives" /></div>
-                  <div class="half"><label>朋友</label><input v-model="ch.friends" /></div>
-                  <div class="full"><label>弟子</label><input v-model="ch.disciples" /></div>
-                </div>
-              </div>
-              <button type="button" class="btn-add" @click="novelForm.characters.push({ name: '', gender: '', position: '', personality: '', intro: '', partner: '', children: '', relatives: '', friends: '', disciples: '' })">+ 添加角色</button>
-            </div>
-          </div>
-        </div>
+        <section class="canvas-card card-characters" :class="{ collapsed: !creationSections.characters }">
+          <button type="button" class="card-heading" @click="creationSections.characters = !creationSections.characters"><span class="card-index">05</span><span class="section-icon">👥</span><span class="card-title"><strong>关系群像</strong><small>把角色放进故事，让世界开始呼吸</small></span><span class="card-state">{{ creationCharacterSummary }}</span><span class="card-toggle">{{ creationSections.characters ? '收起' : '展开' }}</span></button>
+          <div v-show="creationSections.characters" class="card-body"><div class="char-list"><div v-for="(ch, ci) in novelForm.characters" :key="ci" class="char-card"><div class="char-header"><strong>角色{{ String.fromCharCode(65+ci) }}</strong><button type="button" class="btn-remove" @click="novelForm.characters.splice(ci, 1)">删除</button></div><div class="char-fields"><div class="half"><label>角色名称</label><input v-model="ch.name" /></div><div class="half"><label>性别</label><select v-model="ch.gender"><option value="">请选择</option><option value="男">男</option><option value="女">女</option></select></div><div class="full"><label>角色定位</label><input v-model="ch.position" placeholder="男主，天云宗圣子" /></div><div class="full"><label>角色性格</label><input v-model="ch.personality" /></div><div class="full"><label>角色简介</label><textarea v-model="ch.intro" rows="2" /></div><div class="half"><label>伴侣</label><input v-model="ch.partner" /></div><div class="half"><label>子女</label><input v-model="ch.children" /></div><div class="half"><label>亲人</label><input v-model="ch.relatives" /></div><div class="half"><label>朋友</label><input v-model="ch.friends" /></div><div class="full"><label>弟子</label><input v-model="ch.disciples" /></div></div></div><button type="button" class="btn-add" @click="novelForm.characters.push({ name: '', gender: '', position: '', personality: '', intro: '', partner: '', children: '', relatives: '', friends: '', disciples: '' })">+ 添加角色</button></div></div>
+        </section>
 
-        <div class="form-footer">
-          <p v-if="createError" class="error">{{ createError }}</p>
-          <p v-if="createSuccess" class="success">{{ createSuccess }}</p>
-          <button type="submit" class="btn-create" :disabled="novelForm.description.length > 600">创建作品</button>
-        </div>
+        <div class="form-footer canvas-footer"><p v-if="createError" class="error">{{ createError }}</p><p v-if="createSuccess" class="success">{{ createSuccess }}</p><button type="submit" class="btn-create" :disabled="novelForm.description.length > 600">创建作品 <span>→</span></button></div>
       </form>
     </div>
 
@@ -179,61 +110,79 @@
           <button class="modal-close" @click="showChapterModal = false">&times;</button>
           <h2>{{ chapterNovel.title }} - 章节管理</h2>
           <div class="chapter-form">
-            <h3>新建章节</h3>
-            <input v-model="chapterForm.chapter_name" placeholder="章节名称" />
-            <input v-model="chapterForm.characters_involved" placeholder="涉及人物" />
-            <input v-model="chapterForm.organizations" placeholder="涉及组织" />
-            <input v-model="chapterForm.locations" placeholder="涉及地点" />
-            <input v-model="chapterForm.skills" placeholder="涉及技能" />
-            <input v-model.number="chapterForm.word_count" type="number" placeholder="章节字数" />
-            <div class="edit-row"><label>作家风格<span class="multi-tip">（可多选，最多4个）</span></label>
-              <div class="multi-select" :class="{ open: msStyleOpen }">
-                <button type="button" class="multi-select-trigger" @click="msStyleOpen = !msStyleOpen">
-                  <span class="ms-trigger-label">{{ selAuthorStyles.length ? '已选 ' + selAuthorStyles.length + ' 个作家风格' : '点击选择作家风格' }}</span>
-                  <span class="ms-trigger-arrow" :class="{ up: msStyleOpen }">▾</span>
-                </button>
-                <div v-if="msStyleOpen" class="multi-select-panel">
-                  <div v-for="s in authorStyles" :key="s.id" class="ms-item"
-                       :class="{ checked: selAuthorStyles.includes(s.id), disabled: !selAuthorStyles.includes(s.id) && selAuthorStyles.length >= 4 }"
-                       @click="toggleMulti(selAuthorStyles, s.id)">
-                    <span class="ms-name">{{ s.name }}</span>
-                    <small class="ms-brief">{{ s.brief }}</small>
-                    <span v-if="selAuthorStyles.includes(s.id)" class="ms-check">✓</span>
-                  </div>
-                  <div class="ms-panel-hint">最多可选 4 个{{ selAuthorStyles.length >= 4 ? '（已达上限，取消勾选后可换选）' : '，选中后置灰' }}</div>
+            <section class="canvas-card" aria-labelledby="generation-settings-title">
+              <div class="card-heading"><span class="card-index">01</span><div class="card-title"><h3 id="generation-settings-title">生成设置</h3><small>确定章节名称、篇幅与故事要素</small></div></div>
+              <div class="card-body">
+                <div class="field-grid">
+                  <div class="form-row"><label for="generate-chapter_name">章节名称</label><input id="generate-chapter_name" v-model="chapterForm.chapter_name" placeholder="章节名称" /></div>
+                  <div class="form-row"><label for="generate-word_count">章节字数</label><input id="generate-word_count" v-model.number="chapterForm.word_count" type="number" placeholder="章节字数" /></div>
+                  <div class="form-row"><label for="generate-characters_involved">涉及人物</label><input id="generate-characters_involved" v-model="chapterForm.characters_involved" placeholder="涉及人物" /></div>
+                  <div class="form-row"><label for="generate-organizations">涉及组织</label><input id="generate-organizations" v-model="chapterForm.organizations" placeholder="涉及组织" /></div>
+                  <div class="form-row"><label for="generate-locations">涉及地点</label><input id="generate-locations" v-model="chapterForm.locations" placeholder="涉及地点" /></div>
+                  <div class="form-row"><label for="generate-skills">涉及技能</label><input id="generate-skills" v-model="chapterForm.skills" placeholder="涉及技能" /></div>
                 </div>
-              </div></div>
-            <div class="edit-row"><label>章节模板<span class="multi-tip">（可多选，最多4个，不选则跟随主角性格）</span></label>
-              <div class="multi-select" :class="{ open: msTemplateOpen }">
-                <button type="button" class="multi-select-trigger" @click="msTemplateOpen = !msTemplateOpen">
-                  <span class="ms-trigger-label">{{ selChapterTemplates.length ? '已选 ' + selChapterTemplates.length + ' 个章节模板' : '点击选择章节模板' }}</span>
-                  <span class="ms-trigger-arrow" :class="{ up: msTemplateOpen }">▾</span>
-                </button>
-                <div v-if="msTemplateOpen" class="multi-select-panel">
-                  <template v-for="g in chapterTemplateGroups" :key="g.category">
-                    <div class="ms-group">{{ g.category }}</div>
-                    <div v-for="t in g.items" :key="t.id" class="ms-item"
-                         :class="{ checked: selChapterTemplates.includes(t.id), disabled: !selChapterTemplates.includes(t.id) && selChapterTemplates.length >= 4 }"
-                         @click="toggleMulti(selChapterTemplates, t.id)">
-                      <span class="ms-name">{{ t.name }}</span>
-                      <span v-if="selChapterTemplates.includes(t.id)" class="ms-check">✓</span>
+                <label class="anti-ai-toggle">
+                  <input type="checkbox" v-model="chapterForm.use_anti_ai" />
+                  <span><strong>反AI检测去味</strong><small>默认开启，生成后自动按项目反AI规则降低AI味</small></span>
+                </label>
+              </div>
+            </section>
+            <section class="canvas-card chapter-style-card" aria-labelledby="generation-style-title">
+              <div class="card-heading"><span class="card-index">02</span><div class="card-title"><h3 id="generation-style-title">风格模板</h3><small>搭配作家风格与章节模板，确定叙事气质</small></div></div>
+              <div class="card-body">
+                <div class="form-row"><label>作家风格<span class="multi-tip">（可多选，最多4个）</span></label>
+                  <div class="multi-select" :class="{ open: msStyleOpen }">
+                    <button type="button" class="multi-select-trigger" @click="msStyleOpen = !msStyleOpen">
+                      <span class="ms-trigger-label">{{ selAuthorStyles.length ? '已选 ' + selAuthorStyles.length + ' 个作家风格' : '点击选择作家风格' }}</span>
+                      <span class="ms-trigger-arrow" :class="{ up: msStyleOpen }">▾</span>
+                    </button>
+                    <div v-if="msStyleOpen" class="multi-select-panel">
+                      <div v-for="s in authorStyles" :key="s.id" class="ms-item"
+                           :class="{ checked: selAuthorStyles.includes(s.id), disabled: !selAuthorStyles.includes(s.id) && selAuthorStyles.length >= 4 }"
+                           @click="toggleMulti(selAuthorStyles, s.id)">
+                        <span class="ms-name">{{ s.name }}</span>
+                        <small class="ms-brief">{{ s.brief }}</small>
+                        <span v-if="selAuthorStyles.includes(s.id)" class="ms-check">✓</span>
+                      </div>
+                      <div class="ms-panel-hint">最多可选 4 个{{ selAuthorStyles.length >= 4 ? '（已达上限，取消勾选后可换选）' : '，选中后置灰' }}</div>
                     </div>
-                  </template>
-                  <div class="ms-panel-hint">最多可选 4 个{{ selChapterTemplates.length >= 4 ? '（已达上限，取消勾选后可换选）' : '，选中后置灰' }}</div>
+                  </div></div>
+                <div class="form-row"><label>章节模板<span class="multi-tip">（可多选，最多4个，不选则跟随主角性格）</span></label>
+                  <div class="multi-select" :class="{ open: msTemplateOpen }">
+                    <button type="button" class="multi-select-trigger" @click="msTemplateOpen = !msTemplateOpen">
+                      <span class="ms-trigger-label">{{ selChapterTemplates.length ? '已选 ' + selChapterTemplates.length + ' 个章节模板' : '点击选择章节模板' }}</span>
+                      <span class="ms-trigger-arrow" :class="{ up: msTemplateOpen }">▾</span>
+                    </button>
+                    <div v-if="msTemplateOpen" class="multi-select-panel">
+                      <template v-for="g in chapterTemplateGroups" :key="g.category">
+                        <div class="ms-group">{{ g.category }}</div>
+                        <div v-for="t in g.items" :key="t.id" class="ms-item"
+                             :class="{ checked: selChapterTemplates.includes(t.id), disabled: !selChapterTemplates.includes(t.id) && selChapterTemplates.length >= 4 }"
+                             @click="toggleMulti(selChapterTemplates, t.id)">
+                          <span class="ms-name">{{ t.name }}</span>
+                          <span v-if="selChapterTemplates.includes(t.id)" class="ms-check">✓</span>
+                        </div>
+                      </template>
+                      <div class="ms-panel-hint">最多可选 4 个{{ selChapterTemplates.length >= 4 ? '（已达上限，取消勾选后可换选）' : '，选中后置灰' }}</div>
+                    </div>
+                  </div></div>
+              </div>
+            </section>
+            <section class="canvas-card" aria-labelledby="generation-summary-title">
+              <div class="card-heading"><span class="card-index">03</span><div class="card-title"><h3 id="generation-summary-title">章节概要</h3><small>串联关键情节，为本章写下剧情发展路线</small></div></div>
+              <div class="card-body">
+                <div class="form-row">
+                  <label for="generate-summary">剧情发展路线</label>
+                  <textarea id="generate-summary" v-model="chapterForm.chapter_summary" class="wide-textarea" placeholder="剧情发展路线(如：主角偷袭天道教宗→夺取镇教之宝→被追杀→坠崖获机缘)" rows="4"></textarea>
                 </div>
-              </div></div>
-            <textarea v-model="chapterForm.chapter_summary" class="wide-textarea" style="width: 580px; height: 71px;" placeholder="剧情发展路线(如：主角偷袭天道教宗→夺取镇教之宝→被追杀→坠崖获机缘)" rows="4"></textarea>
+              </div>
+            </section>
             <div class="chapter-btns">
               <button class="btn-ai" @click="generateChapter" :disabled="generating">
                 <span v-if="generating" class="spinner"></span>
                 {{ generating ? '正在生成中...' : '一键AI生成' }}
               </button>
             </div>
-          <!-- AI生成中等待提示 -->
-          <div v-if="generating" class="generating-waiting-bar">
-            <span class="generating-waiting-spinner"></span>
-            <span>AI生成中，预计30-60秒，请稍候...</span>
-          </div>
           </div>
           <div class="existing-chapters">
             <h3>已有章节
@@ -241,10 +190,14 @@
             </h3>
             <div v-if="novelChapters.length === 0" class="empty">暂无章节</div>
             <div v-for="ch in chapterPaged" :key="ch.chapter_unique_id" class="chapter-item">
-              <span>第{{ ch.chapter_number || (novelChapters.indexOf(ch) + 1) }}章 - {{ ch.chapter_name }} ({{ ch.word_count }}字)</span>
-              <span class="chapter-status">{{ ch.is_published ? '✓ 已发布' : '草稿' }}</span>
-              <button class="btn-edit-chapter" @click="editChapter(ch)" title="编辑章节">✎ 编辑</button>
-              <button class="btn-delete-chapter" @click="deleteChapter(ch)" title="删除章节">✕ 删除</button>
+              <div class="chapter-main">
+                <span>第{{ ch.chapter_number || (novelChapters.indexOf(ch) + 1) }}章 - {{ ch.chapter_name }} ({{ ch.word_count }}字)</span>
+                <span class="chapter-status">{{ ch.is_published ? '✓ 已发布' : '草稿' }}</span>
+              </div>
+              <div class="chapter-actions">
+                <button class="btn-edit-chapter" @click="editChapter(ch)" title="编辑章节">✎ 编辑</button>
+                <button class="btn-delete-chapter" @click="deleteChapter(ch)" title="删除章节">✕ 删除</button>
+              </div>
             </div>
             <div v-if="chapterPageCount > 1" class="pagination">
               <button class="page-btn" :disabled="chapterPage <= 1" @click="chapterPage--">上一页</button>
@@ -303,9 +256,9 @@
               </div>
             </div></div>
           <div class="edit-row"><label>章节正文</label><button class="btn-copy-content" @click="copyChapterContent" title="复制正文内容">📋</button>
-            <textarea v-model="editChapterForm.content" rows="16" placeholder="章节正文内容"></textarea></div>
+            <textarea v-model="editChapterForm.content" :readonly="regenerating" rows="16" placeholder="章节正文内容"></textarea></div>
           <div class="edit-actions">
-            <button class="btn-save" @click="saveChapterEdit" :disabled="saving">💾 {{ saving ? '保存中...' : '保存修改' }}</button>
+            <button class="btn-save" @click="saveChapterEdit" :disabled="saving || regenerating">💾 {{ saving ? '保存中...' : '保存修改' }}</button>
             <button class="btn-regenerate" :class="{ 'btn-svip-only': !isSvip }" @click="isSvip ? regenerateChapter() : null" :disabled="regenerating || !isSvip" :title="isSvip ? 'AI重新生成本章节内容' : '仅SVIP可使用此功能'">🔄 {{ regenerating ? '重新生成中...' : 'AI重新生成' }}</button>
             <button class="btn-cancel" @click="showChapterEditModal = false">取消</button>
           </div>
@@ -350,12 +303,19 @@
           <div class="form-row">
             <label>标签/题材</label>
             <div class="genre-select">
-              <div v-for="genre in genreOptions" :key="genre" 
+              <div v-for="genre in genreOptions" :key="genre"
                    :class="['genre-tag', { active: editSelectedGenres.includes(genre) }]"
                    @click="toggleEditGenre(genre)">
                 {{ genre }}
               </div>
             </div>
+          </div>
+          <div class="form-row">
+            <label>写作风格（作家）</label>
+            <select v-model="editForm.writing_style_id">
+              <option value="">不指定（默认，按题材自动写）</option>
+              <option v-for="s in authorStyles" :key="s.id" :value="s.id">{{ s.name }}{{ s.brief ? ' · ' + s.brief : '' }}</option>
+            </select>
           </div>
           <div class="form-row">
             <label>作品简介 <span class="char-count" :class="{ over: editForm.description.length > 600 }">{{ editForm.description.length }}/600</span></label>
@@ -377,25 +337,41 @@
 
     <!-- ==================== 草稿列表 ==================== -->
     <div v-if="tab === 'drafts'" class="tab-content">
-      <div v-if="drafts.length === 0" class="empty">暂无草稿</div>
+      <section v-if="generationStatus" class="draft-card generation-card" aria-label="生成预览">
+        <div class="draft-header">
+          <h3>{{ generationTitle.novel }} · {{ generationTitle.chapter }}</h3>
+          <span>生成预览</span>
+        </div>
+        <div v-if="generating" class="generating-waiting-bar" role="status">
+          <span class="generating-waiting-spinner"></span>
+          <span>{{ generationStatus === 'waiting' ? '等待生成正文...' : generationStatus === 'refreshing' ? '生成完成，正在刷新草稿...' : '正在流式生成正文...' }}</span>
+        </div>
+        <p v-if="generationStatus === 'failed'" class="error" role="alert">{{ generationError }}。已收到的正文保留如下。</p>
+        <pre v-if="generationPreview" class="generation-preview">{{ generationPreview }}</pre>
+      </section>
+      <div v-if="drafts.length === 0 && !generationStatus" class="empty">暂无草稿</div>
       <div v-for="d in drafts" :key="d.chapter_unique_id" class="draft-card">
         <div class="draft-header">
           <h3>{{ d.chapter_name }}</h3>
           <span>{{ d.word_count }}字 | {{ formatTime(d.created_at) }}</span>
         </div>
         <div class="draft-content">
-          <textarea v-model="d.content" rows="10" />
+          <textarea v-model="d.content" :readonly="continuing[d.chapter_unique_id]" rows="10" />
+        </div>
+        <div v-if="continuing[d.chapter_unique_id] || continuationPreviews[d.chapter_unique_id]">
+          <p>{{ continuing[d.chapter_unique_id] ? '正在续写，以下为实时预览，最终内容以保存结果为准' : '续写预览，成功后正文已刷新为保存结果' }}</p>
+          <pre v-if="continuationPreviews[d.chapter_unique_id]" class="generation-preview">{{ continuationPreviews[d.chapter_unique_id] }}</pre>
         </div>
         <div class="draft-actions">
           <button @click="continueChapter(d)" :disabled="continuing[d.chapter_unique_id]">
             <span v-if="continuing[d.chapter_unique_id]" class="spinner"></span>
             {{ continuing[d.chapter_unique_id] ? '正在续写...' : '🤖 AI续写' }}
           </button>
-          <button @click="publishChapter(d)" :disabled="publishing[d.chapter_unique_id]">
+          <button @click="publishChapter(d)" :disabled="publishing[d.chapter_unique_id] || continuing[d.chapter_unique_id]">
             <span v-if="publishing[d.chapter_unique_id]" class="spinner"></span>
             {{ publishing[d.chapter_unique_id] ? '发布中...' : '发布章节' }}
           </button>
-          <button class="btn-danger" @click="deleteDraft(d)">删除</button>
+          <button class="btn-danger" @click="deleteDraft(d)" :disabled="continuing[d.chapter_unique_id]">删除</button>
         </div>
       </div>
     </div>
@@ -687,12 +663,32 @@ export default {
     const novelForm = reactive({
       title: '', target_reader: '', genre: '', description: '',
       story_background: '', world_setting: '', cover_image: '',
+      writing_style_id: '',
       realms: [{ name: '', value: '' }],
       characters: [],
       sign_type: 'non_exclusive'
     })
     const createError = ref('')
     const createSuccess = ref('')
+    const creationSections = reactive({ identity: true, summary: true, world: true, realm: true, characters: true })
+    const creationIdentitySummary = computed(() => novelForm.title ? `${novelForm.title}${novelForm.target_reader ? ' · ' + novelForm.target_reader : ''}` : '待填写')
+    const creationWorldSummary = computed(() => novelForm.story_background || novelForm.world_setting ? '设定已铺开' : '待填写')
+    const creationRealmSummary = computed(() => {
+      const count = novelForm.realms.filter(realm => realm.name || realm.value).length
+      return count ? `${count} 个体系` : '待填写'
+    })
+    const creationCharacterSummary = computed(() => {
+      const count = novelForm.characters.filter(character => character.name).length
+      return count ? `${count} 位角色` : '尚未登场'
+    })
+    const creationCompleted = computed(() => [
+      !!(novelForm.title && novelForm.target_reader),
+      !!novelForm.description,
+      !!(novelForm.story_background || novelForm.world_setting),
+      novelForm.realms.some(realm => realm.name || realm.value),
+      novelForm.characters.some(character => character.name)
+    ].filter(Boolean).length)
+    const creationProgress = computed(() => creationCompleted.value * 20)
     
     // 标签选项
     const genreOptions = ['玄幻', '修仙', '都市', '科幻', '历史', '武侠', '悬疑', '游戏', '军事', '竞技', '轻小说', '奇幻', '灵异', '无限流', '末世', '古言', '现言', '穿越', '重生', '总裁', '纯爱', '种田', '宫斗', '宅斗', '女强', '幻想', '清穿', '穿书']
@@ -750,6 +746,7 @@ export default {
       story_background: '',
       world_setting: '',
       cover_image: '',
+      writing_style_id: '',
       sign_type: 'non_exclusive'
     })
     const editSelectedGenres = ref([])
@@ -770,6 +767,7 @@ export default {
             story_background: data.story_background || '',
             world_setting: data.world_setting || '',
             cover_image: data.cover_image || '',
+            writing_style_id: data.writing_style_id || '',
             sign_type: data.sign_type || 'non_exclusive'
           })
           // 解析标签
@@ -832,6 +830,7 @@ export default {
           story_background: editForm.story_background,
           world_setting: editForm.world_setting,
           cover_image: editForm.cover_image,
+          writing_style_id: editForm.writing_style_id,
           sign_type: editForm.sign_type
         }
         const res = await api.put(`/novels/update/${editForm.novel_unique_id}`, params)
@@ -864,12 +863,13 @@ export default {
           story_background: novelForm.story_background, world_setting: novelForm.world_setting,
           cover_image: novelForm.cover_image,
           realm_setting: realmsJson || null, characters: charsJson,
+          writing_style_id: novelForm.writing_style_id,
           sign_type: novelForm.sign_type
         }
         const res = await api.post('/novels/create', params)
         if (res.状态码 === 200) {
           createSuccess.value = '作品创建成功！'
-          Object.assign(novelForm, { title: '', target_reader: '', genre: '', description: '', story_background: '', world_setting: '', cover_image: '', realms: [{ name: '', value: '' }], characters: [], sign_type: 'non_exclusive' })
+          Object.assign(novelForm, { title: '', target_reader: '', genre: '', description: '', story_background: '', world_setting: '', cover_image: '', writing_style_id: '', realms: [{ name: '', value: '' }], characters: [], sign_type: 'non_exclusive' })
           selectedGenres.value = []
         } else {
           createError.value = res.消息
@@ -891,6 +891,11 @@ export default {
     const chapterNovel = ref({})
     const novelChapters = ref([])
     const generating = ref(false)
+    const generationPreview = ref('')
+    const generationStatus = ref('')
+    const generationTitle = ref({ novel: '', chapter: '' })
+    const generationError = ref('')
+    const continuationPreviews = reactive({})
     const saving = ref(false)
     const regenerating = ref(false)
     const showChapterEditModal = ref(false)
@@ -930,7 +935,7 @@ export default {
     })
     const chapterForm = reactive({
       chapter_name: '', characters_involved: '', organizations: '',
-      locations: '', skills: '', word_count: 2500, chapter_summary: '', content: '', author_style: '', chapter_template: ''
+      locations: '', skills: '', word_count: 2500, chapter_summary: '', content: '', author_style: '', chapter_template: '', use_anti_ai: true
     })
     const editChapterForm = reactive({
       chapter_name: '', chapter_summary: '', content: '', author_style: '', chapter_template: ''
@@ -962,23 +967,31 @@ export default {
       selChapterTemplates.value = []
       msStyleOpen.value = false
       msTemplateOpen.value = false
-      Object.assign(chapterForm, { chapter_name: '', characters_involved: '', organizations: '', locations: '', skills: '', word_count: 2500, chapter_summary: '', content: '', author_style: '', chapter_template: '' })
+      Object.assign(chapterForm, { chapter_name: '', characters_involved: '', organizations: '', locations: '', skills: '', word_count: 2500, chapter_summary: '', content: '', author_style: '', chapter_template: '', use_anti_ai: true })
       try {
         const res = await api.get(`/chapters/novel/${novel.novel_unique_id}`)
         if (res.状态码 === 200) { novelChapters.value = res.数据; chapterPage.value = 1 }
       } catch { novelChapters.value = [] }
     }
 
-        const generateChapter = async () => {
-      if (!chapterForm.chapter_name) return alert('请输入章节名称')
+    const generateChapter = async () => {
+      if (generating.value) return
+      if (!chapterForm.chapter_name.trim()) return alert('请输入章节名称')
       if (chapterForm.word_count > 3000) {
         if (!confirm(`章节字数超过3000字上限（当前${chapterForm.word_count}字），将自动调整为3000字。是否继续？`)) return
         chapterForm.word_count = 3000
       }
       generating.value = true
+      generationPreview.value = ''
+      const novelId = chapterNovel.value.novel_unique_id
+      generationTitle.value = { novel: chapterNovel.value.title, chapter: chapterForm.chapter_name }
+      generationStatus.value = 'waiting'
+      generationError.value = ''
+      showChapterModal.value = false
+      tab.value = 'drafts'
       try {
         const res = await api.post('/chapters/generate', {
-          novel_unique_id: chapterNovel.value.novel_unique_id,
+          novel_unique_id: novelId,
           chapter_name: chapterForm.chapter_name,
           characters_involved: chapterForm.characters_involved,
           organizations: chapterForm.organizations,
@@ -987,31 +1000,38 @@ export default {
           word_count: chapterForm.word_count,
           chapter_summary: chapterForm.chapter_summary,
           author_style: selAuthorStyles.value.join(','),
-          chapter_template: selChapterTemplates.value.join(',')
+          chapter_template: selChapterTemplates.value.join(','),
+          use_anti_ai: chapterForm.use_anti_ai
         })
         if (res.状态码 === 200 && res.数据 && res.数据.task_id) {
           // 刷新用户信息（更新免费次数）
           try { const mu = await api.get('/auth/me'); if (mu.状态码===200) { Object.assign(user, mu.数据); localStorage.setItem('novel_user', JSON.stringify(user)) } } catch {}
-          // 轮询任务状态，直到完成（LLM生成+记忆提取可达300秒）
           const taskId = res.数据.task_id
-          const task = await waitForTask(taskId, 300000, 3000)
-          if (task.status === 'done') {
-            tab.value = 'drafts'
-            await fetchDrafts()
-          } else if (task.status === 'failed') {
-            alert(task.error || 'AI生成失败')
-            return
-          } else {
-            alert('AI生成超时，请稍后到草稿箱查看')
-            tab.value = 'drafts'
-            await fetchDrafts()
-          }
+          const task = await streamTask(taskId, chunk => {
+            if (!chunk) return
+            generationStatus.value = 'streaming'
+            generationPreview.value += chunk
+          })
+          if (task.status !== 'done') throw new Error(task.error || 'AI生成失败')
+          generationPreview.value = task.result?.content ?? generationPreview.value
+          generationStatus.value = 'refreshing'
+          if (!await fetchDrafts()) throw new Error('正文已生成，但草稿刷新失败，请稍后刷新草稿列表')
+          generationStatus.value = ''
+          generationPreview.value = ''
+          try {
+            const chapters = await api.get(`/chapters/novel/${novelId}`)
+            if (chapters.状态码 === 200 && chapterNovel.value.novel_unique_id === novelId) {
+              novelChapters.value = chapters.数据
+            }
+          } catch {}
         } else {
-          alert('生成失败: ' + (res.消息 || '提交失败'))
+          throw new Error(res.消息 || '提交失败')
         }
       } catch (e) {
-        const msg = e.response ? (e.response.数据 || e.response.消息 || JSON.stringify(e.response.data)) : (e.message || '网络错误，请检查后端是否启动')
-        alert('AI生成失败: ' + msg)
+        const data = e.response?.data || e.response || {}
+        const msg = data.数据 || data.消息 || data.detail || e.message || '网络错误，请检查后端是否启动'
+        generationStatus.value = 'failed'
+        generationError.value = '生成失败: ' + (typeof msg === 'string' ? msg : JSON.stringify(msg))
       } finally {
         generating.value = false
       }
@@ -1228,6 +1248,28 @@ export default {
     const publishing = reactive({})
     const publishOverlay = reactive({ visible: false, name: '', step: 0 })
 
+    const streamTask = (taskId, onChunk) => new Promise((resolve, reject) => {
+      const source = new EventSource('/api/chapters/tasks/' + taskId + '/stream')
+      let settled = false
+      const finish = (callback, value) => {
+        if (settled) return
+        settled = true
+        source.close()
+        callback(value)
+      }
+      source.onmessage = event => {
+        try {
+          const data = JSON.parse(event.data)
+          if (data.type === 'chunk') onChunk(data.content || '')
+          if (data.type === 'done') finish(resolve, { status: 'done', result: data.result || null })
+          if (data.type === 'error') finish(reject, new Error(data.error || '任务执行失败'))
+        } catch (error) {
+          finish(reject, error)
+        }
+      }
+      source.onerror = () => finish(reject, new Error('流式连接中断'))
+    })
+
     const waitForTask = async (taskId, maxWait = 120000, pollInterval = 3000) => {
       let waited = 0
       let consecutiveFailures = 0
@@ -1258,9 +1300,13 @@ export default {
     const fetchDrafts = async () => {
       try {
         const res = await api.get('/chapters/drafts')
-        if (res.状态码 === 200) drafts.value = (res.数据 || []).slice().reverse()  // 倒序展示：最新草稿在最上方
-        else console.error('获取草稿列表失败:', res)
+        if (res.状态码 === 200) {
+          drafts.value = (res.数据 || []).slice().reverse()
+          return true
+        }
+        console.error('获取草稿列表失败:', res)
       } catch (e) { console.error('获取草稿列表异常:', e) }
+      return false
     }
 
     const publishChapter = async (d) => {
@@ -1421,22 +1467,31 @@ export default {
     const regenerateChapter = async () => {
       if (!editChapterForm.chapter_name) return alert('请输入章节名称')
       if (!confirm('AI重新生成将覆盖当前章节内容，确定继续？')) return
+      if (regenerating.value) return
       regenerating.value = true
       try {
         const res = await api.post(`/chapters/regenerate/${editingChapterId.value}`, {
           chapter_summary: editChapterForm.chapter_summary,
           word_count: chapterForm.word_count,
           author_style: selEditAuthorStyles.value.join(','),
-          chapter_template: selEditChapterTemplates.value.join(',')
+          chapter_template: selEditChapterTemplates.value.join(','),
+          use_anti_ai: chapterForm.use_anti_ai
         })
         if (res.状态码 === 200 && res.数据 && res.数据.task_id) {
           // 异步任务：轮询结果（重新生成耗时可达数分钟，同步请求会被公网隧道/浏览器掐断）
           const taskId = res.数据.task_id
-          const task = await waitForTask(taskId, 300000, 3000)
+          let preview = ''
+          const task = await streamTask(taskId, chunk => {
+            preview += chunk
+            editChapterForm.content = preview
+          })
           if (task.status === 'done') {
-            const newContent = task.result?.content
+            const newContent = task.result?.content ?? preview
             if (newContent) {
               editChapterForm.content = newContent
+              await fetchDrafts()
+              const chapters = await api.get(`/chapters/novel/${chapterNovel.value.novel_unique_id}`)
+              if (chapters.状态码 === 200) novelChapters.value = chapters.数据
               alert('重新生成成功，内容已更新到编辑区')
             } else {
               alert('重新生成成功，但未能获取内容')
@@ -1464,17 +1519,22 @@ export default {
         router.push('/vip')
         return
       }
+      if (continuing[d.chapter_unique_id]) return
       continuing[d.chapter_unique_id] = true
+      continuationPreviews[d.chapter_unique_id] = ''
       try {
         const res = await api.post(`/chapters/continue/${d.chapter_unique_id}`, null, { params: { word_count: 800 } })
         if (res.状态码 === 200 && res.数据?.task_id) {
           // 异步任务：轮询续写结果
           const taskId = res.数据.task_id
-          const task = await waitForTask(taskId, 300000, 3000)
+          const task = await streamTask(taskId, chunk => {
+            continuationPreviews[d.chapter_unique_id] += chunk
+          })
           if (task.status === 'done') {
             const result = task.result
+            continuationPreviews[d.chapter_unique_id] = result?.continued_text ?? continuationPreviews[d.chapter_unique_id]
             await fetchDrafts()
-            const added = result?.total_word_count || result?.word_count || '?'
+            const added = Array.from(continuationPreviews[d.chapter_unique_id]).length
             alert(`续写成功！新增 ${added} 字`)
           } else if (task.status === 'failed') {
             alert('AI续写失败: ' + task.error)
@@ -1668,7 +1728,8 @@ export default {
 
     return { tab, isVip, isSvip, vipLevel, freeQuota, publishedToday, maxDailyQuota, quotaRemaining, quotaPercent, levelLabel, levelDesc, fetchTodayPublished, novelForm, createError, createSuccess, handleCreateNovel,
       myNovels, fetchMyNovels,
-      showChapterModal, chapterNovel, novelChapters, chapterForm, generating,
+      creationSections, creationIdentitySummary, creationWorldSummary, creationRealmSummary, creationCharacterSummary, creationCompleted, creationProgress,
+      showChapterModal, chapterNovel, novelChapters, chapterForm, generating, generationPreview, generationStatus, generationTitle, generationError, continuationPreviews,
       openChapterModal, generateChapter, authorStyles, fetchAuthorStyles,
       chapterTemplates, fetchChapterTemplates, chapterTemplateGroups,
       selAuthorStyles, selChapterTemplates, selEditAuthorStyles, selEditChapterTemplates,
@@ -1770,6 +1831,46 @@ export default {
 
 /* Form */
 .create-form { max-width: 960px; display: flex; flex-direction: column; gap: 16px; }
+.creation-canvas { max-width: 1040px; gap: 14px; }
+.canvas-intro { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; padding: 10px 4px 18px; }
+.eyebrow { display: block; color: var(--accent-text); font-size: 11px; letter-spacing: .18em; font-weight: 800; margin-bottom: 10px; }
+.canvas-intro h1 { margin: 0; color: var(--text-primary); font-size: clamp(24px, 4vw, 38px); letter-spacing: -.04em; line-height: 1.15; }
+.canvas-intro p { margin: 10px 0 0; color: var(--text-muted); font-size: 14px; }
+.canvas-progress { min-width: 150px; display: flex; flex-direction: column; gap: 6px; color: var(--text-muted); font-size: 12px; text-align: right; }
+.canvas-progress strong { color: var(--text-primary); font-size: 26px; line-height: 1; }
+.canvas-progress i { display: block; width: 150px; height: 5px; overflow: hidden; background: var(--bg-input); border-radius: 10px; }
+.canvas-progress b { display: block; height: 100%; background: var(--brand-gradient); border-radius: inherit; transition: width .35s ease; }
+.canvas-card { position: relative; overflow: hidden; background: color-mix(in srgb, var(--bg-card) 94%, #fff 6%); border: 1px solid var(--border); border-radius: 18px; box-shadow: 0 16px 36px rgba(0, 0, 0, .08); transition: border-color .25s, box-shadow .25s; }
+.canvas-card:hover { border-color: var(--border-hover); box-shadow: 0 18px 42px rgba(0, 0, 0, .12); }
+.canvas-card::after { content: ''; position: absolute; top: 0; right: 0; width: 36%; height: 1px; background: var(--brand-gradient); opacity: .7; }
+.card-heading { width: 100%; display: flex; align-items: center; gap: 12px; padding: 20px 24px; border: 0; background: transparent; color: var(--text-primary); text-align: left; cursor: pointer; }
+.card-index { color: var(--accent-text); font: 800 12px/1 'Courier New', monospace; letter-spacing: .08em; }
+.card-heading .section-icon { font-size: 20px; }
+.card-title { display: flex; flex: 1; flex-direction: column; gap: 4px; }
+.card-title strong { font-size: 16px; }
+.card-title small { color: var(--text-muted); font-size: 12px; font-weight: 400; }
+.card-state { max-width: 180px; overflow: hidden; color: var(--accent-text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.card-toggle { min-width: 34px; color: var(--text-muted); font-size: 12px; text-align: right; }
+.card-body { padding: 0 24px 26px; animation: canvasReveal .25s ease; }
+.canvas-card.collapsed .card-heading { padding-bottom: 20px; }
+@keyframes canvasReveal { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+.identity-layout { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 28px; }
+.identity-fields { min-width: 0; }
+.field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.cover-stage { min-height: 270px; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 16px; border: 1px dashed var(--border-hover); border-radius: 14px; background: linear-gradient(145deg, var(--bg-input), var(--bg-card)); }
+.stage-label { align-self: flex-start; color: var(--text-muted); font: 10px/1 'Courier New', monospace; letter-spacing: .16em; }
+.upload-placeholder { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 190px; color: var(--text-muted); text-align: center; }
+.upload-placeholder span { color: var(--accent-text); font-size: 32px; }
+.upload-placeholder b { color: var(--text-primary); font-size: 15px; }
+.upload-placeholder small { font-size: 11px; }
+.upload-placeholder input { position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; opacity: 0; }
+.cover-stage .image-upload .preview img { max-width: 170px; max-height: 230px; }
+.canvas-footer { padding: 8px 0 18px; }
+.canvas-footer .btn-create { max-width: 360px; }
+.canvas-footer .btn-create span { margin-left: 12px; font-size: 18px; }
+.realm-item { display: grid; grid-template-columns: 34px 1fr auto; align-items: start; gap: 12px; }
+.realm-number { padding-top: 10px; color: var(--accent-text); font: 700 12px/1 'Courier New', monospace; }
+.realm-fields { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .form-section {
   background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px;
   padding: 22px 24px; backdrop-filter: blur(10px);
@@ -1820,6 +1921,12 @@ export default {
 @media (max-width: 720px) {
   .form-two-col { grid-template-columns: 1fr; }
   .create-form { max-width: 100%; }
+  .canvas-intro { align-items: flex-start; flex-direction: column; }
+  .canvas-progress { width: 100%; text-align: left; }
+  .canvas-progress i { width: 100%; }
+  .identity-layout, .field-grid { grid-template-columns: 1fr; }
+  .card-heading, .card-body { padding-left: 16px; padding-right: 16px; }
+  .card-state { display: none; }
 }
 
 /* Image upload */
@@ -1836,14 +1943,17 @@ export default {
 .edit-modal button[type="submit"]:hover { box-shadow: 0 4px 24px var(--border-hover); }
 
 /* Genre tags */
-.genre-select { display: flex; flex-wrap: wrap; gap: 8px; }
-.genre-tag { padding: 6px 16px; border: 1px solid var(--border); border-radius: 20px; cursor: pointer; font-size: 13px; color: var(--text-muted); background: var(--bg-input); transition: all 0.2s; }
+.anti-ai-toggle { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-size: 13px; color: var(--text-muted); cursor: pointer; }
+.anti-ai-toggle input { width: auto; cursor: pointer; }
+.genre-select { display: flex; flex-wrap: wrap; gap: 8px; }.genre-tag { padding: 6px 16px; border: 1px solid var(--border); border-radius: 20px; cursor: pointer; font-size: 13px; color: var(--text-muted); background: var(--bg-input); transition: all 0.2s; }
 .genre-tag:hover { border-color: var(--border-focus); color: var(--accent-text); }
 .genre-tag.active { background: linear-gradient(135deg, var(--border), var(--border-hover)); color: var(--accent-text); border-color: rgba(6,182,212,0.6); box-shadow: 0 0 12px var(--btn-bg); }
 
 /* Realm */
 .realm-item { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; padding: 12px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; }
-.realm-item input { width: 60% !important; }
+.card-realm .realm-fields { width: 100%; }
+.card-realm .realm-fields input { width: 680px; max-width: 100%; box-sizing: border-box; }
+.card-realm .realm-fields textarea { width: 100%; max-width: 100%; height: 220px; min-height: 220px; max-height: 220px; box-sizing: border-box; resize: none; }
 
 /* Character card */
 .char-card { border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 12px; background: var(--bg-input); }
@@ -1898,10 +2008,27 @@ export default {
 .modal-close { position: absolute; top: 14px; right: 20px; font-size: 24px; background: none; border: none; cursor: pointer; color: var(--text-muted); transition: color 0.2s; }
 .modal-close:hover { color: #f87171; }
 .chapter-modal h2 { margin-bottom: 20px; color: var(--text-primary); }
-.chapter-form { margin-bottom: 20px; padding: 20px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 12px; }
-.chapter-form h3 { margin-bottom: 14px; font-size: 15px; color: var(--text-secondary); }
-.chapter-form input { width: 100%; padding: 10px 14px; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; background: var(--bg-input); color: var(--text-primary); }
-.chapter-form input:focus { outline: none; border-color: var(--border-focus); }
+.chapter-modal { max-width: 860px; }
+.chapter-modal h2 { padding-right: 24px; overflow-wrap: anywhere; }
+.chapter-form { display: flex; flex-direction: column; gap: 14px; margin-bottom: 20px; }
+.chapter-form .card-heading { cursor: default; }
+.chapter-form .card-title h3 { margin: 0; font-size: 16px; color: var(--text-primary); }
+.chapter-form .field-grid .form-row { min-width: 0; margin-bottom: 0; }
+.chapter-form .form-row input:not([type="checkbox"]), .chapter-form .form-row textarea { box-sizing: border-box; }
+.chapter-form .form-row textarea { display: block; min-height: 128px; max-width: 100%; line-height: 1.7; font-family: inherit; }
+.chapter-form .anti-ai-toggle { align-items: flex-start; gap: 10px; margin: 18px 0 0; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-input); line-height: 1.6; }
+.chapter-form .anti-ai-toggle input[type="checkbox"] { flex: 0 0 16px; width: 16px; height: 16px; margin: 3px 0 0; padding: 0; accent-color: var(--accent-text); }
+.chapter-form .anti-ai-toggle input:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 3px; }
+.chapter-form .anti-ai-toggle span { min-width: 0; }
+.chapter-form .anti-ai-toggle strong { display: block; color: var(--text-secondary); font-weight: 600; }
+.chapter-form .anti-ai-toggle small { display: block; font-size: 12px; }
+.chapter-style-card { overflow: visible; z-index: 1; }
+@media (max-width: 720px) {
+  .chapter-modal { padding: 24px 16px; width: calc(100% - 24px); box-sizing: border-box; }
+  .chapter-item { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .chapter-main { width: 100%; }
+  .chapter-actions { width: 100%; justify-content: flex-end; }
+}
 .author-style-select { width: 100%; padding: 10px 14px; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; background: var(--bg-input); color: var(--text-primary); }
 .edit-row .author-style-select { width: 580px; margin-bottom: 0; }
 .chapter-btns { display: flex; gap: 10px; margin-top: 4px; }
@@ -1915,8 +2042,11 @@ export default {
 
 .existing-chapters { margin-top: 20px; }
 .existing-chapters h3 { margin-bottom: 12px; font-size: 15px; color: var(--text-secondary); }
-.chapter-item { padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; display: flex; justify-content: space-between; font-size: 13px; color: var(--text-secondary); }
-.chapter-status { color: var(--success-text); font-size: 12px; font-weight: 600; }
+.chapter-item { padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 13px; color: var(--text-secondary); }
+.chapter-main { min-width: 0; display: flex; align-items: center; gap: 14px; flex: 1; }
+.chapter-main > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chapter-status { flex: 0 0 auto; color: var(--success-text); font-size: 12px; font-weight: 600; }
+.chapter-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .btn-delete-chapter {
   background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.25);
   color: var(--error-text); cursor: pointer; font-size: 11px; font-weight: 600;
@@ -2115,6 +2245,21 @@ export default {
 }
 
 /* 生成等待条 */
+.generation-card .draft-header { flex-wrap: wrap; gap: 8px; }
+.generation-card h3, .generation-card .error { overflow-wrap: anywhere; }
+.generation-preview {
+  overflow-wrap: anywhere;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  padding: 12px;
+  margin: 10px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: inherit;
+}
 .generating-waiting-bar {
   display: flex;
   align-items: center;
