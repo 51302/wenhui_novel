@@ -297,8 +297,6 @@ class ChapterService:
         """
         if not memory_body:
             return ""
-        if not summary or (max_chars is not None and len(memory_body) <= max_chars):
-            return memory_body
         sections = re.split(r'\n(?=【)', memory_body)
         dims = {}
         for sec in sections:
@@ -311,6 +309,9 @@ class ChapterService:
         #    场景：AI 重新生成第14章时，Redis 里仍保留着上一版第14章的记忆
         #    （旧条目要到保存后才会被删除），若不过滤，旧剧情会作为记忆注入、
         #    导致重写被旧版本带偏。新章生成时 next_num 之后的条目不存在，无影响。
+        #    必须放在下面的"早退"之前——概要为空（草稿章）或记忆体体积达标时同样要过滤，
+        #    否则这两条捷径会绕过章号过滤，把旧的本章记忆原样注入重写 prompt。
+        filtered = False
         if current_chapter_num and current_chapter_num > 0:
             from app.service.chapter_gen_service import ChapterGenService
             def _line_chapter_num(line: str) -> int:
@@ -319,10 +320,22 @@ class ChapterService:
                     return -1
                 return ChapterGenService._extract_chapter_num(m.group(0))
             for dim in list(dims.keys()):
-                dims[dim] = [
+                kept = [
                     ln for ln in dims[dim]
                     if not (0 < _line_chapter_num(ln) >= current_chapter_num)
                 ]
+                if len(kept) != len(dims[dim]):
+                    filtered = True
+                dims[dim] = kept
+
+        def _render() -> str:
+            return "\n\n".join(
+                f"【{name}】\n" + "\n".join(lines)
+                for name, lines in dims.items() if lines)
+
+        # 无可检索依据（概要为空）或记忆体本身不长 → 全量注入（已完成章号过滤）
+        if not summary or (max_chars is not None and len(memory_body) <= max_chars):
+            return _render() if filtered else memory_body
 
         # 1. 实体名提取（行首字段，去掉 [第X章 标题] 前缀）
         #    注意章号可能是汉字数字（第一章/第二章…），必须用 [^\]]* 兼容标题；
@@ -579,6 +592,30 @@ class ChapterService:
             if capped != old:
                 r.hset(key, cat, capped)
                 system_logger.info(f"[记忆体治理] {cat}: {len(old)} → {len(capped)} 字符")
+
+    @staticmethod
+    def _ensure_chapter_markers(text: str, marker: str) -> str:
+        """给缺少章节标记的条目行补上 ``[第N章]`` 前缀（幂等）。
+
+        记忆体里有三处逻辑依赖 ``[第N章]`` 标记：
+        - ``ChapterGenService.count_sources`` 统计 Redis 章节数（三源一致性）
+        - ``_retrieve_relevant_memory`` 按当前章节号过滤旧条目
+        - ``_remove_from_dimension`` 重写章节时清除该章旧记忆
+
+        增量提取（章节正文生成/重写的主路径）走的是 AI 自由文本，提示词无法保证
+        标记格式，因此在这里由代码兜底补全；已有标记的行原样保留。
+        """
+        if not marker:
+            return text
+        out = []
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if not re.match(r'^\[第', line):
+                line = marker + line
+            out.append(line)
+        return "\n".join(out)
 
     @staticmethod
     def _append_to_dimension(novel_unique_id: str, category: str, new_text: str):
@@ -1185,6 +1222,13 @@ class ChapterService:
             return
 
         # 解析并按维度追加
+        # 章节标记由代码强制补上：count_sources（三源统计）/ 按需检索的章号过滤 /
+        # _remove_from_dimension（重写时清旧记忆）都依赖 [第N章] 标记，
+        # 而增量提取的提示词只要求标「本章新增」，不能指望模型输出标记。
+        marker = ""
+        chapter_num = ChapterService._chapter_num_from_name(chapter_name)
+        if chapter_num and chapter_num > 0:
+            marker = f"[第{chapter_num}章] "
         sections = re.split(r'\n(?=【)', result)
         for sec in sections:
             m = re.match(r'【(.+?)】\s*\n?(.*)', sec, re.DOTALL)
@@ -1198,6 +1242,7 @@ class ChapterService:
             # 用统一维度映射匹配
             matched = match_ai_label_to_dimension(ai_cat)
             if matched:
+                new_content = ChapterService._ensure_chapter_markers(new_content, marker)
                 ChapterService._append_to_dimension(novel_unique_id, matched, new_content)
                 system_logger.info(f"[记忆体] 增量追加 {matched}: +{len(new_content)} 字符")
             else:
@@ -1701,29 +1746,44 @@ class ChapterService:
     @staticmethod
     async def _refresh_memory_after_generate(novel_unique_id: str, db: Session = None,
                                               chapter_content: str = "", chapter_name: str = "",
-                                              chapter_summary: str = "", is_regenerate: bool = False):
-        """AI生成章节后，更新记忆体
+                                              chapter_summary: str = "", is_regenerate: bool = False) -> bool:
+        """AI生成章节后，更新记忆体；返回是否**确实写入了新记忆**。
 
         - is_regenerate=False（新章节）：增量追加，只调用1次API
-        - is_regenerate=True（重新生成）：移除当前章节旧记忆后增量更新
+        - is_regenerate=True（重新生成）：快照旧记忆 → 移除当前章节旧记忆 → 增量更新；
+          若增量提取没有产出任何新内容，则回滚快照。
+
+        为什么重写要回滚：重写是"先删本章旧记忆、再增量提取"。AI 提取失败/返回空时，
+        本章记忆就被删掉了却没有任何替代，Redis 会少一章（三源不一致），且这一章
+        后续生成时再也拿不到自己的前情。历史真实数据里已出现过"净删除、未回填"。
         """
         if not chapter_content:
             # 无内容时走全量重建（兜底）
             await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
-            return
+            return bool(ChapterService._load_memory(novel_unique_id))
         if is_regenerate:
             chapter_num = ChapterService._chapter_num_from_name(chapter_name)
+            snapshot = ChapterService._load_memory(novel_unique_id)
             for category in get_memory_category_names():
                 ChapterService._remove_from_dimension(
                     novel_unique_id, category, chapter_name, chapter_num
                 )
+            after_removal = ChapterService._load_memory(novel_unique_id)
             await ChapterService._incremental_memory_update(
                 novel_unique_id, db, chapter_content, chapter_name, chapter_summary
             )
-        else:
-            await ChapterService._incremental_memory_update(
-                novel_unique_id, db, chapter_content, chapter_name, chapter_summary
-            )
+            if ChapterService._load_memory(novel_unique_id) != after_removal:
+                return True
+            # 提取失败/无新增 → 回滚，避免本章记忆被清空后无替代
+            system_logger.warning(
+                f"[记忆体] {chapter_name} 重写后未产出新增记忆，回滚旧记忆快照")
+            ChapterService._save_memory(novel_unique_id, snapshot)
+            return False
+        before = ChapterService._load_memory(novel_unique_id)
+        await ChapterService._incremental_memory_update(
+            novel_unique_id, db, chapter_content, chapter_name, chapter_summary
+        )
+        return ChapterService._load_memory(novel_unique_id) != before
 
     @staticmethod
     async def _extract_with_light_prompt(content: str, novel_genre: str = "") -> dict:
@@ -3134,15 +3194,18 @@ class ChapterService:
                 system_logger.info(f"[发布-验证] 记忆体写入 {dim_cat}: +{len(natural)}字")
 
             # ====== 独立验证：逐个维度读回 ======
+            chapter_num = ChapterGenService.chapter_no(chapter) or \
+                ChapterService._chapter_num_from_name(chapter_name)
             if saved_count == 0:
-                # 前端未传提取字段 → 先检查 Redis 是否已有完整记忆体（regenerate/生成后已更新则跳过）
-                existing_memory = ChapterService._load_memory(novel_unique_id)
-                if existing_memory and any(len(v) > 0 for v in existing_memory.split("\n") if v.strip()):
+                # 前端未传提取字段 → Redis 已存在「本章」记忆条目则跳过AI提取。
+                # 必须按本章章节号判断，不能只看记忆体 hash 是否非空：
+                # 否则记忆体里只有前几章内容时，本章也会被判定"三源齐全"而发布。
+                if chapter_num > 0 and chapter_num in ChapterGenService._redis_chapter_nums(novel_unique_id):
                     t3_ok = True
-                    system_logger.info("[发布-验证] ✅ 记忆体已有完整数据，跳过后台AI提取")
+                    system_logger.info(f"[发布-验证] ✅ Redis 已有第{chapter_num}章记忆条目，跳过AI提取")
                 else:
-                    # Redis记忆体缺失 → 同步执行AI提取（不后台，确保三源一致）
-                    system_logger.info("[发布-验证] 记忆体缺失，同步执行AI维度提取")
+                    # Redis 缺本章记忆 → 同步执行AI提取（不后台，确保三源一致）
+                    system_logger.info(f"[发布-验证] Redis 缺第{chapter_num}章记忆，同步执行AI维度提取")
                     try:
                         import asyncio
                         loop = asyncio.new_event_loop()
@@ -3152,13 +3215,13 @@ class ChapterService:
                             ))
                         finally:
                             loop.close()
-                        # 同步提取完成后，执行三源校验确保一致
-                        counts = ChapterGenService.count_sources(novel_unique_id, db)
-                        if counts.get("consistent", False):
+                        # 同步提取完成后，按章节号校验本章记忆确实入库
+                        if chapter_num > 0 and chapter_num in ChapterGenService._redis_chapter_nums(novel_unique_id):
                             t3_ok = True
-                            system_logger.info("[发布-验证] ✅ 同步AI提取完成，三源校验通过")
+                            system_logger.info(f"[发布-验证] ✅ 同步AI提取完成，第{chapter_num}章记忆已入库")
                         else:
-                            system_logger.error(f"[发布-验证] ❌ 同步AI提取完成，但三源校验不通过: {counts}")
+                            system_logger.error(
+                                f"[发布-验证] ❌ 同步AI提取完成，但 Redis 仍无第{chapter_num}章记忆条目")
                     except Exception as e:
                         system_logger.error(f"[发布-验证] ❌ 同步AI提取失败: {e}")
             elif not (r and r.ping()):
@@ -3215,6 +3278,23 @@ class ChapterService:
                 except Exception as re:
                     system_logger.error(f"[发布-验证] 回滚阶段2 失败: {re}")
             return fail(f"章节发布失败：记忆体写入异常 - {str(e)}", code=500)
+
+        if not t3_ok:
+            # 三源必须都在才允许发布：txt / MySQL 已写入但 Redis 记忆体没就绪时中止并回滚，
+            # 否则会出现"已发布但记忆体缺本章"，后续生成拿不到本章前情、三源永久不一致。
+            system_logger.error("[发布-验证] ❌ Redis 记忆体未就绪（缺本章条目），发布中止")
+            if t1_ok and chapter_file and os.path.exists(chapter_file):
+                try: os.remove(chapter_file)
+                except Exception: pass
+                system_logger.info("[发布-验证] 回滚阶段1: 已删除txt文件")
+            if t2_ok:
+                try:
+                    ChapterDAO.update(db, chapter, is_published=0)
+                    db.commit()
+                    system_logger.info("[发布-验证] 回滚阶段2: MySQL is_published 已回滚为0")
+                except Exception as re:
+                    system_logger.error(f"[发布-验证] 回滚阶段2 失败: {re}")
+            return fail("章节发布失败：Redis 记忆体未写入本章条目", code=500)
 
         # ============================================================
         # 三阶段全部成功 → 发布到作品圈 + 清缓存

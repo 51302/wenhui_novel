@@ -49,6 +49,79 @@ def _log_memory_breakdown(memory_body: str, tag: str = ""):
         f"[记忆体-调用前] {tag} 共{len(parts)}个维度 | {' | '.join(parts)} | 总计={total}字")
 
 
+def _spawn_memory_refresh(novel_unique_id: str, content: str, chapter_name: str,
+                          summary: str, is_regenerate: bool,
+                          placeholder_marker: str = "") -> None:
+    """在独立线程中执行章节记忆提取（不阻塞生成主流程）。
+
+    为什么不能用 asyncio.create_task：worker 走 run_async → loop.run_until_complete()
+    + loop.close()，主协程结束后 pending 的后台任务会被直接丢弃，记忆提取实际从未执行，
+    Redis 里只剩三源校验写入的占位标记（实测确认）。
+
+    为什么不能复用调用方 session：worker 返回后立刻 db.close()，线程里再用会报
+    session 已关闭。这里自建 SessionLocal，线程结束后自行关闭。
+
+    placeholder_marker：新章节保存时写入的兜底标记。只有 AI 提取**确实写入了本章维度**
+    才删；提取失败时保留，保证"三源校验通过"之后 Redis 里仍然有本章条目
+    （否则校验时看到的是占位、校验后占位又被删掉，Redis 会变成缺本章）。
+    """
+    def _run():
+        import asyncio
+        from app.models.base import SessionLocal
+        from app.service.chapter_service import ChapterService
+        db = SessionLocal()
+        try:
+            written = asyncio.run(ChapterService._refresh_memory_after_generate(
+                novel_unique_id, db, content, chapter_name, summary,
+                is_regenerate=is_regenerate))
+            system_logger.info(
+                f"[记忆提取] 后台线程完成: {chapter_name} | 写入={'是' if written else '否'}")
+            if placeholder_marker:
+                if written:
+                    # 真实维度已写入 → 精确删掉兜底占位那一行（不影响 AI 提取出的章节条目）
+                    _drop_marker_line(novel_unique_id, placeholder_marker)
+                else:
+                    system_logger.warning(
+                        f"[记忆提取] AI 未产出本章维度，保留兜底标记（Redis 仍视为本章已入库）: "
+                        f"{placeholder_marker[:80]}")
+        except Exception as e:
+            system_logger.warning(f"[记忆提取] 后台线程失败: {chapter_name}: {e}")
+        finally:
+            db.close()
+
+    import threading
+    threading.Thread(
+        target=_run, daemon=True, name="memory-refresh").start()
+
+
+def _drop_marker_line(novel_unique_id: str, marker: str) -> None:
+    """从【关键事件】维度精确删除指定的兜底占位行（只删完全相等的行）。"""
+    try:
+        from app.service.chapter_service import ChapterService, get_memory_category_names
+        import app.utils.redis_cache as redis_mod
+        r = redis_mod.redis_client
+        if not r or not r.ping():
+            return
+        cats = get_memory_category_names()
+        cat = "关键事件" if "关键事件" in cats else (cats[0] if cats else None)
+        if not cat:
+            return
+        key = ChapterService._memory_key(novel_unique_id)
+        cur = r.hget(key, cat)
+        if not cur:
+            return
+        cur_s = cur.decode("utf-8", errors="ignore") if isinstance(cur, bytes) else cur
+        target = marker.strip()
+        lines = [ln for ln in cur_s.split("\n") if ln.strip() and ln.strip() != target]
+        new_s = "\n".join(lines).strip()
+        if new_s != cur_s.strip():
+            r.hset(key, cat, new_s)
+            m = re.match(r'^\[([^\]]*)\]', target)
+            system_logger.info(f"[记忆体] 已用真实维度替换兜底占位标记: {m.group(1) if m else ''}")
+    except Exception as e:
+        system_logger.warning(f"[记忆体] 清理兜底占位标记失败: {e}")
+
+
 class ChapterGenState(TypedDict, total=False):
     """章节生成共享状态（LangGraph State）
 
@@ -89,6 +162,7 @@ class ChapterGenState(TypedDict, total=False):
     prompt: str
     skill_prompt: str
     selected_skills: list
+    effective_skills: list
     skill_versions: dict
     generated_text: str
     clean_stats: dict
@@ -342,7 +416,9 @@ async def node_build_prompt(state: dict) -> dict:
     )
     system_logger.info(
         f"[Skill选择] anti_ai={state.get('use_anti_ai', True)} "
-        f"selected={skill_result.skill_ids} versions={skill_result.versions}"
+        f"selected={skill_result.skill_ids} "
+        f"effective={skill_result.effective_ids} "
+        f"dropped={skill_result.dropped_ids} versions={skill_result.versions}"
     )
     return {
         "settings": settings,
@@ -350,6 +426,7 @@ async def node_build_prompt(state: dict) -> dict:
         "prompt": prompt,
         "skill_prompt": skill_result.prompt,
         "selected_skills": list(skill_result.skill_ids),
+        "effective_skills": list(skill_result.effective_ids),
         "skill_versions": skill_result.versions,
     }
 
@@ -608,19 +685,10 @@ async def _save_chapter_content(state: dict, chapter, content: str, is_regenerat
         r.delete_pattern(f"chapters:novel:{novel_unique_id}:*")
         r.delete(f"chapters:drafts:user:{chapter.user_id}")
 
-        # 记忆提取改为后台异步执行（不阻塞任务完成，可节省30~120s）
+        # 记忆提取参数先备好；真正的提取放到三源校验通过后由独立线程执行
+        # （见 _spawn_memory_refresh：create_task 会被 run_async 的 loop.close 丢弃）
         _summary = state.get("summary") or getattr(chapter, "chapter_summary", "") or ""
-        _db = state["db"]
         _cname = chapter.chapter_name
-        async def _bg_memory_refresh():
-            try:
-                await ChapterService._refresh_memory_after_generate(
-                    novel_unique_id, _db, content, _cname, _summary, is_regenerate=is_regenerate)
-                system_logger.info(f"[记忆提取] 后台完成: {_cname}")
-            except Exception as e:
-                system_logger.warning(f"[记忆提取] 后台失败: {_cname}: {e}")
-        import asyncio
-        asyncio.create_task(_bg_memory_refresh())
 
         chapter_num = ChapterGenService.chapter_no(chapter)
         if chapter_num <= 0:
@@ -643,6 +711,7 @@ async def _save_chapter_content(state: dict, chapter, content: str, is_regenerat
                 break
 
         # 如果AI增量提取失败导致Redis无本章记忆条目，回写最小标记保底
+        placeholder_marker = ""
         if not redis_exists:
             fallback_summary = state.get("summary") or getattr(chapter, "chapter_summary", "") or ""
             fallback_marker = f"[{chapter.chapter_name}] {fallback_summary}" if fallback_summary else f"[{chapter.chapter_name}] 本章内容已生成。"
@@ -651,6 +720,7 @@ async def _save_chapter_content(state: dict, chapter, content: str, is_regenerat
             target_cat = "关键事件" if "关键事件" in cats else (cats[0] if cats else None)
             if target_cat:
                 ChapterService._append_to_dimension(novel_unique_id, target_cat, fallback_marker)
+                placeholder_marker = fallback_marker
                 system_logger.warning(f"[三源保底] AI记忆提取未写入，已回写最小标记到 [{target_cat}]: {fallback_marker[:80]}")
             # 重新读取确认写入成功
             memory_values = r.hgetall(memory_key)
@@ -678,6 +748,10 @@ async def _save_chapter_content(state: dict, chapter, content: str, is_regenerat
         if missing:
             raise RuntimeError(
                 f"章节三源保存校验失败，chapter_unique_id={chapter_unique_id}，缺失：{'、'.join(missing)}")
+
+        # 三源校验通过 → 记忆提取交给独立线程真正执行（不阻塞主流程，也不用已关闭的 session）
+        _spawn_memory_refresh(novel_unique_id, content, _cname, _summary,
+                              is_regenerate, placeholder_marker)
     except Exception:
         if os.path.exists(temp_file):
             os.remove(temp_file)
@@ -832,6 +906,7 @@ async def node_load_existing(state: dict) -> dict:
         "cur_num": cur_num,
         "skill_prompt": skill_result.prompt,
         "selected_skills": list(skill_result.skill_ids),
+        "effective_skills": list(skill_result.effective_ids),
         "skill_versions": skill_result.versions,
     }
 
@@ -1038,5 +1113,6 @@ async def run_chapter_gen(state: dict) -> dict:
         "word_count": result.get("actual_word_count", 0),
         "content": result.get("generated_text", ""),
         "skills": result.get("selected_skills", []),
+        "effective_skills": result.get("effective_skills", []),
         "skill_versions": result.get("skill_versions", {}),
     }, f"{result.get('title', '')} 章节内容生成成功")
