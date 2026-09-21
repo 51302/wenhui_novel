@@ -345,7 +345,7 @@ class ChapterService:
         for dim in ("人物", "组织势力", "功法技能法宝", "关键物品", "地点"):
             for line in dims.get(dim, []):
                 name = re.sub(r'^\[[^\]]*\]\s*', '', line)
-                name = re.split(r'[，,|:：/。\s]', name, 1)[0].strip()
+                name = re.split(r'[，,|:：/。\s]', name, maxsplit=1)[0].strip()
                 name = re.sub(r'[（(].*$', '', name).strip()  # 去括号修饰（筛选场（二级））
                 name = name.strip('"“”《》')
                 if name and 1 < len(name) <= 20:
@@ -370,7 +370,7 @@ class ChapterService:
             clean = re.sub(r'^\[[^\]]*\]\s*', '', line)
             for h in hit:
                 if h in clean:
-                    parts = re.split(r'[：:]', clean, 1)
+                    parts = re.split(r'[：:]', clean, maxsplit=1)
                     if len(parts) > 1:
                         rel_text = parts[1]
                         for en in entity_names:
@@ -979,11 +979,17 @@ class ChapterService:
                                             content: str, chapter_name: str, chapter_summary: str):
         """章节内容修改后重建记忆体：先清旧→AI提取→写入新"""
         # 1. 清除该章节的所有旧记忆条目
+        #    必须带上 chapter_num：记忆体条目有两种标记风格——增量提取写的 "[第14章] xxx"
+        #    和发布/重建路径写的 "[第十四章 标题] xxx"，只按章节名匹配会漏掉前者，
+        #    导致编辑保存后旧记忆残留、与新提取内容重复。
+        old_chapter_num = ChapterService._chapter_num_from_name(old_chapter_name)
         for cat in get_memory_category_names():
             if cat == "作品设定":
                 continue
-            ChapterService._remove_from_dimension(novel_unique_id, cat, old_chapter_name)
-        system_logger.info(f"[记忆体重建] 已清除 {old_chapter_name} 旧条目")
+            ChapterService._remove_from_dimension(
+                novel_unique_id, cat, old_chapter_name, old_chapter_num)
+        system_logger.info(
+            f"[记忆体重建] 已清除 {old_chapter_name}（第{old_chapter_num}章）旧条目")
 
         # 2. 用 AI 重新提取
         info_data = {}
@@ -1691,7 +1697,9 @@ class ChapterService:
                     return name, {d: [] for d in get_memory_category_names()}
                 info_data = {}
                 try:
-                    _el2 = cfg("ai.api_params.extract_light", {})
+                    # 统一用 ai.api_params.extract（config.yaml 里不存在 extract_light，
+                    # 原来读它会静默回退到硬编码 3000 tokens，提取易被截断）
+                    _el2 = cfg("ai.api_params.extract", {})
                     prompt = LIGHT_EXTRACT_PROMPT.replace("{content}", content[-5000:]).replace("{novel_genre}", _novel_genre)
                     text, err = await chat_completion(
                         messages=[

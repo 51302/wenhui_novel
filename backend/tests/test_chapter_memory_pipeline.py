@@ -274,6 +274,28 @@ class ChapterMemoryPipelineTests(unittest.TestCase):
         self.assertNotIn("[第14章]", out)
         self.assertIn("[第1章]", out)
 
+    def test_remove_from_dimension_clears_both_marker_styles(self):
+        """编辑保存/重写清除本章记忆时，两种标记风格都要能被删掉。
+
+        记忆体条目有两种写法：增量提取的 "[第14章] xxx"（阿拉伯数字）与发布/重建路径的
+        "[第十四章 标题] xxx"（中文数字）。只按章节名匹配会漏掉前者，
+        因此调用方必须同时传 chapter_num（_rebuild_memory_for_chapter 已修）。
+        """
+        CS = chapter_service.ChapterService
+        CS._append_to_dimension(
+            self.novel_id, "关键事件",
+            "[第14章] 增量提取写的本章事件\n[第1章] 第一章事件")
+        CS._append_to_dimension(
+            self.novel_id, "关键事件",
+            "[第十四章 暗河尽头] 发布路径写的本章事件")
+
+        CS._remove_from_dimension(self.novel_id, "关键事件", "第十四章 暗河尽头", 14)
+
+        memory = CS._load_memory(self.novel_id)
+        self.assertNotIn("增量提取写的本章事件", memory)
+        self.assertNotIn("发布路径写的本章事件", memory)
+        self.assertIn("第一章事件", memory)
+
     # ---------- 3. 重写记忆体的快照回滚 ----------
 
     def test_regenerate_rolls_back_when_extraction_writes_nothing(self):
