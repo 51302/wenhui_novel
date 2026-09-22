@@ -79,7 +79,10 @@
               </div>
             </header>
 
-            <article class="chapter-body" v-html="formattedContent"></article>
+            <article class="chapter-body" lang="zh-CN" aria-label="章节正文">
+              <p v-for="(paragraph, index) in formattedParagraphs"
+                 :key="`${currentChapterId}-${index}`">{{ paragraph }}</p>
+            </article>
 
             <!-- 章节导航 -->
             <nav class="chapter-nav">
@@ -236,13 +239,13 @@ export default {
       return null
     })
 
-    const formattedContent = computed(() => {
-      if (!currentChapter.value || !currentChapter.value.content) return ''
-      return currentChapter.value.content
-        .split('\n')
-        .filter(line => line.trim())
-        .map(line => `<p>${line}</p>`)
-        .join('')
+    const formattedParagraphs = computed(() => {
+      // 保留原文段落，不按句号拆散对话；缩进统一交给 CSS，避免双重缩进。
+      const content = currentChapter.value?.content || ''
+      return content
+        .split(/\r\n|[\n\r\u2028\u2029]/u)
+        .map(paragraph => paragraph.trim())
+        .filter(Boolean)
     })
 
     // 显示章节序号
@@ -456,7 +459,7 @@ export default {
     return {
       novel, allChapters, publishedChapters, filteredChapters,
       currentChapter, currentChapterId, prevChapter, nextChapter,
-      openChapter, formattedContent, inBookshelf, toggleBookshelf,
+      openChapter, formattedParagraphs, inBookshelf, toggleBookshelf,
       vipModalShow, showVipModal, closeVipModal, goVip, isVip,
       onContextMenu, onCopy, onSelectStart, onBeforeSelect,
       searchKeyword, sortOrder, toggleSortOrder,
@@ -766,7 +769,11 @@ export default {
 
 /* 章节内容 */
 .chapter-content {
-  padding: 36px 40px 60px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 44px 48px 64px;
 }
 .chapter-header {
   text-align: center;
@@ -775,6 +782,7 @@ export default {
   border-bottom: 1px solid var(--border);
 }
 .chapter-title {
+  font-family: "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", SimSun, serif;
   font-size: 24px;
   font-weight: 700;
   color: var(--text-primary);
@@ -785,25 +793,36 @@ export default {
   font-size: 12px;
   color: var(--text-muted);
 }
-.chapter-body p {
-  font-size: 16px;
+.chapter-body {
+  font-family: "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", SimSun, serif;
+  font-size: 18px;
   line-height: 2;
-  color: var(--text-secondary);
-  text-indent: 2em;
-  margin: 0 0 16px 0;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+  word-break: normal;
+  line-break: strict;
 }
+.chapter-body p {
+  text-indent: 2em;
+  text-align: justify;
+  text-align-last: left;
+  margin: 0 0 0.85em;
+  orphans: 2;
+  widows: 2;
+}
+.chapter-body p:last-child { margin-bottom: 0; }
 
 /* 字号 */
-.font-size-xs .chapter-body p { font-size: 14px; }
-.font-size-sm .chapter-body p { font-size: 15px; }
-.font-size-md .chapter-body p { font-size: 16px; }
-.font-size-lg .chapter-body p { font-size: 18px; }
-.font-size-xl .chapter-body p { font-size: 20px; }
+.font-size-xs .chapter-body { font-size: 14px; }
+.font-size-sm .chapter-body { font-size: 16px; }
+.font-size-md .chapter-body { font-size: 18px; }
+.font-size-lg .chapter-body { font-size: 20px; }
+.font-size-xl .chapter-body { font-size: 22px; }
 
 /* 行距 */
-.line-height-tight .chapter-body p { line-height: 1.6; }
-.line-height-normal .chapter-body p { line-height: 2; }
-.line-height-relaxed .chapter-body p { line-height: 2.4; }
+.line-height-tight .chapter-body { line-height: 1.7; }
+.line-height-normal .chapter-body { line-height: 2; }
+.line-height-relaxed .chapter-body { line-height: 2.4; }
 
 /* 章节导航 */
 .chapter-nav {
@@ -916,6 +935,25 @@ export default {
 .btn-confirm:hover { box-shadow: 0 6px 24px rgba(245,158,11,0.45); transform: translateY(-1px); }
 
 /* 响应式 */
+@media (max-width: 600px) {
+  /* 目录放到正文上方，避免窄屏被固定宽度侧栏挤成细列。 */
+  .reader-body { flex-direction: column; }
+  .chapter-sidebar {
+    width: 100%;
+    min-height: 0;
+    max-height: 220px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .reader-body.sidebar-hidden .chapter-sidebar { display: none; }
+  .chapter-content { padding: 28px 20px 44px; }
+  .chapter-header { margin-bottom: 28px; padding-bottom: 20px; }
+  .chapter-title { font-size: 22px; }
+  .chapter-nav { gap: 8px; margin-top: 36px; }
+  .nav-btn { min-width: 0; gap: 4px; padding: 12px 8px; }
+  .nav-arrow { width: 16px; }
+}
+
 @media (max-width: 900px) {
   .sidebar {
     position: fixed;
