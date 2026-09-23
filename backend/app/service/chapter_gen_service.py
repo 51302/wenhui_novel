@@ -183,7 +183,7 @@ class ChapterGenService:
         - mysql: 全部章节（含草稿）→ chapters=[{"num":章节号,"id":chapter_unique_id}]（按章节号去重、升序）+ count
         - txt:   章节 TXT 文件名 → chapters=[{"num":章节号,"id":文件名中的唯一ID}] + count
         - redis: 记忆体 [第X章…] 条目 → chapters=[章节号列表] + count
-        - consistent: mysql.count == txt.count == redis.count → 一致可走生成路线
+        - consistent: 三个数据源的章节号集合完全相同 → 一致可走生成路线
         """
         mysql_info = {"count": 0, "chapters": []}
         try:
@@ -221,10 +221,14 @@ class ChapterGenService:
         except Exception as e:
             system_logger.error(f"[三源统计] Redis 章节统计失败: {e}")
 
-        consistent = (mysql_info["count"] == txt_info["count"] == redis_info["count"])
+        mysql_nums = {item["num"] for item in mysql_info["chapters"]}
+        txt_nums = {item["num"] for item in txt_info["chapters"]}
+        redis_nums = set(redis_info["chapters"])
+        consistent = mysql_nums == txt_nums == redis_nums
         system_logger.info(
             f"[三源统计] novel={novel_unique_id} MySQL={mysql_info['count']} "
             f"TXT={txt_info['count']} Redis={redis_info['count']} "
+            f"章节集合={mysql_nums}/{txt_nums}/{redis_nums} "
             f"→ {'一致，可走生成' if consistent else '不一致，需修复'}"
         )
         return {
@@ -252,6 +256,8 @@ class ChapterGenService:
         for _, val in all_data.items():
             if not val:
                 continue
+            if isinstance(val, bytes):
+                val = val.decode("utf-8", errors="ignore")
             # 条目格式：[第三十一章 初步了解仙界] 内容 / [第31章] 1. xxx
             for m in re.finditer(r'\[(第[^]]*章[^]]*)\]', val):
                 n = ChapterGenService._extract_chapter_num(m.group(1))

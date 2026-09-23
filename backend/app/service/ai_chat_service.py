@@ -8,6 +8,9 @@ from app.utils.logger import system_logger
 
 async def chat_completion_stream(messages: list, model: str, max_tokens: int, timeout: int = 180,
                                  on_chunk=None, **params) -> tuple:
+    api_key = (deepseek_api_key() or "").strip()
+    if not api_key:
+        return "", "未配置模型 API Key，请在服务环境中设置 DEEPSEEK_API_KEY 后重新创建服务容器", None
     text_parts = []
     usage = None
     try:
@@ -15,7 +18,7 @@ async def chat_completion_stream(messages: list, model: str, max_tokens: int, ti
             async with client.stream(
                 "POST", deepseek_base_url(),
                 headers={
-                    "Authorization": f"Bearer {deepseek_api_key()}",
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
                 json={"model": model, "messages": messages, "max_tokens": max_tokens,
@@ -66,12 +69,15 @@ async def chat_completion(messages: list, model: str, max_tokens: int, timeout: 
     usage_dict 格式：{"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
     失败时 usage_dict 为 None；网络异常只发送一次请求并直接返回错误。
     """
+    api_key = (deepseek_api_key() or "").strip()
+    if not api_key:
+        return "", "未配置模型 API Key，请在服务环境中设置 DEEPSEEK_API_KEY 后重新创建服务容器", None
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 deepseek_base_url(),
                 headers={
-                    "Authorization": f"Bearer {deepseek_api_key()}",
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
                 json={

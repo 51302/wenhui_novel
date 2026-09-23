@@ -1038,8 +1038,9 @@ class ChapterService:
             from app.config import get as cfg
             from app.service.ai_chat_service import chat_completion, log_ai_call
             _efs = cfg("ai.api_params.extract", {})
-            # 使用 FULL_EXTRACT_PROMPT 提取更详细的信息，内容不截断
-            extract_content = content if len(content) <= 15000 else content[:7500] + "\n...\n" + content[-7500:]
+            # 续写场景必须把原章节正文与续写正文合并后的全文交给提取器，
+            # 不能用首尾截取，否则中段新增人物、事件和伏笔会丢失。
+            extract_content = content
             _genre = ChapterService._get_novel_genre(novel_unique_id)
             prompt = FULL_EXTRACT_PROMPT.replace("{content}", extract_content).replace("{novel_genre}", _genre)
             efs_msgs = [
@@ -1169,12 +1170,9 @@ class ChapterService:
             await ChapterService._rebuild_memory_from_files(novel_unique_id, db)
             return
 
-        # 截取章节内容（尽量完整，超长取前7500+后7500=15000字）
-        text_len = len(chapter_content)
-        if text_len <= 15000:
-            snippet = chapter_content
-        else:
-            snippet = chapter_content[:7500] + "\n...\n" + chapter_content[-7500:]
+        # 这里的 chapter_content 对续写场景就是“原文 + 续写”的完整正文。
+        # 不能截取首尾，否则中间段落的记忆无法进入 Redis。
+        snippet = chapter_content
 
         chapter_text = f"=== {chapter_name} ==="
         if chapter_summary:
@@ -1777,10 +1775,21 @@ class ChapterService:
                     novel_unique_id, category, chapter_name, chapter_num
                 )
             after_removal = ChapterService._load_memory(novel_unique_id)
-            await ChapterService._incremental_memory_update(
-                novel_unique_id, db, chapter_content, chapter_name, chapter_summary
-            )
-            if ChapterService._load_memory(novel_unique_id) != after_removal:
+            try:
+                await ChapterService._incremental_memory_update(
+                    novel_unique_id, db, chapter_content, chapter_name, chapter_summary
+                )
+            except Exception:
+                # 删除旧记忆后再提取失败，必须恢复旧快照，避免正文与 Redis 脱节。
+                ChapterService._save_memory(novel_unique_id, snapshot)
+                raise
+            current_nums = set()
+            try:
+                from app.service.chapter_gen_service import ChapterGenService
+                current_nums = ChapterGenService._redis_chapter_nums(novel_unique_id)
+            except Exception:
+                pass
+            if chapter_num > 0 and chapter_num in current_nums:
                 return True
             # 提取失败/无新增 → 回滚，避免本章记忆被清空后无替代
             system_logger.warning(
@@ -1791,7 +1800,14 @@ class ChapterService:
         await ChapterService._incremental_memory_update(
             novel_unique_id, db, chapter_content, chapter_name, chapter_summary
         )
-        return ChapterService._load_memory(novel_unique_id) != before
+        if ChapterService._load_memory(novel_unique_id) == before:
+            return False
+        try:
+            from app.service.chapter_gen_service import ChapterGenService
+            chapter_num = ChapterService._chapter_num_from_name(chapter_name)
+            return chapter_num <= 0 or chapter_num in ChapterGenService._redis_chapter_nums(novel_unique_id)
+        except Exception:
+            return False
 
     @staticmethod
     async def _extract_with_light_prompt(content: str, novel_genre: str = "") -> dict:
@@ -3066,6 +3082,49 @@ class ChapterService:
             return fail("章节内容为空，无法发布", code=400)
 
         chapter_file = None  # 阶段1用
+        old_file_exists = False
+        old_file_content = None
+        old_is_published = chapter.is_published
+        old_word_count = chapter.word_count
+        memory_key = ChapterService._memory_key(novel_unique_id)
+        memory_snapshot = None
+
+        def _rollback_publish_state():
+            """恢复发布前的 TXT、MySQL 字段和 Redis Hash，避免三源越回滚越不一致。"""
+            nonlocal memory_snapshot
+            if chapter_file:
+                try:
+                    if old_file_exists:
+                        with open(chapter_file, "w", encoding="utf-8") as rf:
+                            rf.write(old_file_content or "")
+                    elif os.path.exists(chapter_file):
+                        os.remove(chapter_file)
+                except Exception as restore_file_error:
+                    system_logger.error(f"[发布-回滚] TXT恢复失败: {restore_file_error}")
+            try:
+                chapter.is_published = old_is_published
+                chapter.word_count = old_word_count
+                ChapterDAO.update(
+                    db, chapter,
+                    is_published=old_is_published,
+                    word_count=old_word_count,
+                )
+                db.commit()
+            except Exception as restore_db_error:
+                system_logger.error(f"[发布-回滚] MySQL恢复失败: {restore_db_error}")
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            if memory_snapshot is not None:
+                try:
+                    r_restore = _redis()
+                    if r_restore and r_restore.ping():
+                        r_restore.delete(memory_key)
+                        for field, value in memory_snapshot.items():
+                            r_restore.hset(memory_key, field, value)
+                except Exception as restore_memory_error:
+                    system_logger.error(f"[发布-回滚] Redis恢复失败: {restore_memory_error}")
 
         # ============================================================
         # 阶段1：保存 txt 文件 → 写入后独立验证
@@ -3075,6 +3134,10 @@ class ChapterService:
             novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
             os.makedirs(novel_dir, exist_ok=True)
             chapter_file = ChapterService._get_chapter_txt_path(novel_unique_id, chapter_name, chapter_unique_id)
+            old_file_exists = os.path.isfile(chapter_file)
+            if old_file_exists:
+                with open(chapter_file, "r", encoding="utf-8") as old_file:
+                    old_file_content = old_file.read()
 
             with open(chapter_file, "w", encoding="utf-8") as f:
                 f.write(content_to_save)
@@ -3124,9 +3187,7 @@ class ChapterService:
 
             if row is None:
                 system_logger.error(f"[发布-验证] ❌ MySQL SELECT 查不到记录: {chapter_unique_id}")
-                if t1_ok and chapter_file and os.path.exists(chapter_file):
-                    os.remove(chapter_file)
-                    system_logger.info("[发布-验证] 回滚阶段1: 已删除txt文件")
+                _rollback_publish_state()
                 db.rollback()
                 return fail("章节发布失败：数据库记录丢失", code=500)
 
@@ -3138,10 +3199,7 @@ class ChapterService:
                 system_logger.info(f"[发布-验证] ✅ MySQL写入成功 | is_published={db_is_published} | word_count={db_word_count}")
             else:
                 system_logger.error(f"[发布-验证] ❌ MySQL验证失败 | is_published={db_is_published} | word_count={db_word_count}")
-                if t1_ok and chapter_file and os.path.exists(chapter_file):
-                    os.remove(chapter_file)
-                    system_logger.info("[发布-验证] 回滚阶段1: 已删除txt文件")
-                db.rollback()
+                _rollback_publish_state()
                 return fail("章节发布失败：数据库更新验证不通过", code=500)
         except Exception as e:
             system_logger.error(f"[发布-验证] ❌ MySQL阶段异常: {e}")
@@ -3149,10 +3207,7 @@ class ChapterService:
                 db.rollback()
             except:
                 pass
-            if t1_ok and chapter_file and os.path.exists(chapter_file):
-                try: os.remove(chapter_file)
-                except: pass
-                system_logger.info("[发布-验证] 回滚阶段1: 已删除txt文件")
+            _rollback_publish_state()
             return fail(f"章节发布失败：数据库更新异常 - {str(e)}", code=500)
 
         # ============================================================
@@ -3178,6 +3233,7 @@ class ChapterService:
             pre_lengths = {}
             r = _redis()
             if r and r.ping():
+                memory_snapshot = r.hgetall(memory_key) or {}
                 key = ChapterService._memory_key(novel_unique_id)
                 for dim_cat in field_map.values():
                     try:
@@ -3256,17 +3312,7 @@ class ChapterService:
                 if verify_failures:
                     system_logger.error(f"[发布-验证] ❌ 记忆体 验证失败: {verify_failures}")
                     # 回滚阶段1+2
-                    if t1_ok and chapter_file and os.path.exists(chapter_file):
-                        try: os.remove(chapter_file)
-                        except: pass
-                        system_logger.info("[发布-验证] 回滚阶段1: 已删除txt文件")
-                    if t2_ok:
-                        try:
-                            ChapterDAO.update(db, chapter, is_published=0)
-                            db.commit()
-                            system_logger.info("[发布-验证] 回滚阶段2: MySQL is_published 已回滚为0")
-                        except Exception as re:
-                            system_logger.error(f"[发布-验证] 回滚阶段2 失败: {re}")
+                    _rollback_publish_state()
                     return fail(f"章节发布失败：记忆体验证不通过 ({','.join(verify_failures)})", code=500)
                 else:
                     t3_ok = True
@@ -3274,34 +3320,14 @@ class ChapterService:
 
         except Exception as e:
             system_logger.error(f"[发布-验证] ❌ Redis记忆体阶段异常: {e}")
-            if t1_ok and chapter_file and os.path.exists(chapter_file):
-                try: os.remove(chapter_file)
-                except: pass
-                system_logger.info("[发布-验证] 回滚阶段1: 已删除txt文件")
-            if t2_ok:
-                try:
-                    ChapterDAO.update(db, chapter, is_published=0)
-                    db.commit()
-                    system_logger.info("[发布-验证] 回滚阶段2: MySQL is_published 已回滚为0")
-                except Exception as re:
-                    system_logger.error(f"[发布-验证] 回滚阶段2 失败: {re}")
+            _rollback_publish_state()
             return fail(f"章节发布失败：记忆体写入异常 - {str(e)}", code=500)
 
         if not t3_ok:
             # 三源必须都在才允许发布：txt / MySQL 已写入但 Redis 记忆体没就绪时中止并回滚，
             # 否则会出现"已发布但记忆体缺本章"，后续生成拿不到本章前情、三源永久不一致。
             system_logger.error("[发布-验证] ❌ Redis 记忆体未就绪（缺本章条目），发布中止")
-            if t1_ok and chapter_file and os.path.exists(chapter_file):
-                try: os.remove(chapter_file)
-                except Exception: pass
-                system_logger.info("[发布-验证] 回滚阶段1: 已删除txt文件")
-            if t2_ok:
-                try:
-                    ChapterDAO.update(db, chapter, is_published=0)
-                    db.commit()
-                    system_logger.info("[发布-验证] 回滚阶段2: MySQL is_published 已回滚为0")
-                except Exception as re:
-                    system_logger.error(f"[发布-验证] 回滚阶段2 失败: {re}")
+            _rollback_publish_state()
             return fail("章节发布失败：Redis 记忆体未写入本章条目", code=500)
 
         # ============================================================

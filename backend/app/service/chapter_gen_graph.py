@@ -256,7 +256,7 @@ async def node_assign(state: dict) -> dict:
         cur_num = ChapterGenService.chapter_no(chapter)
         if cur_num <= 0:
             return {"error": "章节号解析失败，无法确定上一章"}
-        summary = state.get("chapter_summary") or ""
+        summary = state.get("chapter_summary") or chapter.chapter_summary or ""
         if not summary:
             # 草稿阶段概要不落库（发布后才转入 MySQL）：从 Redis 缓存补充
             try:
@@ -366,7 +366,7 @@ def _select_and_merge_skills(state: dict, novel_unique_id: str, character_cards,
                              summary: str, settings_content: str):
     """按作品/章节上下文选择并合并 Skill（新章生成与续写共用）。
 
-    显式风格 = 章节级 skill_ids + 章节级 author_style + 作品默认 writing_style（继承）；
+    显式风格 = 章节级 skill_ids + 旧版 skills + 章节级 author_style + 作品默认 writing_style（继承）；
     反AI 质量层由 use_anti_ai 门控（默认开）。
     """
     from app.service.chapter_service import ChapterService
@@ -374,6 +374,7 @@ def _select_and_merge_skills(state: dict, novel_unique_id: str, character_cards,
     from app.skills.selector import SkillSelector
     explicit = ",".join(p for p in [
         state.get("skill_ids", "") or "",
+        state.get("skills", "") or "",
         state.get("author_style", "") or "",
         ChapterService._get_novel_writing_style(novel_unique_id),
     ] if p)
@@ -408,7 +409,8 @@ async def node_build_prompt(state: dict) -> dict:
         chapter_summary=state.get("summary", ""),
         word_count=state.get("word_count", 2000),
         include_combat_meme=True,
-        author_style=state.get("author_style", ""),
+        # 作家 Skill 已在 skill_context 中合并；不再通过旧 author_style 参数重复注入。
+        author_style="",
         chapter_template=template,
         character_cards=character_cards,
         recent_duplicate_text=state.get("dup_text", ""),
@@ -645,7 +647,7 @@ async def node_fact_check(state: dict) -> dict:
 async def _save_chapter_content(state: dict, chapter, content: str, is_regenerate: bool = False) -> None:
     from app.dao.chapter_dao import ChapterDAO
     from app.service.chapter_gen_service import ChapterGenService
-    from app.service.chapter_service import ChapterService, _redis
+    from app.service.chapter_service import ChapterService, _redis, get_memory_category_names
 
     novel_unique_id = chapter.novel_unique_id
     chapter_unique_id = chapter.chapter_unique_id
@@ -670,7 +672,25 @@ async def _save_chapter_content(state: dict, chapter, content: str, is_regenerat
     novel_dir = os.path.dirname(chapter_file)
     os.makedirs(novel_dir, exist_ok=True)
     temp_file = f"{chapter_file}.{uuid.uuid4().hex}.tmp"
+    old_file_exists = os.path.isfile(chapter_file)
+    old_file_content = None
+    if old_file_exists:
+        with open(chapter_file, "r", encoding="utf-8") as old_file:
+            old_file_content = old_file.read()
+    old_word_count = getattr(chapter, "word_count", 0)
+    old_memory_snapshot = None
+    r = _redis()
     try:
+        memory_key = ChapterService._memory_key(novel_unique_id)
+        if not r or not r.ping():
+            raise RuntimeError(f"章节保存失败：Redis不可用，chapter_unique_id={chapter_unique_id}")
+        old_memory_snapshot = r.hgetall(memory_key) or {}
+        if is_regenerate:
+            old_num = ChapterService._chapter_num_from_name(chapter.chapter_name)
+            for category in get_memory_category_names():
+                ChapterService._remove_from_dimension(
+                    novel_unique_id, category, chapter.chapter_name, old_num
+                )
         with open(temp_file, "w", encoding="utf-8") as f:
             f.write(content)
             f.flush()
@@ -678,15 +698,13 @@ async def _save_chapter_content(state: dict, chapter, content: str, is_regenerat
         os.replace(temp_file, chapter_file)
         ChapterDAO.update(state["db"], chapter, word_count=len(content))
 
-        r = _redis()
-        if not r or not r.ping():
-            raise RuntimeError(f"章节保存失败：Redis不可用，chapter_unique_id={chapter_unique_id}")
         r.delete(f"chapter:content:{chapter_unique_id}")
         r.delete_pattern(f"chapters:novel:{novel_unique_id}:*")
         r.delete(f"chapters:drafts:user:{chapter.user_id}")
 
-        # 记忆提取参数先备好；真正的提取放到三源校验通过后由独立线程执行
-        # （见 _spawn_memory_refresh：create_task 会被 run_async 的 loop.close 丢弃）
+        # 记忆提取参数先备好。生成/续写/重写必须在返回成功前完成本章记忆
+        # 提取，不能先写占位标记再交给 daemon 线程，否则“Redis存在本章标记”
+        # 会被误判成“Redis完整记忆已保存”。
         _summary = state.get("summary") or getattr(chapter, "chapter_summary", "") or ""
         _cname = chapter.chapter_name
 
@@ -696,44 +714,16 @@ async def _save_chapter_content(state: dict, chapter, content: str, is_regenerat
         if not chapter_num or chapter_num <= 0:
             raise RuntimeError(
                 f"章节三源保存校验失败，chapter_unique_id={chapter_unique_id}，章节号解析失败")
-        memory_key = ChapterService._memory_key(novel_unique_id)
-        memory_values = r.hgetall(memory_key)
-        redis_exists = False
-        for value in memory_values.values():
-            if isinstance(value, bytes):
-                value = value.decode("utf-8", errors="ignore")
-            for chapter_marker in re.findall(r'\[第\s*[一二三四五六七八九十百零\d]+\s*章[^\]]*\]', str(value)):
-                memory_chapter_num = ChapterService._chapter_num_from_name(chapter_marker[1:-1])
-                if memory_chapter_num == chapter_num:
-                    redis_exists = True
-                    break
-            if redis_exists:
-                break
-
-        # 如果AI增量提取失败导致Redis无本章记忆条目，回写最小标记保底
-        placeholder_marker = ""
-        if not redis_exists:
-            fallback_summary = state.get("summary") or getattr(chapter, "chapter_summary", "") or ""
-            fallback_marker = f"[{chapter.chapter_name}] {fallback_summary}" if fallback_summary else f"[{chapter.chapter_name}] 本章内容已生成。"
-            from app.service.chapter_service import get_memory_category_names
-            cats = get_memory_category_names()
-            target_cat = "关键事件" if "关键事件" in cats else (cats[0] if cats else None)
-            if target_cat:
-                ChapterService._append_to_dimension(novel_unique_id, target_cat, fallback_marker)
-                placeholder_marker = fallback_marker
-                system_logger.warning(f"[三源保底] AI记忆提取未写入，已回写最小标记到 [{target_cat}]: {fallback_marker[:80]}")
-            # 重新读取确认写入成功
-            memory_values = r.hgetall(memory_key)
-            for value in memory_values.values():
-                if isinstance(value, bytes):
-                    value = value.decode("utf-8", errors="ignore")
-                for chapter_marker in re.findall(r'\[第\s*[一二三四五六七八九十百零\d]+\s*章[^\]]*\]', str(value)):
-                    memory_chapter_num = ChapterService._chapter_num_from_name(chapter_marker[1:-1])
-                    if memory_chapter_num == chapter_num:
-                        redis_exists = True
-                        break
-                if redis_exists:
-                    break
+        # 同步提取完整正文（续写时 content 已是原文 + 新续写），失败直接阻止保存成功。
+        written = await ChapterService._refresh_memory_after_generate(
+            novel_unique_id, state["db"], content, _cname, _summary,
+            is_regenerate=is_regenerate,
+        )
+        redis_exists = chapter_num in ChapterGenService._redis_chapter_nums(novel_unique_id)
+        if not written or not redis_exists:
+            raise RuntimeError(
+                f"章节三源保存校验失败，chapter_unique_id={chapter_unique_id}，"
+                f"Redis未完成第{chapter_num}章完整记忆提取")
 
         counts = ChapterGenService.count_sources(novel_unique_id, state["db"])
         mysql_exists = any(item.get("id") == chapter_unique_id for item in counts["mysql"]["chapters"])
@@ -749,12 +739,31 @@ async def _save_chapter_content(state: dict, chapter, content: str, is_regenerat
             raise RuntimeError(
                 f"章节三源保存校验失败，chapter_unique_id={chapter_unique_id}，缺失：{'、'.join(missing)}")
 
-        # 三源校验通过 → 记忆提取交给独立线程真正执行（不阻塞主流程，也不用已关闭的 session）
-        _spawn_memory_refresh(novel_unique_id, content, _cname, _summary,
-                              is_regenerate, placeholder_marker)
+        # 记忆提取已在上面同步完成，返回成功即表示三源都已实际校验。
     except Exception:
         if os.path.exists(temp_file):
             os.remove(temp_file)
+        try:
+            if old_file_exists:
+                with open(chapter_file, "w", encoding="utf-8") as old_file:
+                    old_file.write(old_file_content or "")
+            elif os.path.exists(chapter_file):
+                os.remove(chapter_file)
+        except Exception as restore_file_error:
+            system_logger.error(f"[章节保存回滚] TXT恢复失败: {restore_file_error}")
+        try:
+            chapter.word_count = old_word_count
+            ChapterDAO.update(state["db"], chapter, word_count=old_word_count)
+            state["db"].rollback()
+        except Exception as restore_db_error:
+            system_logger.error(f"[章节保存回滚] MySQL恢复失败: {restore_db_error}")
+        try:
+            if old_memory_snapshot is not None:
+                r.delete(memory_key)
+                for field, value in old_memory_snapshot.items():
+                    r.hset(memory_key, field, value)
+        except Exception as restore_memory_error:
+            system_logger.error(f"[章节保存回滚] Redis恢复失败: {restore_memory_error}")
         raise
 
 
@@ -777,6 +786,7 @@ async def node_save(state: dict) -> dict:
             return {"chapter_unique_id": chapter.chapter_unique_id, "actual_word_count": actual_word_count}
 
         fill_row = state.get("fill_row")
+        created_new = False
         if fill_row is not None:
             chapter = fill_row
             old_name = chapter.chapter_name
@@ -790,6 +800,7 @@ async def node_save(state: dict) -> dict:
                 os.remove(old_file)
             chapter_unique_id = chapter.chapter_unique_id
         else:
+            created_new = True
             chapter_unique_id = uuid.uuid4().hex
             chapter = ChapterModel(
                 novel_unique_id=novel_unique_id,
@@ -808,7 +819,16 @@ async def node_save(state: dict) -> dict:
 
         chapter.word_count = actual_word_count
         state["db"].commit()
-        await _save_chapter_content(state, chapter, generated_text)
+        try:
+            await _save_chapter_content(state, chapter, generated_text)
+        except Exception:
+            # 新章的 MySQL 草稿是在保存正文前创建的；三源失败时不能留下孤立记录。
+            if created_new:
+                try:
+                    ChapterDAO.delete(state["db"], chapter_unique_id)
+                except Exception as delete_error:
+                    system_logger.error(f"[章节保存回滚] 新章MySQL记录删除失败: {delete_error}")
+            raise
 
         # 生成正文后：从概要缓存中删除已使用的那条概要
         cached = ChapterService._get_outline_cache(novel_unique_id)

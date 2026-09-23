@@ -344,7 +344,7 @@ class ChapterMemoryPipelineTests(unittest.TestCase):
         self.assertNotIn("旧版第十四章剧情", memory)
 
     def test_new_chapter_reports_false_when_extraction_writes_nothing(self):
-        """新章提取空 → 返回 False，调用方据此保留占位标记。"""
+        """新章提取空 → 返回 False，生成保存不能把占位标记当作成功。"""
         CS = chapter_service.ChapterService
         original = CS._incremental_memory_update
 
@@ -358,6 +358,68 @@ class ChapterMemoryPipelineTests(unittest.TestCase):
         finally:
             CS._incremental_memory_update = original
         self.assertFalse(written)
+
+    def test_regenerate_restores_snapshot_when_extraction_raises(self):
+        """重写提取抛异常时，旧第14章记忆必须恢复。"""
+        CS = chapter_service.ChapterService
+        CS._append_to_dimension(self.novel_id, "关键事件",
+                                "[第14章] 旧版第十四章的关键事件")
+        before = CS._load_memory(self.novel_id)
+        original = CS._incremental_memory_update
+
+        async def _raises(*args, **kwargs):
+            raise RuntimeError("模拟AI提取失败")
+
+        CS._incremental_memory_update = staticmethod(_raises)
+        try:
+            with self.assertRaises(RuntimeError):
+                asyncio.run(CS._refresh_memory_after_generate(
+                    self.novel_id, None, "新版正文" * 50,
+                    "第十四章 暗河尽头", "概要", is_regenerate=True))
+        finally:
+            CS._incremental_memory_update = original
+
+        self.assertEqual(CS._load_memory(self.novel_id), before)
+
+    def test_count_sources_rejects_same_count_with_different_chapters(self):
+        """三源数量相同但章节号集合不同，也必须判定不一致。"""
+        CS = chapter_service.ChapterService
+        original_get = ChapterDAO.get_by_novel_id
+        original_path = chapter_service.NOVEL_DATA_PATH
+        ChapterDAO.get_by_novel_id = staticmethod(
+            lambda db, novel_id: [
+                FakeChapter(chapter_name="第一章 开端", chapter_number=1,
+                            chapter_unique_id="chap-1"),
+                FakeChapter(chapter_name="第二章 发展", chapter_number=2,
+                            chapter_unique_id="chap-2"),
+            ])
+        try:
+            novel_dir = os.path.join(self.data_path, self.novel_id)
+            os.makedirs(novel_dir, exist_ok=True)
+            # TXT 使用第1章和第2章，Redis 故意使用第1章和第3章。
+            for num in (1, 2):
+                with open(os.path.join(novel_dir, f"第{num}章_{'a' * 32}.txt"),
+                          "w", encoding="utf-8") as f:
+                    f.write("正文")
+            self.redis.hset(self.memory_key, "关键事件",
+                            "[第1章] 开端\n[第3章] 错位记忆")
+            counts = ChapterGenService.count_sources(self.novel_id, FakeDB())
+        finally:
+            ChapterDAO.get_by_novel_id = original_get
+            chapter_service.NOVEL_DATA_PATH = original_path
+
+        self.assertEqual(counts["mysql"]["count"], 2)
+        self.assertEqual(counts["txt"]["count"], 2)
+        self.assertEqual(counts["redis"]["count"], 2)
+        self.assertFalse(counts["consistent"])
+
+    def test_redis_chapter_counting_accepts_bytes(self):
+        """Redis 客户端返回 bytes 时，章节号仍应正常解析。"""
+        self.redis.hset(
+            self.memory_key, "关键事件",
+            "[第十四章 暗河尽头] 事件".encode("utf-8")
+        )
+        self.assertEqual(ChapterGenService._redis_chapter_nums(self.novel_id), {14})
 
     # ---------- 4. 发布三源校验 ----------
 
