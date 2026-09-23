@@ -147,7 +147,9 @@ email:
   provider: "resend"
   from_name: "文辉小说"
   from_email: "noreply@wenhui.xyz"
-  resend_api_key: "re_jhua77Mw_9eLeQ7HgGLaYfSxryw72NDDE"
+  # API Key 不放这里：app/config.py 的 get() 里环境变量 RESEND_API_KEY 优先于本文件，
+  # 由 docker-compose 的 RESEND_API_KEY: "${RESEND_API_KEY}" 从宿主机 .env 注入。
+  resend_api_key: ""
 
 sms:
   provider: "zhenzi"           # 短信服务商：zhenzi（榛子云）/ demo（演示模式，不发真实短信）
