@@ -104,6 +104,8 @@ def apply_config_clean(text: str) -> tuple:
     """执行全部 clean 规则，返回 (清洗后文本, {stats_key: 替换次数})。"""
     stats = {}
     for rule in load_rules().get("clean", []):
+        if rule.get("enabled", True) is False:
+            continue
         pat = _compile(rule)
         if not pat:
             continue

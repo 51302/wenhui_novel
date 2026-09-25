@@ -118,7 +118,7 @@ class SkillSelector:
 
         def add(skill_id: str, reason: str) -> None:
             document = documents.get(skill_id)
-            if document is None:
+            if document is None or (document.layer == "quality" and not include_quality):
                 return
             selected[skill_id] = document
             reasons.setdefault(skill_id, []).append(reason)

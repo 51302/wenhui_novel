@@ -13,6 +13,7 @@ async def chat_completion_stream(messages: list, model: str, max_tokens: int, ti
         return "", "未配置模型 API Key，请在服务环境中设置 DEEPSEEK_API_KEY 后重新创建服务容器", None
     text_parts = []
     usage = None
+    finish_reason = None
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream(
@@ -44,6 +45,8 @@ async def chat_completion_stream(messages: list, model: str, max_tokens: int, ti
                         continue
                     usage = data.get("usage") or usage
                     choices = data.get("choices") or []
+                    if choices:
+                        finish_reason = choices[0].get("finish_reason") or finish_reason
                     delta = choices[0].get("delta", {}) if choices else {}
                     chunk = delta.get("content") or ""
                     if chunk:
@@ -51,6 +54,9 @@ async def chat_completion_stream(messages: list, model: str, max_tokens: int, ti
                         if on_chunk:
                             await on_chunk(chunk)
         text = "".join(text_parts).strip()
+        if finish_reason in {"length", "content_filter"}:
+            reason = "达到输出长度上限" if finish_reason == "length" else "内容被安全策略过滤"
+            return "", f"模型生成未完成（finish_reason={finish_reason}：{reason}）", usage
         if not text:
             return "", "模型返回空内容", usage
         return text, "", usage
@@ -67,7 +73,7 @@ async def chat_completion(messages: list, model: str, max_tokens: int, timeout: 
     """调用AI接口，返回 (text, err, usage_dict)。
 
     usage_dict 格式：{"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
-    失败时 usage_dict 为 None；网络异常只发送一次请求并直接返回错误。
+    有用量时失败也返回 usage_dict；网络异常只发送一次请求并直接返回错误。
     """
     api_key = (deepseek_api_key() or "").strip()
     if not api_key:
@@ -101,18 +107,22 @@ async def chat_completion(messages: list, model: str, max_tokens: int, timeout: 
         if not isinstance(choices, list) or not choices:
             err_msg = str(data.get("error", {}).get("message", "未知错误"))
             return "", err_msg, None
-        message = choices[0].get("message")
-        if not isinstance(message, dict):
-            return "", "模型返回内容格式异常", None
-        text = (message.get("content") or "").strip()
-        if not text:
-            return "", "模型返回空内容（可能只输出思考内容）", None
         usage = data.get("usage") or {}
         usage_dict = {
             "prompt_tokens": usage.get("prompt_tokens", 0),
             "completion_tokens": usage.get("completion_tokens", 0),
             "total_tokens": usage.get("total_tokens", 0),
         }
+        finish_reason = choices[0].get("finish_reason")
+        if finish_reason in {"length", "content_filter"}:
+            reason = "达到输出长度上限" if finish_reason == "length" else "内容被安全策略过滤"
+            return "", f"模型生成未完成（finish_reason={finish_reason}：{reason}）", usage_dict
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            return "", "模型返回内容格式异常", usage_dict
+        text = (message.get("content") or "").strip()
+        if not text:
+            return "", "模型返回空内容（可能只输出思考内容）", usage_dict
         return text, "", usage_dict
     except httpx.TimeoutException as e:
         system_logger.error(f"[AI接口] 请求超时: {e}")

@@ -297,28 +297,23 @@ class ChapterGenService:
     @staticmethod
     def get_prev_ending(db, novel_unique_id: str, exclude_chapter_id: str = None,
                         current_chapter_num: int = None):
-        """获取续写锚点与查重文本
-
-        :param current_chapter_num: 当前章节号。传入时取「章节号 < 当前章号」的最近一章
-            （AI 重新生成场景：编辑第45章 → 上一章取第44章）；
-            不传时取已发布最后一章（新章节生成场景）。
-        :return: (last_chapter_ending_500, recent3_for_duplicate, last_chapter_name)
-        - last_chapter_ending_500: 上一章末尾 500 字（从这里接着写）
-        - recent3_for_duplicate:   上一章（含）往前最近 3 章全文拼接（查重检测用）
-        - last_chapter_name:       上一章章节名（日志用）
-        """
         from app.service.chapter_service import ChapterService
+        if current_chapter_num == 1:
+            return "", "", ""
+        if current_chapter_num is not None and current_chapter_num < 1:
+            raise ValueError("章节号必须大于零")
         all_chapters = ChapterDAO.get_by_novel_id(db, novel_unique_id) or []
         published = [
             c for c in all_chapters if c.is_published
             and (exclude_chapter_id is None or c.chapter_unique_id != exclude_chapter_id)
         ]
         if current_chapter_num is not None:
-            # 严格取「章节号 < 当前章号」的章节（编辑第45章 → 上一章是第44章）
             published = [
                 c for c in published
-                if 0 < ChapterGenService.chapter_no(c) < current_chapter_num
+                if ChapterGenService.chapter_no(c) == current_chapter_num - 1
             ]
+            if not published:
+                raise ValueError(f"缺少紧邻前章第{current_chapter_num - 1}章的已发布记录，无法生成正文")
         published.sort(key=ChapterGenService.chapter_sort_key)
 
         ending = ""
@@ -331,6 +326,8 @@ class ChapterGenService:
             full = ChapterService._read_chapter_content_from_file(
                 novel_unique_id, last.chapter_name, last.chapter_unique_id
             )
+            if current_chapter_num is not None and not (full or "").strip():
+                raise ValueError(f"紧邻前章第{current_chapter_num - 1}章正文缺失或为空，无法生成正文")
             if full:
                 ending = full[-500:]
                 system_logger.info(f"[章节生成] 续写锚点：上一章末尾500字（开头: {ending[:80]}...）")
@@ -357,7 +354,8 @@ class ChapterGenService:
                      last_chapter_ending: str, chapter_summary: str, word_count: int,
                      include_combat_meme: bool = True, author_style: str = "",
                      chapter_template: str = "", character_cards: list = None,
-                     recent_duplicate_text: str = "", skill_context: str = "") -> str:
+                     recent_duplicate_text: str = "", skill_context: str = "",
+                     use_anti_ai: bool = True) -> str:
         """组装章节生成 Prompt（提示词工程内容不变）
 
         :param include_combat_meme: 是否包含 战斗写作指南 + 网梗风格指南
@@ -536,22 +534,23 @@ class ChapterGenService:
                 "【上一章结尾（禁止复用）】：\n" + recent_duplicate_text
             )
         # 提示词工程组装：约束分层/冲突裁决/写作流程）→ 各风格指南 → 字数要求 → 自查清单
-        # 字数要求：硬性范围 2000-2500字，写少于此范围或超出都算不达标
         target_words = word_count
-        min_words = 2000
-        # 字数要求放在最前面，确保AI首先看到
-        prompt = f"🔴【最高优先级】本章必须写满 {min_words}-{target_words} 字！这是硬性要求，违反=整章作废！\n\n" + prompt
-        prompt += f"\n\n🔴 本章字数硬性要求：必须写满 {min_words}-{target_words} 字。每个事件展开300-500字，写完概要最后一个事件后，如果字数不足{min_words}字，继续扩写场景细节、角色内心活动、环境氛围、对话交锋，直到达标。绝对不能提前结束。记住：{min_words}字是最低要求，低于这个字数=失败！"
+        prompt = (
+            f"【字数范围】目标 {target_words} 字，正文应尽量落在 {max(1, int(target_words * 0.9))}—{int(target_words * 1.1)} 字；"
+            f"先完整写完所有概要事件，再在已写事件内部补足因果、动作、心理和对话，"
+            f"不能因篇幅删掉最后事件的结果，也不能为凑字数编造新事件或不可逆后果。\n\n"
+        ) + prompt
         # 长文衰减提醒锚点：反 AI 规则在 5000 字后会被模型稀释，此处强制提醒
         # 作用时机：模型读到字数要求时正处于写作起点，提醒会随上下文持续生效到中后段
-        prompt += (
-            "\n\n🔴【长文防衰减提醒】写到 60% 篇幅后回头自查，违反任一项立即调整后续写法："
-            "\n- 比喻密度：全章「像X/跟X似的/仿佛X」不超过 3 处，同一段落不超过 1 处，句式必须错开"
-            "\n- 五感扫描：单个场景禁止视觉+听觉+嗅觉+触觉+味觉全覆盖，只聚焦 1-2 个感官，其余不写"
-            "\n- 推理枚举：人物推理只给结论+1 依据，禁止「结论+反例①②③」枚举式展开"
-            "\n- 判断句排比：禁止连续段落以「是X。」独立成句开头，制造冷峻模板感"
-            "\n- 场景扫描：禁止把房间/空间每个角落都描写一遍，只给 1-2 个关键细节+体感"
-        )
+        if use_anti_ai:
+            prompt += (
+                "\n\n🔴【长文防衰减提醒】写到 60% 篇幅后回头自查，违反任一项立即调整后续写法："
+                "\n- 比喻密度：全章「像X/跟X似的/仿佛X」不超过 3 处，同一段落不超过 1 处，句式必须错开"
+                "\n- 五感扫描：单个场景禁止视觉+听觉+嗅觉+触觉+味觉全覆盖，只聚焦 1-2 个感官，其余不写"
+                "\n- 推理枚举：人物推理只给结论+1 依据，禁止「结论+反例①②③」枚举式展开"
+                "\n- 判断句排比：禁止连续段落以「是X。」独立成句开头，制造冷峻模板感"
+                "\n- 场景扫描：禁止把房间/空间每个角落都描写一遍，只给 1-2 个关键细节+体感"
+            )
         # 固定写作指南（GENERATION_FRAMEWORK / 人物具名 / 人味情感 / 认知边界）
         # 已并入 system prompt 恒定核心，战斗/静态/网感按需指南按概要推荐注入
         # （build_generate_system_prompt），不再注入 user 正文——避免双份注入浪费
@@ -577,11 +576,17 @@ class ChapterGenService:
             f"6. 概要写'发现古卷'→只写发现过程，可以扩写古卷外观、翻开感受、阅读心理，但不能闪回'想起上次...'。\n"
             f"7. 只有概要里明确写了'回忆XX往事'时才能写回忆，而且只能写概要里提到的那段往事。\n"
             f"8. 每写一段前自检：这段内容在概要清单里吗？不在→删除。\n"
-            f"【字数参考】目标 {target_words} 字，上下浮动20%均可。写完清单事件后字数不足，可在已写事件中补充细节，但禁止为凑字数编新剧情。\n"
+            f"【叙事衔接】开头承接上一章结尾的地点、身体与物品状态及当前目标，只推进新动作，不复述上一章已写的过程；第一章不适用。\n"
+            f"【事件因果】同类障碍多次出现时，每次处理都要改变处境、代价或选择，避免同一动作换词重演；伏击、转折和破局必须在发生前或当下给出可见线索，交代行动的触发、限制和结果，只使用概要与既有设定支持的事实，不能编造幕后部署或新能力。\n"
+            f"【状态顺序】严格按概要事件的先后和因果推进。某项合并、获得、损毁或关系变化若属于后续事件的结果，在触发该事件前只能写原有状态或尚未完成的征兆，不得用回忆、旁白或人物判断提前写成已经发生；变化发生后也不得无缘由退回旧状态。写每段前核对人物、物品和能力的当前状态。\n"
+            f"【重复推进】同一完整对白、威胁、解释或情节动作不得在本章再次原句重复；若人物必须回应前一句，只能推进新的信息、选择或代价，不得把同一句台词换场景再说一遍。写完每段后检查与前文是否存在逐字相同的长对白，发现重复就改为新的推进。\n"
+            f"【收束】按事件编号逐项推进，最后一个编号必须在正文中明确落地；先写清它的触发、行动、直接结果和概要已给出的代价，再停笔。不得用环境意象、沉默或一句悬念替代最后结果；概要没有写明的死亡、昏迷、物品损毁、关系决裂、能力获得等不可逆后果一律不得新增。可用本章已经出现、尚未解决的细节留下疑问，不能靠新人物、新危机或下一章事件制造悬念。\n"
+            f"【收尾】写完最后事件的结果后，可在已写事件内部补充细节；若正文尚未达到字数范围，优先补充最后事件的因果和现场反应，禁止为凑字数编新剧情。\n"
             f"开头第一句就是正文。【绝对禁止复述、换词重写已经写过的内容！】"
         )
         # 移除最后的字数提醒，避免AI困惑
         prompt += f"\n章节标题：「{chapter_name}」"
         # 自查清单放最末尾（近因效应）：停笔前逐项核对
-        prompt += "\n\n" + SELF_CHECK_LIST
+        if use_anti_ai:
+            prompt += "\n\n" + SELF_CHECK_LIST
         return prompt

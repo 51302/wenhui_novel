@@ -366,6 +366,7 @@ def regenerate_chapter(
 def continue_chapter(
     chapter_unique_id: str,
     word_count: int = 2000,
+    use_anti_ai: bool = True,
     db: Session = Depends(get_db),
     current_user: dict = Depends(check_generate_permission),
 ):
@@ -374,6 +375,7 @@ def continue_chapter(
         "chapter_unique_id": chapter_unique_id,
         "user_id": current_user["user_id"],
         "word_count": word_count,
+        "use_anti_ai": use_anti_ai,
     }, ttl=1800)
     if not task_id:
         return fail("系统繁忙，请稍后重试", code=503)

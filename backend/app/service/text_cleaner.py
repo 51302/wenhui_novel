@@ -41,6 +41,7 @@ prompt 规则（让模型自己改）效果有限，本模块在生成后对文�
 - 全部规则只动标点、高频词与固定句式，不删剧情、不增内容
 - 开关：config.yaml ai.text_clean.enabled（默认开启）
 """
+import difflib
 import re
 from app.service.feature_rules import (apply_config_clean, apply_config_detect,
                                        get_regex, get_wordlist)
@@ -75,6 +76,17 @@ PARAGRAPH_EVEN_DELTA = 35        # 段落长度最大差（字符）
 DUP_NGRAM_LEN = 16             # 段落级大段雷同：连续16字相同视为重复块
 DUP_PARA_MIN_RATIO = 0.4       # 重复块占较短段落比例≥40%才删
 DUP_PARA_MAX = 5               # 段落级重复删除：全文最多5段
+# ---- 章内"改写式重复"（同一场景被改写后重写一遍）----
+# 逐字规则（DUP_NGRAM_LEN/DUP_PARA_MIN_RATIO）抓不到改写：实测同场景两版段落
+# "她推了一块糕到他面前" vs "她推一块过来" 没有任何16字逐字重合。
+# 因此保留段落级模糊相似度诊断，但相似度不能证明语义重复，绝不据此删段。
+INTRA_DUP_WARN_RATIO = 0.30    # ≥此值只计数告警、不删（供日志观测）
+INTRA_DUP_MIN_PARA_LEN = 24    # 只比对≥24字的段落（短句/台词段不参与）
+INTRA_DUP_TAIL_RATIO = 0.35    # 只检查全章35%之后的段落（改写重写都发生在后半）
+# ---- 长句逐字重复（台词复读）----
+# 原 _fix_repeated_sentences 只处理3~14字且跳过含引号的句子，长台词漏网
+# （"若论道大会上有人问起你的修行法门，你怎么答？"22字，重复2次无人管）
+LONG_REPEAT_MIN_LEN = 12       # ≥12字的句子逐字重复才算复读（短句重复多为风格）
 # ---- 新增规则阈值 ----
 PUNCT_BUG_MAX = 3              # 标点连用修复（"。，""，。"）：全文最多修3处（避免误伤引号边界）
 COMMA_TRIPLE_KEEP_MAX = 1      # 逗号版三连形容词：全文保留1处，其余拆散
@@ -83,13 +95,12 @@ FRAME_SIMILE_KEEP_MAX = 1      # 双框比喻尾（"仿佛X一般"）：全文�
 ADJ_INDEP_MAX = 3              # 形容词独立段（"粗重的。"）：全文并入3处
 SHORT_ACTION_BURST_MIN = 3     # 短动作连排（"碎了。塌了。散了。"）：≥3连触发合并
 SHORT_ACTION_BURST_MAX = 2     # 短动作连排合并：全文最多2处
-SHORT_PARA_DENSITY_MAX = 0.15  # 短句独立段密度（≤12字独立段占比>15%=AI节奏模板）
+SHORT_PARA_DENSITY_MAX = 0.35  # 短段比例建议上限；对话边界优先
 HALF_EXPLAIN_MAX = 1           # "某种X""说不清的X"半解释：全文最多1处（超出交LLM改写）
 FORMAL_CONJ_MAX = 1            # 书面连词（不仅/既又/与其不如）：全文最多1处
 NEG_HAVE3_MAX = 0              # "没有X，没有Y，只有Z"三连否定：全文0处（交LLM改写）
 FAKE_SENSORY_MAX = 1           # "得发X"假感官词（干得发涩/疼得发抖）：全文最多1处
 DE_COMMA_MAX = 3               # "X得，"状态词后逗号误用（"静得，一条弹幕都没有"）：全文最多修3处
-SHORT_PARA_DENSITY_HARD = 0.35 # 短句独立段密度熔断：超过则合并部分纯叙述短段（朱雀对碎片化敏感）
 REPEAT_QUOTE_TRIGGER = 3       # 完全相同台词/弹幕行出现≥3次即压减（AI 复读填充）
 REPEAT_QUOTE_KEEP = 1          # 保留第1次，其余删除
 # ---- 句子残缺/悬空检测（AI 输出最显眼的断句bug） ----
@@ -411,23 +422,44 @@ def _fix_dash(text: str, stats: dict) -> str:
     n = len(text)
     while i < n:
         if text.startswith("——", i):
+            quote_close = text[i + 2:i + 3]
+            quote_open = {'”': '“', '"': '"', '』': '『', '」': '「'}.get(quote_close)
+            line = "".join(out).rsplit("\n", 1)[-1]
+            if (i + 2 >= n or not text[i + 2:].strip()
+                    or (quote_open and line.rfind(quote_open) >= 0
+                        and (quote_open == quote_close or line.rfind(quote_open) > line.rfind(quote_close)))):
+                out.append("——")
+                last_ch = "—"
+                i += 2
+                continue
             if kept < limit:
                 kept += 1
                 out.append("——")
                 last_ch = "—"
-            elif not "".join(out).strip():
-                pass  # 段首/句首破折号：直接删除（无内容可承接）
+            elif not "".join(out).rsplit("\n", 1)[-1].strip():
+                # 段首/行首破折号：直接删除（前面没有可承接的内容）。
+                # 判断的必须是**当前这一行**是否为空，不能判断全文是否为空——
+                # 原来用 not "".join(out).strip()，只要有正文就恒为 False，
+                # 于是段首的 —— 被替换成逗号，造出"，两人隔着石桌…"这种段首逗号。
+                pass
             elif last_ch in "。！？；!?;":
-                out.append("。")  # 前文已是完整句 → 句号
-                last_ch = "。"
+                # 前文已是完整句 → 句号承接；但前文本身就是句号时不能再补一个
+                # （"他走了。——然后呢" 原来会变成 "他走了。。然后呢"）
+                if last_ch != "。":
+                    out.append("。")
+                    last_ch = "。"
             else:
-                out.append("，")  # 常规：逗号承接（"不是X——是Y"→"不是X，是Y"）
-                last_ch = "，"
+                # 常规：逗号承接（"不是X——是Y"→"不是X，是Y"）；
+                # 前文已是逗号/顿号时不重复补（"不是X，——是Y" 原来会变成 "不是X，，是Y"）
+                if last_ch not in "，、":
+                    out.append("，")
+                    last_ch = "，"
             replaced += 1
             i += 2
             continue
         out.append(text[i])
-        last_ch = text[i]
+        if not text[i].isspace():   # 只记非空白字符，"A。 —— B" 也能正确判定前文已收句
+            last_ch = text[i]
         i += 1
     if replaced:
         stats["dash"] = stats.get("dash", 0) + replaced
@@ -820,12 +852,26 @@ def _fix_punct_bug(text: str, stats: dict) -> str:
 
 
 def _fix_comma_triple(text: str, stats: dict) -> str:
-    """逗号版三连形容词拆散："粗重，沉闷，一下一下的" → "粗重沉闷，一下一下的"
-    （AI 节奏排比；与顿号版 _TRIPLE_RE 互补，逗号版更隐蔽）
-    全文保留 COMMA_TRIPLE_KEEP_MAX 处，其余把第一逗号删除（合并前两项）。"""
-    new_text, n = _rebuild_matches(
-        text, _COMMA_TRIPLE_RE, keep=COMMA_TRIPLE_KEEP_MAX,
-        transform=lambda m: m.group(1) + m.group(2) + "，" + m.group(3))  # 合并前两项：A，B，C → AB，C
+    """仅合并两字片段的三连排比，含助词/人称代词的动作小句保持原样。
+
+    全文保留 COMMA_TRIPLE_KEEP_MAX 处安全候选；跳过项不计入配额或统计。
+    """
+    eligible = 0
+    n = 0
+
+    def _merge(m):
+        nonlocal eligible, n
+        parts = m.group(1, 2, 3)
+        if any(len(part) != 2 or any(ch in '了着过他她它我你' for ch in part)
+               for part in parts):
+            return m.group(0)
+        eligible += 1
+        if eligible <= COMMA_TRIPLE_KEEP_MAX:
+            return m.group(0)
+        n += 1
+        return parts[0] + parts[1] + "，" + parts[2]
+
+    new_text = _COMMA_TRIPLE_RE.sub(_merge, text)
     _add_stats(stats, "comma_triple", n)
     return new_text
 
@@ -928,6 +974,10 @@ def _strip_redundant_subject_in_line(line: str, budget: list) -> str:
         if not m_cur:
             continue
         subj = m_cur.group(1)
+        cur_body = cur_s[m_cur.end(1):]
+        if (subj in ("他", "她", "它", "我", "你")
+                and cur_body.startswith(("把", "将", "让", "给", "在", "向", "从", "对", "被", "已经", "正在", "没", "不"))):
+            continue
         if prev_s.lstrip().startswith(subj):
             changes.append(sents[i].start() + m_cur.start())
             budget[0] -= 1
@@ -1008,80 +1058,6 @@ def _fix_repeated_quote_lines(text: str, stats: dict) -> str:
     res = _collapse_blank_lines(res)  # 删除后清理连续空行
     _add_stats(stats, "repeat_quote", removed)
     return "\n".join(res)
-
-
-def _fix_short_para_density(text: str, stats: dict) -> str:
-    """短句独立段密度熔断：碎片化节奏（≤12字独立段占比过高）让检测器判定 AI 模板。
-    密度口径与 check_ai_features 一致：统计全部独立段（含对话/弹幕短段），
-    仅当密度超过 SHORT_PARA_DENSITY_HARD 时触发：把"纯叙述短段"并入相邻叙述段，
-    压到硬上限以内；对话段（含占位符/纯「」弹幕行）绝不并段，保留对话节奏。
-    并段=去掉 \n\n 边界，短段并入前一段末尾（前段非纯叙述则并入后一段开头）。"""
-    paras = text.split("\n\n")
-    if len(paras) < 4:
-        return text
-
-    def _is_pure_narr(p: str) -> bool:
-        """纯叙述段：无对话占位符，且不是整行「」弹幕/台词"""
-        s = p.strip()
-        if not s or "\x00" in s:
-            return False
-        if re.fullmatch(r'「[^」\n]+」[。！？…]*', s):
-            return False
-        return True
-
-    # 全部独立段（与检测器同口径：对话短段同样计入碎片）
-    all_idx = [i for i, p in enumerate(paras) if p.strip()]
-    all_short = [i for i in all_idx if len(paras[i].strip()) <= 12]
-    if not all_short:
-        return text
-    ratio = len(all_short) / len(all_idx)
-    if ratio <= SHORT_PARA_DENSITY_HARD:
-        return text
-    # 精确计算：并掉 k 个短段后 (short-k)/(total-k) 才降到硬上限以内
-    target = 0
-    while (len(all_short) - target) / (len(all_idx) - target) > SHORT_PARA_DENSITY_HARD:
-        target += 1
-        if target >= len(all_short):
-            break
-    narr_short = [i for i in all_short if _is_pure_narr(paras[i])]
-    drop = set()
-    for i in narr_short:
-        if len(drop) >= target:
-            break
-        prev_ok = i > 0 and _is_pure_narr(paras[i - 1])
-        nxt_ok = i < len(paras) - 1 and _is_pure_narr(paras[i + 1])
-        if not prev_ok and not nxt_ok:
-            continue  # 前后都是对话段，孤立叙述短段保留（节奏点）
-        drop.add(i)
-    if not drop:
-        return text
-    out = []
-    i = 0
-    while i < len(paras):
-        if i in drop:
-            frag = paras[i].strip()
-            if out and _is_pure_narr(out[-1]):
-                # 并入前一段末尾
-                out[-1] = out[-1].rstrip() + frag
-                i += 1
-                continue
-            # 前段是对话/为空 → 拼到下一个保留段开头
-            j = i + 1
-            carry = frag
-            while j < len(paras) and j in drop:
-                carry += paras[j].strip()
-                j += 1
-            if j < len(paras):
-                paras[j] = carry + paras[j]
-            else:
-                out.append(carry)
-            i = j
-            continue
-        out.append(paras[i])
-        i += 1
-    result = "\n\n".join(out)
-    stats["short_para"] = stats.get("short_para", 0) + len(drop)
-    return result
 
 
 def _fix_buffer_paragraphs(text: str, stats: dict) -> str:
@@ -1177,6 +1153,9 @@ def _merge_short_sents_in_line(line: str, budget: int) -> tuple:
             continue
         if "\x00" in m1.group(0) or "\x00" in m2.group(0):
             continue
+        m2_body = m2.group(0).lstrip("嗯啊哦")
+        if re.match(r"[他她它我你](?:把|将|让|给|在|向|从|对|被|已|正|没|不|要|会|能)", m2_body):
+            continue
         # 跳过"不是X。是Y。"句号版：合并会造出新的"不是X，是Y"，绕过 not_is 配额
         if m1.group(0).startswith("不是") and m2.group(0).lstrip("嗯啊哦").startswith(("而是", "就是", "是")):
             continue
@@ -1265,28 +1244,14 @@ def _fix_even_paragraphs(text: str, stats: dict) -> str:
 
 
 def _fix_short_para_density(text: str, stats: dict) -> str:
-    """短叙事独立段密度压减：≤12字独立段占比 > SHORT_PARA_DENSITY_MAX 时，
-    将多余的短段并入相邻长段（用句号衔接，不丢内容）。
-    迭代最多3次：一次合并后总段数减少、密度再核算仍超阈值时继续合并。
-    跳过：纯对话行（引号包裹/占位/弹幕）、纯缓冲词、纯情绪标签、纯形容词独立段。"""
+    """仅按原序合并相邻叙述段；对话是屏障，全短段也可以相邻合并。"""
     def _is_dialogue(p: str) -> bool:
-        p = p.strip()
-        if p.startswith("__Q") and p.endswith("__"):
-            return True
-        # 引号占位符（\x00N\x00）：阶段二对话已被占位保护，占位段=对话
-        if p.startswith("\x00") and p.endswith("\x00"):
-            return True
-        # 以各种引号开头的整段对话（含中文引号「」『』「」、半角引号""''）
-        for q in ('"', "'", '\u300c', '\u300d', '\u300e', '\u300f', '\uff02',
-                  '\u201c', '\u201d', '\u2018', '\u2019'):
-            if p.startswith(q):
-                return True
-        return False
+        """含引号或占位符的混合段也不能参与合并。"""
+        return bool(re.search(r"""[“”‘’「」『』"'＂\x00]""", p) or "__Q" in p)
 
     def _is_short_narrative(p: str) -> bool:
-        # 口径与 check_ai_features 检测端严格一致：非对话段 ≤12字 全算短段。
-        # （曾用 has_verb 过滤导致"声音有些哑，但稳。"漏算 → 检测报0.167清洗端算0.083不触发，
-        #   修复：去掉动词词表约束，纯字数口径对齐，检测超即清洗必并，闭环）
+        """保留独立停顿，仅合并短叙述。"""
+        # 长度仅用于候选筛选；安全边界优先，不承诺强制压到密度阈值。
         p = p.strip()
         if not p or len(p) > 12:
             return False
@@ -1296,49 +1261,31 @@ def _fix_short_para_density(text: str, stats: dict) -> str:
             return False
         return True
 
-    import math
     paras = text.split("\n\n")
     if len(paras) < 4:
         return text
     total_merged = 0
-    # 最多迭代3次，密度超限就继续合并（第一次合并后总段数变少，密度可能还超）
-    for _round in range(3):
+    while True:
         short_indices = [i for i, p in enumerate(paras) if _is_short_narrative(p)]
         if not short_indices:
             break
         # 核算密度时基数也是非对话段（对话不参与密度计算，保持与 check_ai_features 一致）
-        narrative_count = sum(1 for p in paras if not _is_dialogue(p.strip()))
+        narrative_count = sum(1 for p in paras if p.strip() and not _is_dialogue(p))
         total = max(1, narrative_count)
         density = len(short_indices) / total
         if density <= SHORT_PARA_DENSITY_MAX:
             break
-        need_merge = math.ceil((len(short_indices) - SHORT_PARA_DENSITY_MAX * total) / (1 - SHORT_PARA_DENSITY_MAX))
-        need_merge = max(0, need_merge)
-        merged = 0
-        for i in reversed(short_indices):
-            if merged >= need_merge:
+        for i in range(len(paras) - 1):
+            a, b = paras[i:i + 2]
+            if (a.strip() and b.strip() and not _is_dialogue(a) and not _is_dialogue(b)
+                    and (_is_short_narrative(a) or _is_short_narrative(b))
+                    and a.rstrip().endswith(("。", "．", "！", "？", "!", "?"))):
+                # 只移除分段符，保留正文空白、标点及字符顺序。
+                paras[i:i + 2] = [a + b]
+                total_merged += 1
                 break
-            prev_idx = i - 1
-            while prev_idx >= 0 and _is_short_narrative(paras[prev_idx]):
-                prev_idx -= 1
-            if prev_idx >= 0:
-                short_content = paras[i].strip()
-                paras[prev_idx] = paras[prev_idx].rstrip() + short_content
-                paras[i] = ""
-                merged += 1
-            else:
-                next_idx = i + 1
-                while next_idx < len(paras) and _is_short_narrative(paras[next_idx]):
-                    next_idx += 1
-                if next_idx < len(paras):
-                    short_content = paras[i].strip()
-                    paras[next_idx] = short_content + paras[next_idx].lstrip()
-                    paras[i] = ""
-                    merged += 1
-        total_merged += merged
-        if merged == 0:
+        else:
             break
-        paras = [p for p in paras if p.strip()]
     if total_merged:
         stats["short_para_merge"] = stats.get("short_para_merge", 0) + total_merged
     return "\n\n".join(paras)
@@ -1472,6 +1419,135 @@ def _fix_duplicate_paragraphs(text: str, stats: dict) -> str:
         stats["dup_para"] = stats.get("dup_para", 0) + removed
         return "\n\n".join(out)
     return text
+
+
+def _norm_sentence(s: str) -> str:
+    """句子归一化：统一各种引号与空白，用于跨句逐字比对。"""
+    s = s.strip()
+    for a, b in (("“", '"'), ("”", '"'), ("「", '"'), ("」", '"'),
+                 ("‘", "'"), ("’", "'")):
+        s = s.replace(a, b)
+    return re.sub(r"\s+", "", s)
+
+
+def _repeat_spans(text: str) -> list:
+    """产出候选重复单元 [(start, end, 归一化key), ...]。
+
+    优先以**引号内台词**为单位：台词在章内复读是最典型的改写重写指纹，
+    而且引号边界稳定。若只按句末标点切句，"前一句的右引号 + 中间的叙述"
+    会被一起吞进同一句，导致两版台词的句子对不上、逐字比对失效（实测）。
+    非引号部分再按长句补充；与引号单元重叠的句子丢弃（避免重复告警）。
+    """
+    spans = []
+    quote_re = re.compile(r'[“"]([^”"]{%d,})[”"]' % LONG_REPEAT_MIN_LEN)
+    for m in quote_re.finditer(text):
+        spans.append((m.start(), m.end(), _norm_sentence(m.group(1))))
+    sent_re = re.compile(r'[^。！？；\n]{%d,}[。！？]' % LONG_REPEAT_MIN_LEN)
+    for m in sent_re.finditer(text):
+        if any(s < m.end() and m.start() < e for s, e, _ in spans):
+            continue
+        spans.append((m.start(), m.end(), _norm_sentence(m.group(0))))
+    return spans
+
+
+def _fix_repeated_long_sentences(text: str, stats: dict) -> str:
+    """诊断长句/台词逐字重复，但不删除合法对话或正文。"""
+    spans = _repeat_spans(text)
+    if len(spans) < REPEAT_TRIGGER:
+        return text
+
+    groups: dict = {}
+    for start, end, key in spans:
+        if "\x00" in text[start:end]:
+            continue  # 对话占位符残留（正常不会出现，防御）
+        groups.setdefault(key, []).append((start, end))
+
+    repeated = 0
+    for occ in groups.values():
+        if len(occ) < REPEAT_TRIGGER:
+            continue
+        repeated += len(occ) - REPEAT_KEEP
+    if repeated:
+        stats["long_repeat_warn"] = stats.get("long_repeat_warn", 0) + repeated
+        system_logger.warning(f"[长句重复] 检测到 {repeated} 处逐字重复，仅告警不删正文")
+    return text
+
+
+def _para_ratio(a: str, b: str) -> float:
+    """两段文本的相似度（0~1）：两倍匹配字符数 / 两段长度之和。"""
+    if not a or not b:
+        return 0.0
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
+
+
+def _fix_intra_chapter_rewrite(text: str, stats: dict) -> str:
+    """章内改写重复诊断：模糊相似度只告警，不删除任何段落。
+
+    为什么不能用现成的逐字规则：改写式重复没有长串逐字重合
+    （"她推了一块糕到他面前" vs "她推一块过来"，16 字逐字重合为 0），
+    DUP_NGRAM_LEN / DUP_PARA_MIN_RATIO 完全抓不到。
+    只查全章 35% 之后的段落；所有命中计入 intra_dup_warn。
+    低相似度可能漏报，高相似度也可能是不同人物/结果的合法事件。
+    """
+    paras = text.split("\n\n")
+    if len(paras) < 8:
+        return text
+    if sum(len(p) for p in paras) < 1200:
+        return text
+
+    stripped = [p.strip() for p in paras]
+    char_sets = [set(p) for p in stripped]
+    start = int(len(paras) * INTRA_DUP_TAIL_RATIO)
+    matched = []   # (段号, 与之重复的更早段号, 相似度)
+    for j in range(start, len(paras)):
+        cur, cur_set = stripped[j], char_sets[j]
+        if len(cur) < INTRA_DUP_MIN_PARA_LEN:
+            continue
+        best, best_i = 0.0, -1
+        for i in range(j):
+            prev = stripped[i]
+            if len(prev) < INTRA_DUP_MIN_PARA_LEN:
+                continue
+            # 便宜的预筛：共有字符占本段比例太低就不可能高相似
+            if len(char_sets[i] & cur_set) * 2 < len(cur_set):
+                continue
+            ratio = _para_ratio(prev, cur)
+            if ratio > best:
+                best, best_i = ratio, i
+        if best >= INTRA_DUP_WARN_RATIO:
+            matched.append((j, best_i, best))
+
+    if matched:
+        stats["intra_dup_warn"] = stats.get("intra_dup_warn", 0) + len(matched)
+        system_logger.warning(
+            "[章内重复] 检测到 %d 处模糊相似段，仅告警不删正文：%s"
+            % (len(matched),
+               ", ".join("段%d≈%.2f" % (j, r) for j, _, r in matched)))
+    return text
+
+
+def _fix_leading_punct(text: str, stats: dict) -> str:
+    """段首标点清理：段落/行首残留的 ，、；：。 一律去掉（pipeline 最末兜底）。
+
+    典型来源：模型用破折号起段（"——两人隔着石桌…"）被 _fix_dash 转成逗号；
+    以及上游规则删词后留下的孤立标点。段首标点是硬伤，读起来像文本被截断。
+    省略号"……"是合法的停顿开头，不动。
+    """
+    if not text:
+        return text
+    fixed = 0
+    out = []
+    for line in text.split("\n"):
+        stripped = line.lstrip("，、；：。")
+        if stripped != line:
+            if stripped:
+                fixed += 1
+            else:
+                stripped = line  # 整行只有标点：保持原样，交给空行清理
+        out.append(stripped)
+    if fixed:
+        stats["lead_punct"] = stats.get("lead_punct", 0) + fixed
+    return "\n".join(out)
 
 
 def _fix_word_variants(text: str, stats: dict) -> str:
@@ -1753,33 +1829,8 @@ def _fix_is_is_stack(text: str, stats: dict) -> str:
 
 
 def _fix_redup_abab(text: str, stats: dict) -> str:
-    """ABAB式多字叠词压减："太久太久"→"太久"、"一根一根"→"一根根"。
-    排除 _REDUP_ABAB_SAFE 白名单（时间递进类叠词合法）。
-    全文最多压 REDUP_ABAB_MAX 处（默认3处，避免过度改写节奏感强的动作叠词）。"""
-    matches_all = list(_REDUP_ABAB_RE.finditer(text))
-    if not matches_all:
-        return text
-    # 过滤白名单
-    matches = [m for m in matches_all if m.group(0) not in _REDUP_ABAB_SAFE]
-    if len(matches) <= REDUP_ABAB_MAX:
-        return text
-    need = len(matches) - REDUP_ABAB_MAX
-    replaced = 0
-    out = text
-    for m in reversed(matches):
-        if replaced >= need:
-            break
-        pair = m.group(1)
-        # pair 第二个字是量词 → 一根根；否则只留一次：太久
-        if pair[-1] in "根片段落条颗粒秒帧寸":
-            sub = pair + pair[-1]  # 一根 → 一根根
-        else:
-            sub = pair
-        out = out[:m.start()] + sub + out[m.end():]
-        replaced += 1
-    if replaced:
-        stats["redup_abab"] = stats.get("redup_abab", 0) + replaced
-    return out
+    """保留 ABAB 表达；重复形式本身不能证明是输入错误。"""
+    return text
 
 
 SENTENCE_FUSED_FIX_MAX = 2
@@ -1827,6 +1878,8 @@ def _fix_noun_pronoun_fused(text: str, stats: dict) -> str:
         noun = m.group(1)
         pron = m.group(2)
         verb = m.group(3)
+        if noun.endswith(("让", "令", "使", "得")):
+            continue
         out.append(text[last:m.start()])
         out.append(f"{noun}，{pron}{verb}")
         last = m.end()
@@ -1838,27 +1891,8 @@ def _fix_noun_pronoun_fused(text: str, stats: dict) -> str:
 
 
 def _fix_reduplicative_adj(text: str, stats: dict) -> str:
-    """叠词形容词去重："极细极细的"→"极细的"（AI 双叠强调=机械节奏）
-    全文最多处理3处，避免过度改写。排除正常叠词如"长长的""慢慢的"（单字叠）。"""
-    matches = list(_REDUPLICATIVE_ADJ_RE.finditer(text))
-    if not matches:
-        return text
-    max_fix = 3
-    replaced = 0
-    out = []
-    last = 0
-    for m in matches:
-        if replaced >= max_fix:
-            break
-        out.append(text[last:m.start()])
-        # 保留单次：XX→X
-        out.append(m.group(1) + "的")
-        replaced += 1
-        last = m.end()
-    out.append(text[last:])
-    if replaced:
-        stats["redup_adj"] = stats.get("redup_adj", 0) + replaced
-    return "".join(out)
+    """保留 ABAB+的，包括“一抽一抽的”“哗啦哗啦的”等合法表达。"""
+    return text
 
 
 def _fix_fake_sensory(text: str, stats: dict) -> str:
@@ -2086,11 +2120,11 @@ def _fix_danmu_format(text: str, stats: dict) -> str:
 
 def _fix_loc_fused_comma(text: str, stats: dict) -> str:
     """处所/方位词后缺逗号粘连修复："长刀上没说话" → "长刀上，没说话"
-    （AI 不断句粘连：处所/方位词后直接接"没/不/未/又/已"开头谓语，缺逗号）
-    与检测规则"处所方位缺逗号粘连"口径一致（排除 山上/天上/地上/路上/海上/身上/怀里/心里/手里/水里/夜里 等已习惯无逗号表达）。
+    仅处理"没说话"，其他谓语可能是正常的处所状语表达。
+    与检测规则"处所方位缺逗号粘连"口径一致。
     必须置于 pipeline 末尾执行——若在 _fix_comma_triple 之前，其"合并前两项"会把此处新补的逗号又吃掉。"""
     pattern = re.compile(
-        r"([\u4e00-\u9fff]{1,5}[上里中内间])(?<!山上|天上|地上|路上|海上|身上|怀里|心里|手里|水里|夜里)((?:没(?!有)|不|未|又|已)[\u4e00-\u9fff]{1,6})")
+        r"([\u4e00-\u9fff]{1,5}[上里中内间])(?<!山上|天上|地上|路上|海上|身上|怀里|心里|手里|水里|夜里)(没说话)")
     new_text, n = pattern.subn(r"\1，\2", text)
     if n:
         stats["loc_fused_comma"] = stats.get("loc_fused_comma", 0) + n
@@ -2353,30 +2387,9 @@ def _fix_sentence_sublimation(text: str, stats: dict) -> str:
 
 
 def _fix_imagery_ending(text: str, stats: dict) -> str:
-    """句尾意象工整收尾删除（朱雀已知指纹——末句用"被X吞没"式意象诗意收束
-    或"…没说话"式留白意象收束，都是 ML 检测器点名的"工整收尾"指纹。
-    确定性安全：只删全文最后一处的意象收尾小句，还原为普通直白结尾，保留前句
-    结束标点。覆盖五类：
-      ① "被X遮住/吞没/挡住"型；
-      ② "只剩X，没了/一晃，没了"型；
-      ③ 留白型：仅限"末段=一句话+末句=人物没说话/沉默"，即整个末段只有一句话
-         （段内零句号或仅一个句号），避免"收回目光，低头看草药，没说话"这种正常
-         交代被误删；
-      ④ 段末留白"…，没说话/沉默/不接话。"（任意段末，非仅末段）——朱雀把
-         "低头看草药，没说话。"这类人物留白收束也算"工整收尾"；
-      ⑤ 全文末句环境意象收束（"，暮色漫上来，影子拉得老长。"）——逗号后的
-         环境意象短语整体替换为句号，保留前句实义动作。"""
+    """清理少数可识别的句尾意象套句，同时保留人物动作、对话和沉默。"""
     if not text:
         return text
-    # ④ 段末留白"…，没说话/沉默/不接话。" 通用清理（保留前句与句号）
-    new_text, c4 = re.subn(
-        r'(?<=[^。．！？\n])[，,](?:只是|却|也|仍|始终)?'
-        r'没(?:有)?(?:说(?:话|出口|出声)?|出声|作声|应声|接话)'
-        r'(?=[。．！？])',
-        '', text)
-    if c4:
-        stats['imagery_ending'] = stats.get('imagery_ending', 0) + c4
-        text = new_text
     # ⑤ 全文末句环境意象收束："，暮色漫上来，影子拉得老长。" → "。"
     # 允许意象词到收尾词之间含逗号（"暮色已经漫上来，把他的影子拉得老长"）
     end_re = re.compile(
@@ -2394,339 +2407,74 @@ def _fix_imagery_ending(text: str, stats: dict) -> str:
         r')[。．！]?\s*$')
     m = img_re.search(text)
     if not m:
-        # ③ 留白型：仅最后一段=单句且句末=没说话/沉默型 才删
-        stripped = text.rstrip()
-        # 最后一段：从最后一个 \n\n 之后 或 文本起始
-        last_seg_start = stripped.rfind('\n\n')
-        last_seg = stripped[last_seg_start + 2:] if last_seg_start >= 0 else stripped
-        # 段内句号数 ≤1（一句话），且以留白型作末句
-        if 0 <= last_seg.count('。') + last_seg.count('．') + last_seg.count('！') + last_seg.count('？') <= 1:
-            blank_re = re.compile(
-                r'[^。．！\n]{1,80}?(?:'
-                r'(?:他|她|顾平安|玄青真人|夏语|薛峰|众人|真人|青姨)(?:只是)?'
-                r'(?:没(?:有)?(?:说(?:话|出口|出声)?|出(?:声|口)|接(?:话|茬)?|应(?:声)?|回(?:头|答|应|去)?|动(?:弹)?|说话|出声|作声)|沉默(?:了|着|不语)?)'
-                r'[，,]?[^。．！\n]{0,6})[。．！]?\s*$')
-            m2 = blank_re.search(last_seg)
-            if m2 and m2.start() > 0:  # 非段首才是留白（段首=全段=留白才删）
-                # 回溯到前一个句号 pre
-                # 在 stripped 中定位 m2.start 对应的段起始位置偏移
-                abs_start = (last_seg_start + 2) if last_seg_start >= 0 else 0
-                cut_abs = abs_start + m2.start()
-                # 找 cut_abs 之前最近的句号
-                pre_end = max(
-                    stripped.rfind('。', 0, cut_abs),
-                    stripped.rfind('．', 0, cut_abs),
-                    stripped.rfind('！', 0, cut_abs),
-                )
-                if pre_end >= 0:
-                    stats['imagery_ending'] = stats.get('imagery_ending', 0) + 1
-                    return stripped[:pre_end + 1] + text[len(stripped):]
         return text
     stats['imagery_ending'] = stats.get('imagery_ending', 0) + 1
     return text[:m.start()] + '。' + text[m.end():]
 
 
 def _fix_sense_overload(text: str, stats: dict) -> str:
-    """次要感官描写压减（朱雀已知统计指纹——ML 按"五感覆盖种类数"判 AI：
-    真人一章只写当下最要紧的1-2种主感官，AI 倾向视+听+触+嗅+味五路全开）。
-    确定性安全：只删装饰性、不推进剧情的感官描写，保留对话声音/生理真疼/
-    环境温度等承载动作或情绪的必要感官。
-    处理顺序：嗅觉装饰→味觉装饰→听觉装饰（木头声/轻响/摩擦声点缀）→触觉装饰
-    （闷闷的/有些凉/膝盖发软这类纯感受点缀）。"""
-    if not text:
-        return text
-    n = 0
-    # 1) 嗅觉整句：",他闻到她身上那股气息，……甜。" 删整句保留前导逗号
-    new_text, c1 = re.subn(
-        r'[，,](?:他|她|顾平安|薛峰|夏语|青云子)?(?:闻到|嗅到|闻见)[^。．！？\n]*?[。．！？]',
-        '，', text)
-    n += c1
-    # 2) 香类整句：",檀香从门缝里渗出来，混着一股纸墨气。" 删整句
-    new_text, c2 = re.subn(
-        r'(?:檀香|沉香|药香|线香|焚香)[^。．！？\n]*?[。．！？]',
-        '', new_text)
-    n += c2
-    # 3) "带着/混着一点X味/香/苦/甜" 短语删（保留句号）
-    new_text, c3 = re.subn(
-        r'[，,](?:带着|混着|飘着|散着)(?:一点|一股|几缕)?[^，。．！？\n]{0,15}'
-        r'(?:苦味|甜味|涩味|酸味|腥味|咸味|药味|陈茶的苦|雨后草地的甜|布料味|纸墨气|草木香|花香|血腥味|淡香|香气|香味|药香)[。．！？]',
-        '。', new_text)
-    n += c3
-    # 4) "一股X味钻进来/飘过来，混着淡香。" 嗅觉整句删（保留前导逗号）
-    new_text, c4 = re.subn(
-        r'[，,](?:一股|一缕)[^，。．！？\n]{0,12}(?:味|香|气)[^，。．！？\n]{0,18}'
-        r'(?:钻进来|飘过来|窜上来|涌过来|扑过来)[^。．！？\n]{0,20}?[。．！？]',
-        '，', new_text)
-    n += c4
-    # 5) 听觉装饰整句：非对话的"XX声短促/格外清楚/发出轻响/摩擦声"类点缀整句删
-    #    （剧情对话的声音保留，只删对剧情无推进的独立环境音效句）
-    #    用 ^|\n 替代可变宽度 lookbehind，改为整体多 match 模式
-    new_text, c5 = re.subn(
-        r'(?:(?<=[。．！？\n])|(?<=^))(?:[^“”"‘’\n]{0,6}?(?:木头声|叩门声|脚步声|摩擦声|轻响|咔哒声|咯吱声|嗡嗡声|叮声|咚声|声响)'
-        r'[^。．！？\n]{0,22}(?:格外|分外|很是|特别)?(?:清楚|清晰|清脆|沉闷|刺耳|悠远|轻细|细微)?[。．！？])',
-        '', new_text)
-    # "发出一声/很轻的轻响/摩擦声"短语删除（保留句号）
-    new_text, c5b = re.subn(
-        r'[，,](?:发出|传出)(?:一声|一阵|几声)?(?:很轻的|细微的|闷沉的)?(?:轻响|声响|摩擦声|咔哒声|咯吱声)[。．！？]',
-        '。', new_text)
-    n += c5 + c5b
-    # 6) 触觉装饰短语删：纯感受点缀（不推进剧情、不刻画真伤）
-    #    闷闷的/有些凉/有些发软/发闷/发凉/发麻 这类
-    new_text, c6 = re.subn(
-        r'[，,](?:有些|有点|略微|稍稍|微微)?'
-        r'(?:闷闷的|发闷的|发凉的|发麻的|发软的|发沉的|沉甸甸的|轻飘飘的|凉丝丝的|麻酥酥的|暖洋洋的|凉冰冰的|热乎乎的|湿乎乎的|皱巴巴的|汗津津的)'
-        r'(?=[，,。．！？\n])',
-        '', new_text)
-    # "贴/挨/靠在胸口/肩/背，有些凉/冷/热/痒/麻/沉/闷。" 装饰小句删（保留句号）
-    new_text, c6b = re.subn(
-        r'(?<=[，,。．！？\n])(?:贴|挨|靠)在(?:胸口|肩|背|身)[^，。．！？\n]{0,10}?'
-        r'(?:有些|有点|略微|稍稍)?(?:凉|冷|热|温|烫|痒|麻|沉|闷)[。．！？]',
-        '。', new_text)
-    n += c6 + c6b
-    # 7) 触觉触发词安全换词（朱雀触觉词表 → 非触发词，保语义）：
-    #    凉茶→茶 / 湿滑→删 / 鞋底打滑→脚下不稳 / 发软→发沉 / 靠在地上→放在地上 /
-    #    勒进→勒着 / 沾着→带着 / "符纸贴着胸口，有些凉"装饰句整删
-    before = new_text
-    new_text = re.sub(r'半盏凉茶', '半盏茶', new_text)
-    # 湿滑删除三连：先整句再局部，防残留"踩上的石阶"（删"湿滑"留"的"）、"石阶，两侧"（悬空名词）
-    new_text = re.sub(r'踩上湿滑的石阶', '踩上石阶', new_text)
-    new_text = re.sub(r'石阶湿滑', '石阶上', new_text)
-    new_text = re.sub(r'湿滑(?:的)?', '', new_text)
-    new_text = re.sub(r'鞋底打滑', '脚下不稳', new_text)
-    new_text = re.sub(r'(?:有些|有点|膝盖)?发软', '发沉', new_text)
-    new_text = re.sub(r'(?:长刀|长剑|刀|剑)靠在地上', lambda m: m.group(0).replace('靠在地上', '放在地上'), new_text)
-    new_text = re.sub(r'勒进', '勒着', new_text)
-    new_text = re.sub(r'[，,](?:有些|有点|略微|稍稍)?发疼', '', new_text)
-    new_text = re.sub(r'那疼[^。．！？\n]{0,10}?[。．！？]', '。', new_text)
-    new_text = re.sub(r'沾着', '带着', new_text)
-    # 装饰句"符纸贴着胸口，有些凉。"类整删（保留前句句号）
-    new_text = re.sub(
-        r'[。．](?:符纸|玉简|令牌|信物|灵符)(?:贴着|硌着|靠着)[^。．！？\n]{0,10}?'
-        r'(?:有些|有点|略微|稍稍)?(?:凉|热|硬|冷)[。．！？]',
-        '。', new_text)
-    c7 = (new_text != before)
-    n += 1 if c7 else 0
-    # 8) 听觉触发词安全换词（朱雀听觉词表"声/叫" → 非触发词）：
-    #    声音→话音 / 叫你来→唤你来 / 叫了他一声→唤了他一句 /
-    #    低声说→说 / 轻声问→问 / 嗯了一声→嗯了一句（用"句"不用"下"，防新增微动作节拍）
-    #    声音→话音仅限人声语境（"X的声音从…传出/声音有些哑"），
-    #    防止"水珠落下来的声音""墨渊磕背的声音"这类非人声被误改成"话音"
-    new_text = re.sub(
-        r'(?P<sp>玄青真人|顾平安|夏语|薛峰|青姨|青云子|真人|师父|师尊|师兄|师姐|他|她)?'
-        r'(?P<ps>的)?声音'
-        r'(?P<af>从|自|在|有|有些|有点|发|变|很|更|渐渐|忽然|突然|越来越|沙哑|哑|低沉|低|轻|沉)',
-        lambda m: (m.group('sp') or '') + (m.group('ps') or '') + '话音' + m.group('af'),
-        new_text)
-    new_text = re.sub(r'叫你来', '唤你来', new_text)
-    new_text = re.sub(r'叫了他一声|叫了一声|喊了他一声', '唤了他一句', new_text)
-    new_text = re.sub(r'低声说', '说', new_text)
-    new_text = re.sub(r'轻声问', '问', new_text)
-    new_text = re.sub(r'嗯了一声', '嗯了一句', new_text)
-    # 带引号的"嗯"了一声（引号可能包住嗯："只"嗯"了一声"）——保留引号只改"声"→"句"
-    new_text = re.sub(r'嗯(["”「」])?了一声', '嗯\\1了一句', new_text)
-    # "还是热的/冰的/凉的" 触觉收尾短语删（保留句号）
-    new_text = re.sub(r'[，,]还是[热冰]的[。．！？]', '。', new_text)
-    if n:
-        stats['sense_overload'] = stats.get('sense_overload', 0) + n
-    return new_text
+    """明确保留感官信息：词表不能判断脚步、湿滑、气味是否为剧情线索。
+
+    停用整句删除、短语压缩和所谓同义替换；保留入口兼容现有调用链。
+    """
+    return text
 
 
 def _fix_cv_burst(text: str, stats: dict) -> str:
-    """句长均匀度拉宽（朱雀 ML 指纹——CV<0.7 判节奏齐整=AI）。真人叙述句
-    三极分布明显：超短独段（2-5 字）+ 中句（10-20 字）+ 超长段（50+ 字）。
-    策略（已用第66章 1370 字样文端到端验证：CV 0.54→0.73）：
-      1) 造超长句：同一段非对话叙述，第一句 5-18 字且"主语+有动词"，贪婪合并
-         后续 ≤22 字的有动词句号句 → "A，B，C，D…。" 直到总长 ≥58 字（≥4 句）。
-         超长句是拉大方差的最大杠杆（1 个 58 字句 ≈ 11 个 4 字短句的贡献）。
-      2) 造超短独段：独立叙述段（7-20 字）内部有逗号时，从最后一个逗号处断开，
-         后半 2-6 字完整小句独立成段。防病句：断开处前半不能以介词/单字动词结尾
-         （"顾平安抬。眼看过去"这类残缺必须禁掉），后半首字须是合法主语。
-      3) 跨空行 2 段合并：各 6-19 字叙述 → 合并后 ≥28 字长句（保留）。
-      4) 段尾末句 3-7 字独立成段（保留原有 2a/2b 逻辑）。
-    目标 CV≥0.7，最多 2 轮，一轮推够就停。"""
+    """仅在同一段内合并完整叙述句的句号，保持字符顺序和句法完整。
+
+    不拆句、不跨段、不合并问号或感叹号；合并只把句号改为逗号，
+    并以完整性兜底确保所有原文字词仍按原顺序出现。
+    """
     if not text:
         return text
 
-    def _cv(t):
-        # 口径必须与诊断端 _zhuque_diagnose.py 一致（re.split r'[。．！？!?]+'、
-        # 不含 \n、不排除引号句），否则内部判定达标提前停，诊断端却不达标
-        sents = [s.strip() for s in re.split(r'[。．！？!?]+', t)
-                 if len(s.strip()) >= 2]
-        ls = [len(s) for s in sents]
-        if len(ls) < 4:
-            return 0
-        m = sum(ls) / len(ls)
-        return (sum((x - m) ** 2 for x in ls) / len(ls)) ** 0.5 / m if m else 0
-
-    cur_cv = _cv(text)
-    if cur_cv >= 0.7:
+    lengths = [len(s.strip()) for s in re.split(r'[。．！？!?]+', text)
+               if len(s.strip()) >= 2]
+    if len(lengths) < 4:
         return text
-
-    # 合法叙述句首字（名词/代词类，避免把"——/而/便/只"当句首）
-    _SUBJ_PREFIX = set('他她它顾玄山静灰石门此那这当半手背眼脸肩膝指袖怀脚鞋壶席光雾药竹篮叶草壁人薛夏风夜门外天里院中桌旁板阶床暮')
-    # 断开处前半不能以此结尾（介词/单字动词 → 残缺病句）
-    _BAD_PRE_SUFFIX = set('在向到从把被对于给跟和为以抬看听说读写打拿放做办想搞弄擦洗买卖按压收拿')
-    # 动词/状态标记：判定一句话"有动作内容"而非纯名词短语
-    _VERB_MARK = set('着了过下起动落伸凝压笼踩晃稳裹磕走磨破结发软想歇拐掩叩盘搁端推接喝收放取叠跪磕站坐行进出开合搭带提沾勒紧扫转对望凝瞄瞥瞧盯停歇迈跨漫')
-
-    def _has_verb(s):
-        return any(ch in _VERB_MARK for ch in s)
-
-    rounds, max_rounds = 0, 3
+    mean = sum(lengths) / len(lengths)
+    cv = (sum((n - mean) ** 2 for n in lengths) / len(lengths)) ** 0.5 / mean
+    if cv >= 0.7:
+        return text
     changed = 0
-    while cur_cv < 0.7 and rounds < max_rounds:
-        rounds += 1
-        t0 = text
-        # 1) 同段连续叙述短句贪婪合并 → 合到 ≥58 字（超长句拉方差的核心）
-        def _merge_greedy(m):
-            nonlocal changed
-            line = m.group(0)
-            pieces = re.findall(r'[^。．！？]{1,40}[。．！？]', line)
-            if len(pieces) < 3:
-                return line
-            merged = []
-            i = 0
-            while i < len(pieces):
-                p = pieces[i]
-                core = p[:-1]
-                # 触发：第一句 5-18 字 + 合法主语 + 有动词
-                if (5 <= len(core) <= 18 and core[0] in _SUBJ_PREFIX and _has_verb(core)
-                        and i + 1 < len(pieces)):
-                    j = i + 1
-                    acc = [core]
-                    total = len(core)
-                    while j < len(pieces):
-                        c2 = pieces[j][:-1]
-                        # 片段上限 30 字：实测长场景描述句（"静室里光线很暗，…尘粒"29 字）
-                        # 是链中最常见卡点，22 上限会掐断合并；合并目标 50 字/3 句即可
-                        # （超长句是拉方差最大杠杆，基准手工版 v22 长句达 58 字）
-                        if _has_verb(c2) and len(c2) <= 30:
-                            if total + 1 + len(c2) > 78:  # 上限防超长病句
-                                break
-                            acc.append(c2)
-                            total += 1 + len(c2)
-                            j += 1
-                            if len(acc) >= 3 and total >= 50:  # ≥3 句 + ≥50 字
-                                break
-                        else:
-                            break
-                    if len(acc) >= 3:
-                        merged_str = '，'.join(acc) + p[-1]
-                        # 病句自检：合并句首非标点、首句结尾非介词/单字动词
-                        if (merged_str[0] not in '，,。．！？'
-                                and acc[0][-1] not in _BAD_PRE_SUFFIX):
-                            changed += j - i - 1
-                            merged.append(merged_str)
-                            i = j
-                            continue
-                merged.append(p)
-                i += 1
-            return ''.join(merged)
-        # 匹配一行（非对话）：不含引号、总长 30+ 字、含≥2个句号
-        text = re.sub(
-            r'(?:(?<=\n)|(?<=^))[^“”"‘’\n]{30,200}[。．！？]',
-            _merge_greedy, text)
-        # 3) 跨空行 2 段合并：各 6-18 字叙述 → 合并后 28+ 字
-        paras = re.split(r'(\n{2,})', text)
-        new_paras = []
-        i = 0
-        while i < len(paras):
-            p = paras[i]
-            if i + 2 < len(paras) and re.fullmatch(r'\n{2,}', paras[i + 1]):
-                a, b = p.strip(), paras[i + 2].strip()
-                def _ok(body):
-                    return (6 <= len(body) <= 19
-                            and body.endswith(('。', '．', '！', '？'))
-                            and not (body.startswith('"') or body.startswith('“'))
-                            and not re.fullmatch(r'[——…\-\s]*', body))
-                if _ok(a) and _ok(b):
-                    a_core = a[:-1] if a[-1] in '。．！？' else a
-                    new_p = f"{a_core}，{b}\n\n"
-                    # 合并后总字数 ≥28 才算提升方差（别合并成 20 字标准句）
-                    if len(a_core) + 1 + len(b) >= 28:
-                        new_paras.append(new_p)
-                        changed += 1
-                        i += 3
-                        continue
-            new_paras.append(p)
-            i += 1
-        text = ''.join(new_paras)
-        # 2) 独立叙述段（7-20 字）末逗号分句拆出成超短段——防病句校验
-        def _break_short_segment(m):
-            nonlocal changed
-            seg = m.group(0).rstrip('\n')
-            nl_match = re.search(r'\n+$', m.group(0))
-            tail_nl = nl_match.group(0) if nl_match else '\n\n'
-            if re.search(r'[“”"‘’]', seg):
-                return m.group(0)
-            body = seg[:-1] if seg and seg[-1] in '。．！？' else seg
-            last_p = max(body.rfind('。'), body.rfind('．'), body.rfind('！'), body.rfind('？'))
-            if last_p < 0:
-                # 无句内句号：本身就是单句、5-12字 → 拆成 "前缀。末2-5字。"
-                if 5 <= len(body) <= 12:
-                    # 从最后一个逗号断开（比切末 2-5 字更安全）
-                    cps = [mm.start() for mm in re.finditer(r'[，,]', body)]
-                    for cp in reversed(cps):
-                        pre = body[:cp].strip()
-                        post = body[cp + 1:].strip()
-                        if (len(pre) >= 3 and pre[0] in _SUBJ_PREFIX
-                                and pre[-1] not in _BAD_PRE_SUFFIX
-                                and 2 <= len(post) <= 6
-                                and _has_verb(post) and post[0] in _SUBJ_PREFIX):
-                            changed += 1
-                            return pre + '。\n' + post + (seg[-1] if seg and seg[-1] in '。．！？' else '。') + tail_nl
-                    # 退化：段末命中"动作短语白名单"才拆出独立超短段。
-                    # 防递归叠加破坏（原 body[-3:] 盲切曾产出"顾平。/安抬眼。/看过去。"
-                    # 病句——同一短段被多轮切坏；"顾平安的指。/节在膝。/上收紧。"同理）。
-                    # 白名单=完整可独立成句的动作短语，绝不让"安抬眼""上收紧"这类残缺尾巴落单。
-                    # 安全条件：① 前缀 ≥2 字有实体（禁"他。抬眼看过去。"）；
-                    #   ② 前缀末字不是动词/介词（禁"顾平安走。上前。"）。
-                    # 前缀上限放宽到 12 字：切分后前缀必被单 \n 隔离，修正后的 lookahead
-                    # （(?=\n{2,}|\n*\Z)）不会再次匹配它，杜绝旧版"顾平。/安抬眼。"递归叠加破坏。
-                    # 白名单按长度降序：先命中长短语，防"看过去"抢先吃掉"抬眼看过去"的前半。
-                    _ACT_END_OK = ('抬眼看过去', '抬头看过去', '抬眼望过去', '回头看过去',
-                                   '抬眼看过来', '抬眼看去', '垂眼看去', '侧目看过去',
-                                   '回头看他', '抬眼看他', '看向他', '看他一眼',
-                                   '看过去', '看过来', '走过去', '走上前', '跟上去',
-                                   '追上去', '站起身', '站起来', '低下头', '垂下眼',
-                                   '收回手', '收回目光', '没说话', '没接话', '没答话',
-                                   '不接话', '侧身让开', '让开半边', '往旁边让',
-                                   '退后一步', '转过身')
-                    pre_end = None
-                    for act in _ACT_END_OK:
-                        if body.endswith(act):
-                            pre_end = body[:-len(act)].rstrip('，,')
-                            break
-                    if (pre_end and 2 <= len(pre_end) <= 12
-                            and pre_end[-1:] not in _BAD_PRE_SUFFIX):
-                        changed += 1
-                        return pre_end + '。\n' + act + (seg[-1] if seg and seg[-1] in '。．！？' else '。') + tail_nl
-                return m.group(0)
-            # 有句内句号：段尾最后一句若 3-7 字独立为末句
-            tail = body[last_p + 1:].strip()
-            if 3 <= len(tail) <= 7 and not re.search(r'[“”"‘’]', tail):
-                pre = body[:last_p + 1]
-                if pre.rstrip()[-1:] not in _BAD_PRE_SUFFIX and tail[0] in _SUBJ_PREFIX:
-                    changed += 1
-                    return pre + '\n' + tail + (seg[-1] if seg and seg[-1] in '。．！？' else '。') + tail_nl
-            return m.group(0)
-        # 匹配：独立叙述段（=段前后都是空行或边界）+ 段长 5-20 字非对话。
-        # 注意：必须用 \Z（绝对末尾）而非 $——re.MULTILINE 下 \n*$ 在任意换行前都成立
-        # （近乎恒真），会把"顾平安抬眼。"这类切分后的前缀再次匹配，导致同一短段
-        # 被多轮递归切坏（"顾平。/安抬眼。/看过去。"病句的根因）。
-        text = re.sub(
-            r'(?:(?<=\n\n)|(?<=^))([^“”"‘’\n]{5,20}[。．！？])(?=\n{2,}|\n*\Z)',
-            _break_short_segment, text)
-        # 清扫叠标点
-        text = re.sub(r'([。．！？，,])\1+', r'\1', text)
-        text = re.sub(r'[。．][，,]', '。', text)
-        text = re.sub(r'[，,][。．]', '。', text)
-        if text == t0:
-            break
-        cur_cv = _cv(text)
-    if changed:
-        stats['cv_burst'] = changed
-    return text
+
+    def _merge_line(line):
+        """完整覆盖后只替换句间句号；不匹配长行前缀或对话片段。"""
+        nonlocal changed
+        if (not 30 <= len(line) <= 200
+                or re.search(r"""[“”‘’「」『』"'＂\x00]""", line)
+                or "__Q" in line):
+            return line
+        pieces = re.findall(r'[^。．！？!?]{1,40}[。．！？!?]', line)
+        if len(pieces) < 3 or ''.join(pieces) != line:
+            return line
+        # 疑问/感叹句保留边界，避免改变语气和句末标点语义。
+        if any(piece[-1] in "！？!?" for piece in pieces):
+            return line
+        if not 5 <= len(pieces[0][:-1]) <= 18:
+            return line
+        count, size = 1, len(pieces[0])
+        for piece in pieces[1:]:
+            if len(piece[:-1]) > 30 or size + len(piece) > 78:
+                break
+            count += 1
+            size += len(piece)
+            if count >= 3 and size >= 50:
+                break
+        if count < 3:
+            return line
+        changed += count - 1
+        return ("，".join(p[:-1] for p in pieces[:count]) + pieces[count - 1][-1]
+                + ''.join(pieces[count:]))
+
+    result = "\n".join(_merge_line(line) for line in text.split("\n"))
+    # 完整性兜底：等长、所有非句号字符原位保留；统计只在验收后提交。
+    if len(result) != len(text) or any(
+            a != b and not (a in "。．" and b == "，") for a, b in zip(text, result)):
+        return text
+    _add_stats(stats, "cv_burst", changed)
+    return result
 
 
 def clean_generated_text(text: str) -> tuple:
@@ -2839,11 +2587,15 @@ def clean_generated_text(text: str) -> tuple:
     # 位置：loc_fused_comma 之后、短段密度合并之前；断长句造的小碎段由后续 short_para 决定合并
     result = _fix_cv_burst(result, stats)
     # 句尾意象工整收尾删除（朱雀已知指纹，如"脚步声被松涛吞没了"）
-    # 必须放 cv_burst 之后：cv_burst 重排段落（合并/拆分）会改变文本末尾结构，
-    # 若在其前执行，合并后新露出的意象收尾会漏网
+    # 保持原有调用顺序；cv_burst 现在只改同段句号，不再重排段落。
     result = _fix_imagery_ending(result, stats)
+    # 引号还原后诊断模糊相似段与长句重复；两者只告警，不删除正文。
+    result = _fix_intra_chapter_rewrite(result, stats)
+    result = _fix_repeated_long_sentences(result, stats)
     # 短句独立段密度（还原后文本口径与检测一致，合并"血煞门。"类戏剧化短段）
     result = _fix_short_para_density(result, stats)
+    # 段首标点兜底（必须在所有会删字/删词的规则之后，否则删词又会留下新的段首标点）
+    result = _fix_leading_punct(result, stats)
     if stats:
         total = sum(stats.values())
         system_logger.info(f"[程序化清洗] 共替换 {total} 处: {stats}")

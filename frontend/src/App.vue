@@ -221,7 +221,10 @@ input, textarea, select, button { font-family: inherit; }
 /* ===== 科技网格背景 ===== */
 .tech-grid {
   position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 0; pointer-events: none;
-  opacity: 0.05;
+  /* 网格线用 --border（本身就是半透明品牌色，alpha 0.12~0.15），
+     这里不能再压到 0.05——两层透明度相乘后可见度只剩 0.75%，等于没渲染。
+     取 0.6 让最终可见度落在 7%~9%，浅色/深色主题都能看出网格纹理。 */
+  opacity: 0.6;
   background-image:
     linear-gradient(var(--border) 1px, transparent 1px),
     linear-gradient(90deg, var(--border) 1px, transparent 1px);
@@ -276,14 +279,16 @@ input, textarea, select, button { font-family: inherit; }
 
 /* ===== 底部科技装饰线 ===== */
 .bottom-line {
-  position: fixed; bottom: 0; left: 0; right: 0; height: 2px; z-index: 200;
+  position: fixed; bottom: 0; left: 0; right: 0; height: 3px; z-index: 200;
   background: var(--brand-gradient);
-  opacity: 0.3;
+  /* 原来 2px + 0.2~0.5 透明度太弱，浅色主题下看不出是"呼吸灯"：
+     加粗到 3px、呼吸区间提到 0.55~1，并补一层同色辉光让它真的在"发光"。 */
+  box-shadow: 0 -1px 12px var(--accent-glow-strong);
   animation: bottomPulse 4s ease-in-out infinite;
 }
 @keyframes bottomPulse {
-  0%, 100% { opacity: 0.2; }
-  50% { opacity: 0.5; }
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
 }
 
 /* ===== Dashboard 侧边栏 ===== */

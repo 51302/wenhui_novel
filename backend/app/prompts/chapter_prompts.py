@@ -100,6 +100,7 @@ COGNITION_BOUNDARY_GUIDE = get_config("COGNITION_BOUNDARY_GUIDE", "")
 # ============================================================================
 
 GENERATION_FRAMEWORK = get_config("GENERATION_FRAMEWORK", "")
+ANTI_AI_FRAMEWORK_RULE = get_config("ANTI_AI_FRAMEWORK_RULE", "")
 SELF_CHECK_LIST = get_config("SELF_CHECK_LIST", "")
 
 # ============================================================================
@@ -221,13 +222,18 @@ def recommend_scene_guides(summary: str = "", genre: str = "") -> list:
     return guides
 
 
-def build_generate_system_prompt(summary: str = "", genre: str = "") -> str:
+def build_generate_system_prompt(summary: str = "", genre: str = "",
+                                 use_anti_ai: bool = True) -> str:
     """组装生成/续写 system prompt：恒定核心 + 按需场景指南
 
     :param summary: 本章概要（按关键词推荐场景指南）
     :param genre:   作品题材标签（网感题材常驻网感指南）
     """
-    parts = [GENERATE_CORE_SYSTEM_PROMPT]
+    parts = [GENERATE_SYSTEM_PROMPT, GENERATION_FRAMEWORK,
+             CHARACTER_NAMING_GUIDE, HUMAN_EMOTION_GUIDE, COGNITION_BOUNDARY_GUIDE]
+    if use_anti_ai:
+        parts.insert(0, HARD_RED_LINES)
+        parts.extend((ANTI_AI_FRAMEWORK_RULE, HUMAN_VOICE_MANDATE, UNIVERSAL_ANTI_AI_GUIDE))
     guides = recommend_scene_guides(summary, genre)
     parts.extend(guides)
     result = "\n\n".join(p for p in parts if p)

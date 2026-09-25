@@ -1523,7 +1523,7 @@ export default {
       continuing[d.chapter_unique_id] = true
       continuationPreviews[d.chapter_unique_id] = ''
       try {
-        const res = await api.post(`/chapters/continue/${d.chapter_unique_id}`, null, { params: { word_count: 800 } })
+        const res = await api.post(`/chapters/continue/${d.chapter_unique_id}`, null, { params: { word_count: 800, use_anti_ai: chapterForm.use_anti_ai } })
         if (res.状态码 === 200 && res.数据?.task_id) {
           // 异步任务：轮询续写结果
           const taskId = res.数据.task_id

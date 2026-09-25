@@ -51,44 +51,26 @@ class SkillMerger:
 
         seen: set[str] = set()
         entries: list[tuple[SkillDocument, str]] = []
-        for document in selection.documents:
-            body = self._dedupe_lines(document.body, seen)
+        dropped: list[str] = []
+        used = 0
+        documents = sorted(selection.documents, key=lambda doc: not _is_reserved(doc))
+        for document in documents:
+            candidate_seen = seen.copy()
+            body = self._dedupe_lines(document.body, candidate_seen)
             if not body:
                 continue
-            entries.append(
-                (document, f"【Skill：{document.name} | id={document.skill_id} "
-                           f"| version={document.version}】\n{body}")
-            )
-
-        reserved = [(doc, block) for doc, block in entries if _is_reserved(doc)]
-        optional = [(doc, block) for doc, block in entries if not _is_reserved(doc)]
-
-        def _size(blocks: list[tuple[SkillDocument, str]]) -> int:
-            # 块之间用 "\n\n" 连接
-            return sum(len(block) for _, block in blocks) + 2 * max(len(blocks) - 1, 0)
-
-        kept = {doc.skill_id for doc, _ in reserved}
-        used = _size(reserved)
-        dropped: list[str] = []
-        for document, block in optional:
-            cost = len(block) + (2 if kept else 0)
-            if used + cost <= self.max_chars:
-                kept.add(document.skill_id)
-                used += cost
-            else:
+            block = (f"【Skill：{document.name} | id={document.skill_id} "
+                     f"| version={document.version}】\n{body}")
+            cost = len(block) + (2 if entries else 0)
+            if not _is_reserved(document) and used + cost > self.max_chars:
                 dropped.append(document.skill_id)
-
-        blocks = [block for doc, block in entries if doc.skill_id in kept]
-        prompt = "\n\n".join(blocks)
-        if len(prompt) > self.max_chars:
-            # 极端情况：仅必需层就超限（如 max_chars 被调得很小），才硬截断
-            prompt = prompt[: self.max_chars].rsplit("\n", 1)[0].rstrip()
-            prompt += "\n\n【Skill 注入已按长度上限截断，优先保留前置规则】"
-        elif dropped:
-            prompt += (
-                "\n\n【Skill 注入已按长度上限省略（base/反AI 质量层/用户指定项已保留）："
-                + "、".join(dropped) + "】"
-            )
+                continue
+            entries.append((document, block))
+            seen = candidate_seen
+            used += cost
+        order = {doc.skill_id: index for index, doc in enumerate(selection.documents)}
+        entries.sort(key=lambda entry: order[entry[0].skill_id])
+        prompt = "\n\n".join(block for _, block in entries)
 
         return SkillMergeResult(
             prompt=prompt,
@@ -98,7 +80,7 @@ class SkillMerger:
                 document.skill_id: document.content_hash
                 for document in selection.documents
             },
-            effective_ids=tuple(doc.skill_id for doc, _ in entries if doc.skill_id in kept),
+            effective_ids=tuple(doc.skill_id for doc, _ in entries),
             dropped_ids=tuple(dropped),
         )
 
