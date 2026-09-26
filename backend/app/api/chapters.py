@@ -417,6 +417,7 @@ def update_chapter(
     """更新章节名称、概要或正文"""
     return ChapterService.update_chapter(
         db, chapter_unique_id,
+        user_id=current_user["user_id"],
         chapter_name=body.chapter_name,
         chapter_summary=body.chapter_summary,
         content=body.content,

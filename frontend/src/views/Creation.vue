@@ -216,6 +216,7 @@
         <div class="modal-content chapter-edit-modal">
           <button class="modal-close" @click="showChapterEditModal = false">&times;</button>
           <h2>编辑章节：{{ editChapterForm.chapter_name }}</h2>
+          <div v-if="chapterEditIssue" class="chapter-edit-issue" role="alert">{{ chapterEditIssue }}</div>
           <div class="edit-row"><label>章节名称</label><input v-model="editChapterForm.chapter_name" /></div>
           <div class="edit-row"><label>剧情发展路线</label>
             <textarea v-model="editChapterForm.chapter_summary" class="wide-textarea" rows="4" style="width: 580px; height: 71px;" placeholder="剧情发展路线(如：主角偷袭天道教宗→夺取镇教之宝→被追杀→坠崖获机缘)"></textarea></div>
@@ -898,6 +899,7 @@ export default {
     const continuationPreviews = reactive({})
     const saving = ref(false)
     const regenerating = ref(false)
+    const chapterEditIssue = ref('')
     const showChapterEditModal = ref(false)
     // 已有章节列表分页
     const chapterPage = ref(1)
@@ -1403,6 +1405,7 @@ export default {
       selEditChapterTemplates.value = (ch.chapter_template || '').split(',').map(s => s.trim()).filter(Boolean)
       msEditStyleOpen.value = false
       msEditTemplateOpen.value = false
+      chapterEditIssue.value = ''
       showChapterEditModal.value = true
     }
 
@@ -1446,7 +1449,11 @@ export default {
     }
 
     const saveChapterEdit = async () => {
-      if (!editChapterForm.chapter_name) return alert('请输入章节名称')
+      if (!editChapterForm.chapter_name) {
+        chapterEditIssue.value = '保存失败：请输入章节名称'
+        return
+      }
+      chapterEditIssue.value = ''
       saving.value = true
       try {
         const res = await api.put(`/chapters/update/${editingChapterId.value}`, {
@@ -1459,15 +1466,25 @@ export default {
           const r2 = await api.get(`/chapters/novel/${chapterNovel.value.novel_unique_id}`)
           if (r2.状态码 === 200) { novelChapters.value = r2.数据; chapterPage.value = 1 }
           showChapterEditModal.value = false
-        } else alert(res.消息)
-      } catch (e) { alert('修改失败: ' + (e.response?.data?.detail || e.message)) }
-      finally { saving.value = false }
+        } else {
+          chapterEditIssue.value = '保存失败：' + (res.消息 || '服务器未能保存章节')
+          alert(res.消息)
+        }
+      } catch (e) {
+        const msg = e.response?.data?.消息 || e.response?.data?.detail || e.message || '网络错误'
+        chapterEditIssue.value = '保存失败：' + msg
+        alert('修改失败: ' + msg)
+      } finally { saving.value = false }
     }
 
     const regenerateChapter = async () => {
-      if (!editChapterForm.chapter_name) return alert('请输入章节名称')
+      if (!editChapterForm.chapter_name) {
+        chapterEditIssue.value = '重新生成失败：请输入章节名称'
+        return
+      }
       if (!confirm('AI重新生成将覆盖当前章节内容，确定继续？')) return
       if (regenerating.value) return
+      chapterEditIssue.value = ''
       regenerating.value = true
       try {
         const res = await api.post(`/chapters/regenerate/${editingChapterId.value}`, {
@@ -1489,23 +1506,29 @@ export default {
             const newContent = task.result?.content ?? preview
             if (newContent) {
               editChapterForm.content = newContent
+              chapterEditIssue.value = ''
               await fetchDrafts()
               const chapters = await api.get(`/chapters/novel/${chapterNovel.value.novel_unique_id}`)
               if (chapters.状态码 === 200) novelChapters.value = chapters.数据
               alert('重新生成成功，内容已更新到编辑区')
             } else {
+              chapterEditIssue.value = '重新生成失败：任务完成但没有返回章节正文'
               alert('重新生成成功，但未能获取内容')
             }
           } else if (task.status === 'failed') {
+            chapterEditIssue.value = '重新生成失败：' + (task.error || '任务执行失败')
             alert('AI重新生成失败: ' + task.error)
           } else {
+            chapterEditIssue.value = '重新生成失败：任务超时，请稍后重试'
             alert('AI重新生成超时，请稍后查看章节内容')
           }
         } else {
+          chapterEditIssue.value = '重新生成失败：' + (res.消息 || '提交失败')
           alert('重新生成失败: ' + (res.消息 || '提交失败'))
         }
       } catch (e) {
-        const msg = e.response?.data?.detail || e.message || '网络错误'
+        const msg = e.response?.data?.消息 || e.response?.data?.detail || e.message || '网络错误'
+        chapterEditIssue.value = '重新生成失败：' + msg
         alert('AI重新生成失败: ' + msg)
       } finally {
         regenerating.value = false
@@ -1735,7 +1758,7 @@ export default {
       selAuthorStyles, selChapterTemplates, selEditAuthorStyles, selEditChapterTemplates,
       msStyleOpen, msTemplateOpen, msEditStyleOpen, msEditTemplateOpen, toggleMulti,
       chapterPage, chapterPageSize, chapterPaged, chapterPageCount, chapterPageNums,
-      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, editChapter, saveChapterEdit, regenerateChapter, continueChapter, continuing, deleteNovel, downloadNovel, formatTime, saving, regenerating, showChapterEditModal, editChapterForm,
+      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, editChapter, saveChapterEdit, regenerateChapter, continueChapter, continuing, deleteNovel, downloadNovel, formatTime, saving, regenerating, chapterEditIssue, showChapterEditModal, editChapterForm,
       publishing, publishOverlay,
       genreOptions, selectedGenres, toggleGenre, handleCoverUpload,
       showEditModal, editForm, editSelectedGenres, editError, editSuccess,
@@ -2093,6 +2116,16 @@ export default {
 /* 章节编辑独立弹窗 */
 .chapter-edit-modal { max-width: 700px; }
 .chapter-edit-modal h2 { margin-bottom: 20px; color: var(--text-primary); font-size: 18px; }
+.chapter-edit-issue {
+  margin: -8px 0 16px;
+  padding: 10px 12px;
+  border-left: 3px solid #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+  color: #f87171;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
 .edit-row { margin-bottom: 14px; }
 .edit-row label { display: block; font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
 .edit-row input, .edit-row textarea {

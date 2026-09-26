@@ -977,14 +977,17 @@ class ChapterService:
                 ChapterService._log_extract_dimensions(info_data, "全量提取")
             else:
                 system_logger.error(f"[记忆体重建] AI 提取失败: {err}")
+                if chapter_summary:
+                    info_data["关键事件"] = chapter_summary
         except Exception as e:
             system_logger.error(f"[记忆体重建] AI 提取失败: {e}")
             if chapter_summary:
                 info_data["关键事件"] = chapter_summary
 
         # 3. 写入新条目
-        if info_data:
-            ChapterService.save_extracted_to_memory(novel_unique_id, info_data, chapter_name)
+        if not info_data:
+            raise RuntimeError("章节记忆提取失败，且没有可用概要作为降级内容")
+        ChapterService.save_extracted_to_memory(novel_unique_id, info_data, chapter_name)
         system_logger.info(f"[记忆体重建] {chapter_name} 记忆体重建完成")
 
     @staticmethod
@@ -3122,7 +3125,7 @@ class ChapterService:
         )
 
     @staticmethod
-    def update_chapter(db: Session, chapter_unique_id: str,
+    def update_chapter(db: Session, chapter_unique_id: str, user_id: int = None,
                        chapter_name: str = None, chapter_summary: str = None,
                        content: str = None) -> dict:
         """更新已存在的章节名称、概要或正文
@@ -3136,41 +3139,120 @@ class ChapterService:
         chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
         if not chapter:
             return fail("章节不存在", code=404)
-        old_chapter_name = chapter.chapter_name  # 更新前的章节名，用于记忆体重建时清除旧条目
+        if user_id is not None and chapter.user_id != user_id:
+            return fail("无权修改该章节", code=403)
+
+        old_chapter_name = chapter.chapter_name
+        target_chapter_name = chapter_name if chapter_name is not None else old_chapter_name
+        novel_dir = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id)
+        os.makedirs(novel_dir, exist_ok=True)
+        old_file = ChapterService._get_chapter_txt_path(
+            chapter.novel_unique_id, old_chapter_name, chapter.chapter_unique_id)
+        target_file = ChapterService._get_chapter_txt_path(
+            chapter.novel_unique_id, target_chapter_name, chapter.chapter_unique_id)
+        old_file_exists = os.path.exists(old_file)
+        old_file_bytes = None
+        if old_file_exists:
+            with open(old_file, "rb") as source:
+                old_file_bytes = source.read()
+        target_file_exists = target_file != old_file and os.path.exists(target_file)
+        if target_file_exists:
+            return fail("目标章节文件已存在，无法覆盖", code=409)
+        old_fields = {
+            "chapter_name": chapter.chapter_name,
+            "chapter_summary": chapter.chapter_summary,
+            "word_count": chapter.word_count,
+        }
+        redis_client = _redis()
+        redis_snapshot = None
+        if content is not None:
+            if not redis_client or not redis_client.ping():
+                return fail("Redis不可用，无法同步章节记忆体", code=503)
+            redis_snapshot = ChapterService._memory_snapshot(chapter.novel_unique_id)
+
         update_data = {}
         if chapter_name is not None:
-            old_file = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id,
-                                    f"{chapter.chapter_name}_{chapter.chapter_unique_id}.txt")
             update_data["chapter_name"] = chapter_name
-            new_file = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id,
-                                    f"{chapter_name}_{chapter.chapter_unique_id}.txt")
-            if os.path.exists(old_file):
-                os.rename(old_file, new_file)
         if chapter_summary is not None:
             update_data["chapter_summary"] = chapter_summary
-        ChapterDAO.update(db, chapter, **update_data)
-        # 如果传入了正文 content，写入对应 TXT 文件
         if content is not None:
-            target_chapter_name = update_data.get("chapter_name", chapter.chapter_name)
-            novel_dir = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id)
-            os.makedirs(novel_dir, exist_ok=True)
-            target_file = ChapterService._get_chapter_txt_path(
-                chapter.novel_unique_id, target_chapter_name, chapter.chapter_unique_id)
-            with open(target_file, "w", encoding="utf-8") as f:
-                f.write(content)
-            # 后台异步重建本章记忆体（编辑内容已变更，旧提取作废；不阻塞保存返回）
-            import threading
-            threading.Thread(
-                target=ChapterService._background_rebuild_memory,
-                args=(chapter.novel_unique_id, old_chapter_name, content,
-                      target_chapter_name, chapter_summary or ""),
-                daemon=True,
-            ).start()
-        r3 = _redis()
-        if r3:
-            r3.delete_pattern(f"chapters:*")
-            r3.delete_pattern("chapter:content:*")
-        return success(None, "章节更新成功")
+            update_data["word_count"] = len(content)
+
+        file_changed = False
+        temp_path = None
+        try:
+            if content is not None:
+                import tempfile
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", dir=novel_dir,
+                    prefix=".chapter-", suffix=".tmp", delete=False
+                ) as temp_file:
+                    temp_file.write(content)
+                    temp_file.flush()
+                    os.fsync(temp_file.fileno())
+                    temp_path = temp_file.name
+                os.replace(temp_path, target_file)
+                temp_path = None
+                file_changed = True
+            elif target_chapter_name != old_chapter_name and old_file_exists:
+                os.replace(old_file, target_file)
+                file_changed = True
+
+            for key, value in update_data.items():
+                setattr(chapter, key, value)
+            db.flush()
+
+            if content is not None:
+                import asyncio
+                asyncio.run(ChapterService._rebuild_memory_for_chapter(
+                    chapter.novel_unique_id, old_chapter_name, content,
+                    target_chapter_name, chapter_summary if chapter_summary is not None else old_fields["chapter_summary"] or ""
+                ))
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
+            if chapter:
+                for key, value in old_fields.items():
+                    setattr(chapter, key, value)
+                db.commit()
+            try:
+                if temp_path and os.path.exists(temp_path):
+                    os.remove(temp_path)
+                if file_changed:
+                    if old_file_exists:
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(
+                            mode="wb", dir=novel_dir, prefix=".chapter-", suffix=".tmp", delete=False
+                        ) as restored:
+                            restored.write(old_file_bytes)
+                            restored.flush()
+                            os.fsync(restored.fileno())
+                            restore_path = restored.name
+                        os.replace(restore_path, old_file)
+                    if target_file != old_file and os.path.exists(target_file):
+                        os.remove(target_file)
+                    elif not old_file_exists and os.path.exists(target_file):
+                        os.remove(target_file)
+            except Exception as file_exc:
+                system_logger.error(f"[编辑保存] TXT恢复失败: {file_exc}")
+            if redis_snapshot is not None:
+                try:
+                    ChapterService._restore_memory_snapshot(chapter.novel_unique_id, redis_snapshot)
+                except Exception as redis_exc:
+                    system_logger.error(f"[编辑保存] Redis恢复失败: {redis_exc}")
+            system_logger.error(f"[编辑保存] 三源同步失败: {exc}")
+            return fail("章节保存失败，已回滚已知修改", code=500)
+
+        if content is not None and target_file != old_file and old_file_exists:
+            try:
+                os.remove(old_file)
+            except OSError as exc:
+                system_logger.error(f"[编辑保存] 清理旧章节文件失败: {exc}")
+        if redis_client:
+            redis_client.delete_pattern("chapters:*")
+            redis_client.delete_pattern("chapter:content:*")
+        return success(None, "章节更新成功，MySQL、TXT和Redis已同步")
 
     @staticmethod
     def _background_rebuild_memory(novel_unique_id: str, old_chapter_name: str,
