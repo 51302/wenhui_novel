@@ -42,7 +42,7 @@ def stream_task(task_id: str, current_user: dict = Depends(get_current_user)):
                     return
             status = TaskQueue.get_status(task_id)
             if status.get("status") == "failed":
-                yield f"data: {json.dumps({'type': 'error', 'error': status.get('error', '任务执行失败')}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'error': status.get('error', '任务执行失败'), 'result': status.get('result')}, ensure_ascii=False)}\n\n"
                 return
             if status.get("status") == "done":
                 result = status.get("result") or {}
@@ -54,10 +54,13 @@ def stream_task(task_id: str, current_user: dict = Depends(get_current_user)):
 
 
 @router.get("/tasks/{task_id}")
-def get_task_status(task_id: str):
+def get_task_status(task_id: str, current_user: dict = Depends(get_current_user)):
     """查询异步任务状态
     返回: {"status": "pending|processing|done|failed", "result": {...}, "error": "..."}
     """
+    task_data = TaskQueue.get_data(task_id)
+    if not task_data or task_data.get("user_id") != current_user["user_id"]:
+        return fail("无权访问该任务", code=403)
     status = TaskQueue.get_status(task_id)
     return success(status, "查询成功")
 

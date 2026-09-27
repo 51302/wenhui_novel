@@ -217,6 +217,10 @@
           <button class="modal-close" @click="showChapterEditModal = false">&times;</button>
           <h2>编辑章节：{{ editChapterForm.chapter_name }}</h2>
           <div v-if="chapterEditIssue" class="chapter-edit-issue" role="alert">{{ chapterEditIssue }}</div>
+          <div v-if="regenerationPreview">
+            <p>生成预览{{ regenerationOutOfScope ? '：概要越界，未保存' : '' }}</p>
+            <pre class="generation-preview" :class="{ 'scope-violation': regenerationOutOfScope }">{{ regenerationPreview }}</pre>
+          </div>
           <div class="edit-row"><label>章节名称</label><input v-model="editChapterForm.chapter_name" /></div>
           <div class="edit-row"><label>剧情发展路线</label>
             <textarea v-model="editChapterForm.chapter_summary" class="wide-textarea" rows="4" style="width: 580px; height: 71px;" placeholder="剧情发展路线(如：主角偷袭天道教宗→夺取镇教之宝→被追杀→坠崖获机缘)"></textarea></div>
@@ -348,7 +352,7 @@
           <span>{{ generationStatus === 'waiting' ? '等待生成正文...' : generationStatus === 'refreshing' ? '生成完成，正在刷新草稿...' : '正在流式生成正文...' }}</span>
         </div>
         <p v-if="generationStatus === 'failed'" class="error" role="alert">{{ generationError }}。已收到的正文保留如下。</p>
-        <pre v-if="generationPreview" class="generation-preview">{{ generationPreview }}</pre>
+        <pre v-if="generationPreview" class="generation-preview" :class="{ 'scope-violation': generationOutOfScope }">{{ generationPreview }}</pre>
       </section>
       <div v-if="drafts.length === 0 && !generationStatus" class="empty">暂无草稿</div>
       <div v-for="d in drafts" :key="d.chapter_unique_id" class="draft-card">
@@ -361,7 +365,7 @@
         </div>
         <div v-if="continuing[d.chapter_unique_id] || continuationPreviews[d.chapter_unique_id]">
           <p>{{ continuing[d.chapter_unique_id] ? '正在续写，以下为实时预览，最终内容以保存结果为准' : '续写预览，成功后正文已刷新为保存结果' }}</p>
-          <pre v-if="continuationPreviews[d.chapter_unique_id]" class="generation-preview">{{ continuationPreviews[d.chapter_unique_id] }}</pre>
+          <pre v-if="continuationPreviews[d.chapter_unique_id]" class="generation-preview" :class="{ 'scope-violation': continuationOutOfScope[d.chapter_unique_id] }">{{ continuationPreviews[d.chapter_unique_id] }}</pre>
         </div>
         <div class="draft-actions">
           <button @click="continueChapter(d)" :disabled="continuing[d.chapter_unique_id]">
@@ -892,6 +896,10 @@ export default {
     const chapterNovel = ref({})
     const novelChapters = ref([])
     const generating = ref(false)
+    const generationOutOfScope = ref(false)
+    const regenerationPreview = ref('')
+    const regenerationOutOfScope = ref(false)
+    const continuationOutOfScope = reactive({})
     const generationPreview = ref('')
     const generationStatus = ref('')
     const generationTitle = ref({ novel: '', chapter: '' })
@@ -984,6 +992,7 @@ export default {
         chapterForm.word_count = 3000
       }
       generating.value = true
+      generationOutOfScope.value = false
       generationPreview.value = ''
       const novelId = chapterNovel.value.novel_unique_id
       generationTitle.value = { novel: chapterNovel.value.title, chapter: chapterForm.chapter_name }
@@ -1014,7 +1023,11 @@ export default {
             generationStatus.value = 'streaming'
             generationPreview.value += chunk
           })
-          if (task.status !== 'done') throw new Error(task.error || 'AI生成失败')
+          if (task.status !== 'done') {
+            generationPreview.value = task.result?.preview_text || generationPreview.value
+            generationOutOfScope.value = task.result?.summary_scope_result?.within_scope === false
+            throw new Error(task.error || 'AI生成失败')
+          }
           generationPreview.value = task.result?.content ?? generationPreview.value
           generationStatus.value = 'refreshing'
           if (!await fetchDrafts()) throw new Error('正文已生成，但草稿刷新失败，请稍后刷新草稿列表')
@@ -1264,7 +1277,7 @@ export default {
           const data = JSON.parse(event.data)
           if (data.type === 'chunk') onChunk(data.content || '')
           if (data.type === 'done') finish(resolve, { status: 'done', result: data.result || null })
-          if (data.type === 'error') finish(reject, new Error(data.error || '任务执行失败'))
+          if (data.type === 'error') finish(resolve, { status: 'failed', error: data.error || '任务执行失败', result: data.result || null })
         } catch (error) {
           finish(reject, error)
         }
@@ -1392,6 +1405,8 @@ export default {
     }
 
     const editChapter = (ch) => {
+      regenerationPreview.value = ''
+      regenerationOutOfScope.value = false
       editingChapterId.value = ch.chapter_unique_id
       Object.assign(editChapterForm, {
         chapter_name: ch.chapter_name || '',
@@ -1482,10 +1497,20 @@ export default {
         chapterEditIssue.value = '重新生成失败：请输入章节名称'
         return
       }
-      if (!confirm('AI重新生成将覆盖当前章节内容，确定继续？')) return
+      if (!confirm('AI重新生成将在正文框中逐步显示新内容，点击“保存修改”才会正式保存。确定继续？')) return
       if (regenerating.value) return
       chapterEditIssue.value = ''
       regenerating.value = true
+      regenerationPreview.value = ''
+      regenerationOutOfScope.value = false
+      const targetChapterId = editingChapterId.value
+      let lastEditorContent = editChapterForm.content
+      const updateEditorPreview = (content) => {
+        if (showChapterEditModal.value && editingChapterId.value === targetChapterId && editChapterForm.content === lastEditorContent) {
+          editChapterForm.content = content
+          lastEditorContent = content
+        }
+      }
       try {
         const res = await api.post(`/chapters/regenerate/${editingChapterId.value}`, {
           chapter_summary: editChapterForm.chapter_summary,
@@ -1500,12 +1525,14 @@ export default {
           let preview = ''
           const task = await streamTask(taskId, chunk => {
             preview += chunk
-            editChapterForm.content = preview
+            regenerationPreview.value = preview
+            updateEditorPreview(preview)
           })
           if (task.status === 'done') {
             const newContent = task.result?.content ?? preview
             if (newContent) {
-              editChapterForm.content = newContent
+              updateEditorPreview(newContent)
+              regenerationPreview.value = newContent
               chapterEditIssue.value = ''
               await fetchDrafts()
               const chapters = await api.get(`/chapters/novel/${chapterNovel.value.novel_unique_id}`)
@@ -1516,6 +1543,9 @@ export default {
               alert('重新生成成功，但未能获取内容')
             }
           } else if (task.status === 'failed') {
+            regenerationPreview.value = task.result?.preview_text || regenerationPreview.value
+            if (regenerationPreview.value) updateEditorPreview(regenerationPreview.value)
+            regenerationOutOfScope.value = task.result?.summary_scope_result?.within_scope === false
             chapterEditIssue.value = '重新生成失败：' + (task.error || '任务执行失败')
             alert('AI重新生成失败: ' + task.error)
           } else {
@@ -1545,6 +1575,7 @@ export default {
       if (continuing[d.chapter_unique_id]) return
       continuing[d.chapter_unique_id] = true
       continuationPreviews[d.chapter_unique_id] = ''
+      continuationOutOfScope[d.chapter_unique_id] = false
       try {
         const res = await api.post(`/chapters/continue/${d.chapter_unique_id}`, null, { params: { word_count: 800, use_anti_ai: chapterForm.use_anti_ai } })
         if (res.状态码 === 200 && res.数据?.task_id) {
@@ -1560,7 +1591,9 @@ export default {
             const added = Array.from(continuationPreviews[d.chapter_unique_id]).length
             alert(`续写成功！新增 ${added} 字`)
           } else if (task.status === 'failed') {
-            alert('AI续写失败: ' + task.error)
+            continuationPreviews[d.chapter_unique_id] = task.result?.preview_text || continuationPreviews[d.chapter_unique_id]
+            continuationOutOfScope[d.chapter_unique_id] = task.result?.summary_scope_result?.within_scope === false
+            alert('AI续写失败（预览未保存）: ' + task.error)
           } else {
             alert('AI续写超时，请稍后查看章节内容')
           }
@@ -1752,6 +1785,7 @@ export default {
     return { tab, isVip, isSvip, vipLevel, freeQuota, publishedToday, maxDailyQuota, quotaRemaining, quotaPercent, levelLabel, levelDesc, fetchTodayPublished, novelForm, createError, createSuccess, handleCreateNovel,
       myNovels, fetchMyNovels,
       creationSections, creationIdentitySummary, creationWorldSummary, creationRealmSummary, creationCharacterSummary, creationCompleted, creationProgress,
+      generationOutOfScope, regenerationPreview, regenerationOutOfScope, continuationOutOfScope,
       showChapterModal, chapterNovel, novelChapters, chapterForm, generating, generationPreview, generationStatus, generationTitle, generationError, continuationPreviews,
       openChapterModal, generateChapter, authorStyles, fetchAuthorStyles,
       chapterTemplates, fetchChapterTemplates, chapterTemplateGroups,
@@ -2280,6 +2314,10 @@ export default {
 /* 生成等待条 */
 .generation-card .draft-header { flex-wrap: wrap; gap: 8px; }
 .generation-card h3, .generation-card .error { overflow-wrap: anywhere; }
+.generation-preview.scope-violation {
+  color: var(--error-text, #b42318);
+  border: 1px solid currentColor;
+}
 .generation-preview {
   overflow-wrap: anywhere;
   max-height: 260px;

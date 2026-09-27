@@ -229,6 +229,7 @@ class TaskQueue:
             result_data = r.get(f"{TASK_RESULT_PREFIX}{task_id}")
             if isinstance(result_data, dict):
                 result["error"] = result_data.get("error", "未知错误")
+                result["result"] = result_data.get("data")
 
         # 获取进度（RedisCache.get() 已自动 json.loads，返回 dict）
         progress_data = r.get(f"{TASK_RESULT_PREFIX}{task_id}:progress")
@@ -279,7 +280,7 @@ class TaskQueue:
                             TaskQueue.set_status(task_id, "done")
                             _log.info(f"[Worker-{queue_name}] 任务完成: task_id={task_id}")
                         else:
-                            TaskQueue.set_result(task_id, {"error": result.get("error") or result.get("消息", "处理失败")})
+                            TaskQueue.set_result(task_id, {"error": result.get("error") or result.get("消息", "处理失败"), "data": result.get("data")})
                             TaskQueue.set_status(task_id, "failed")
                             _log.warning(f"[Worker-{queue_name}] 任务失败: task_id={task_id} error={result.get('error') or result.get('消息', '')}")
                     except Exception as e:

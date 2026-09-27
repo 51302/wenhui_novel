@@ -1159,7 +1159,7 @@ class ChapterService:
             system_logger.info("[记忆体] Mock模式，跳过增量提取")
             return
 
-        _einc = cfg("ai.api_params.extract", {})
+        _einc = cfg_get("ai.api_params.extract", {})
         inc_msgs = [
             {"role": "system", "content": EXTRACT_INCREMENTAL_SYSTEM_PROMPT},
             {"role": "user", "content": full_prompt},
@@ -3428,7 +3428,7 @@ class ChapterService:
             result = run_async(coro, db, **kwargs)
             if result.get("状态码") == 200:
                 return {"success": True, "data": result.get("数据")}
-            return {"success": False, "error": result.get("消息", fail_msg)}
+            return {"success": False, "error": result.get("消息", fail_msg), "data": result.get("数据")}
         except Exception as e:
             system_logger.error(f"[{label}] 异常: {e}")
             if trace:
