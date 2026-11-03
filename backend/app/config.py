@@ -76,36 +76,41 @@ def jwt_expire_minutes() -> int:
     return int(get("jwt.expire_minutes", 43200))
 
 
-def deepseek_api_key() -> str:
-    """获取 DeepSeek API 密钥，从配置文件读取
-    :return: API 密钥字符串
-    """
-    return get("deepseek.api_key", "")
+def mimo_api_key() -> str:
+    """获取 MIMO API 密钥，环境变量 MIMO_API_KEY 优先"""
+    import os
+    return os.getenv("MIMO_API_KEY", "") or get("mimo.api_key", "")
 
 
-def deepseek_base_url() -> str:
-    """获取 DeepSeek API 基础地址，从配置文件读取
-    :return: API 基础 URL
-    """
-    return get("deepseek.base_url", "https://api.deepseek.com/v1/chat/completions")
+def mimo_base_url() -> str:
+    """获取 MIMO API 基础地址"""
+    return get("mimo.base_url", "https://api.xiaomimimo.com/v1/chat/completions")
 
 
-def deepseek_model() -> str:
-    """获取 DeepSeek 模型名称
-    :return: 模型名称，默认 deepseek-chat
-    """
-    return get("deepseek.model", "deepseek-chat")
+def mimo_model() -> str:
+    """获取 MIMO 模型名称（核查/记忆提取）"""
+    return get("mimo.model", "mimo-v2.5")
 
 
-def deepseek_long_model() -> str:
-    """获取 DeepSeek 长文本模型名称（章节正文生成专用）
+def mimo_long_model() -> str:
+    """获取 MIMO 长文本模型名称（校准）"""
+    return get("mimo.model_long", "mimo-v2.5-pro")
 
-    flash 模型生成的句子过于平滑，AI 检测工具（困惑度+突发性统计）容易标记；
-    正文生成/续写/重新生成改用 deepseek-v4-pro，对"人味"规则执行更彻底、AI 味更淡。
-    其余轻量功能（记忆体提取/剧本/概要）仍用 deepseek.model。
-    :return: 长文本模型名称，默认 deepseek-v4-pro
-    """
-    return get("deepseek.model_long", "deepseek-v4-pro")
+
+def deepseek_writer_api_key() -> str:
+    """正文生成专用 DeepSeek API Key，环境变量 DEEPSEEK_WRITER_API_KEY 优先"""
+    import os
+    return os.getenv("DEEPSEEK_WRITER_API_KEY", "") or get("deepseek_writer.api_key", "")
+
+
+def deepseek_writer_base_url() -> str:
+    """正文生成专用 DeepSeek API 地址"""
+    return get("deepseek_writer.base_url", "https://api.deepseek.com/v1/chat/completions")
+
+
+def deepseek_writer_model() -> str:
+    """正文生成专用 DeepSeek 模型名称"""
+    return get("deepseek_writer.model", "deepseek-flash")
 
 
 def vip_default_plan() -> str:

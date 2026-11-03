@@ -9,7 +9,8 @@ from app.dao.chapter_dao import ChapterDAO
 from app.utils.response import success, fail
 import app.utils.redis_cache as redis_mod
 from app.service.es_service import es_service
-from app.config import deepseek_api_key, deepseek_base_url, deepseek_model, deepseek_long_model
+from app.config import mimo_api_key, mimo_base_url, mimo_model
+from app.config import deepseek_writer_api_key, deepseek_writer_base_url, deepseek_writer_model
 from app.config import gen_max_tokens_multiplier, gen_max_tokens_min, gen_hard_cap_ratio, gen_hard_cap_min_extra
 from app.utils.logger import system_logger
 from app.utils.task_queue import run_async
@@ -33,6 +34,15 @@ from app.prompts.screenplay_prompts import (
 
 NOVEL_DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "novel_structure_data")
 os.makedirs(NOVEL_DATA_PATH, exist_ok=True)
+
+
+def _strict_fact_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("记忆提取响应包含重复字段")
+        result[key] = value
+    return result
 
 
 def _redis():
@@ -516,14 +526,14 @@ class ChapterService:
         ]
         result, err, usage = await chat_completion(
             messages=msgs,
-            model=deepseek_model(),
+            model=mimo_model(),
             max_tokens=_ei.get("max_tokens", 4096),
             timeout=_ei.get("timeout", 180),
             thinking={"type": "disabled"},
             temperature=_ei.get("temperature", 0.3),
         )
         log_ai_call("初始记忆提取", msgs, result, err, usage,
-                    model=deepseek_model(),
+                    model=mimo_model(),
                     extra_info={"章节文本字数": len(chapters_text), "设定字数": len(novel_settings)})
         if not result:
             system_logger.error(f"[记忆体] AI提取失败: {err}")
@@ -935,60 +945,137 @@ class ChapterService:
     @staticmethod
     async def _rebuild_memory_for_chapter(novel_unique_id: str, old_chapter_name: str,
                                             content: str, chapter_name: str, chapter_summary: str):
-        """章节内容修改后重建记忆体：先清旧→AI提取→写入新"""
-        # 1. 清除该章节的所有旧记忆条目
-        #    必须带上 chapter_num：记忆体条目有两种标记风格——增量提取写的 "[第14章] xxx"
-        #    和发布/重建路径写的 "[第十四章 标题] xxx"，只按章节名匹配会漏掉前者，
-        #    导致编辑保存后旧记忆残留、与新提取内容重复。
-        old_chapter_num = ChapterService._chapter_num_from_name(old_chapter_name)
-        for cat in get_memory_category_names():
-            if cat == "作品设定":
-                continue
-            ChapterService._remove_from_dimension(
-                novel_unique_id, cat, old_chapter_name, old_chapter_num)
-        system_logger.info(
-            f"[记忆体重建] 已清除 {old_chapter_name}（第{old_chapter_num}章）旧条目")
-
-        # 2. 用 AI 重新提取
-        info_data = {}
+        snapshot = ChapterService._memory_snapshot(novel_unique_id)
         try:
-            from app.config import get as cfg
-            from app.service.ai_chat_service import chat_completion, log_ai_call
-            _ef = cfg("ai.api_params.extract", {})
+            old_number = ChapterService._chapter_num_from_name(old_chapter_name)
+            new_number = ChapterService._chapter_num_from_name(chapter_name)
+            if not new_number or new_number <= 0:
+                raise RuntimeError("章节号无效，无法校验记忆来源")
+            if old_number != new_number:
+                r = ChapterService._memory_client()
+                key = ChapterService._memory_key(novel_unique_id)
+                for field, value in snapshot.items():
+                    category = field.decode("utf-8") if isinstance(field, bytes) else field
+                    if category not in get_memory_category_names() or category == "作品设定":
+                        continue
+                    value = value.decode("utf-8") if isinstance(value, bytes) else value
+                    kept = "\n".join(line for line in value.splitlines() if not any(
+                        ChapterService._chapter_num_from_name(marker) == old_number
+                        for marker in re.findall(r"\[(第[^]]+)\]", line)))
+                    r.hset(key, field, kept)
+                    readback = r.hget(key, field)
+                    if isinstance(readback, bytes):
+                        readback = readback.decode("utf-8")
+                    if readback != kept:
+                        raise RuntimeError("Redis旧记忆清理校验失败")
+                r.hdel(key, "_source:" + str(old_number))
+            written = await ChapterService._refresh_memory_after_generate(
+                novel_unique_id, chapter_content=content, chapter_name=chapter_name,
+                chapter_summary=chapter_summary, is_regenerate=True)
+            if not written:
+                raise RuntimeError("Redis未完成本章记忆提取")
+        except BaseException:
+            ChapterService._restore_memory_snapshot(novel_unique_id, snapshot)
+            raise
+
+    @staticmethod
+    async def _rebuild_current_chapter_memory(novel_unique_id: str, content: str,
+                                              chapter_name: str, chapter_summary: str) -> bool:
+        """仅重建当前章节的记忆，不依赖其他章节完整。发布场景专用。"""
+        from app.config import get as cfg, mimo_model
+        from app.service.ai_chat_service import chat_completion, log_ai_call
+
+        number = ChapterService._chapter_num_from_name(chapter_name)
+        if not number or number <= 0:
+            raise RuntimeError("章节号无效，无法补全记忆")
+
+        snapshot = ChapterService._memory_snapshot(novel_unique_id)
+        r = ChapterService._memory_client()
+        key = ChapterService._memory_key(novel_unique_id)
+        try:
+            for field, value in snapshot.items():
+                category = field.decode("utf-8") if isinstance(field, bytes) else field
+                if category not in get_memory_category_names():
+                    continue
+                value = value.decode("utf-8") if isinstance(value, bytes) else value
+                filtered = "\n".join(
+                    line for line in value.splitlines()
+                    if not any(
+                        ChapterService._chapter_num_from_name(marker) == number
+                        for marker in re.findall(r"\[(第[^]]+)\]", line)
+                    )
+                )
+                r.hset(key, field, filtered)
+                readback = r.hget(key, field)
+                if isinstance(readback, bytes):
+                    readback = readback.decode("utf-8")
+                if readback != filtered:
+                    raise RuntimeError("Redis旧记忆清理校验失败")
+
+            efs = cfg("ai.api_params.extract", {})
             _genre = ChapterService._get_novel_genre(novel_unique_id)
-            prompt = FULL_EXTRACT_PROMPT.replace("{content}", content[-15000:]).replace("{novel_genre}", _genre)
-            ef_msgs = [
-                {"role": "system", "content": EXTRACT_FULL_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt}
+            prompt = FULL_EXTRACT_PROMPT.replace("{content}", content).replace("{novel_genre}", _genre)
+            msgs = [
+                {"role": "system", "content": EXTRACT_FULL_STRICT_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
             ]
             result, err, usage = await chat_completion(
-                messages=ef_msgs,
-                model=deepseek_model(),
-                max_tokens=_ef.get("max_tokens", 8000),
-                timeout=_ef.get("timeout", 120),
+                messages=msgs,
+                model=mimo_model(),
+                max_tokens=efs.get("max_tokens", 8000),
+                timeout=efs.get("timeout", 180),
                 thinking={"type": "disabled"},
-                temperature=_ef.get("temperature", 0.2),
+                temperature=efs.get("temperature", 0.2),
             )
-            log_ai_call("全量记忆提取", ef_msgs, result, err, usage,
-                        model=deepseek_model(),
-                        extra_info={"内容字数": len(content[-15000:])})
-            if not err:
-                info_data = ChapterService._parse_extract_result(result)
-                ChapterService._log_extract_dimensions(info_data, "全量提取")
-            else:
-                system_logger.error(f"[记忆体重建] AI 提取失败: {err}")
-                if chapter_summary:
-                    info_data["关键事件"] = chapter_summary
-        except Exception as e:
-            system_logger.error(f"[记忆体重建] AI 提取失败: {e}")
-            if chapter_summary:
-                info_data["关键事件"] = chapter_summary
+            log_ai_call("发布记忆重建", msgs, result, err, usage,
+                        model=mimo_model(),
+                        extra_info={"内容字数": len(content), "章节名": chapter_name})
+            if err:
+                raise RuntimeError(f"发布记忆提取失败：{err}")
+            if not isinstance(result, str) or not result.strip():
+                raise RuntimeError("发布记忆提取失败：模型返回空内容")
 
-        # 3. 写入新条目
-        if not info_data:
-            raise RuntimeError("章节记忆提取失败，且没有可用概要作为降级内容")
-        ChapterService.save_extracted_to_memory(novel_unique_id, info_data, chapter_name)
-        system_logger.info(f"[记忆体重建] {chapter_name} 记忆体重建完成")
+            result = "\n".join(line for line in result.splitlines()
+                               if not line.strip().startswith("```"))
+            info_data = ChapterService._parse_extract_result(result)
+            field_map = get_frontend_to_dimension_map()
+            entries = {}
+            for front_field, raw_value in info_data.items():
+                field = field_map.get(front_field)
+                if field not in get_memory_category_names():
+                    continue
+                natural = ChapterService._pipe_to_natural(front_field, raw_value, chapter_name)
+                if natural.strip():
+                    entries[field] = natural
+            if not entries:
+                raise RuntimeError("发布记忆提取失败：模型未返回有效维度内容")
+
+            for field, appended in entries.items():
+                current = r.hget(key, field)
+                current = current.decode("utf-8") if isinstance(current, bytes) else current or ""
+                appended = f"[第{number}章] {chapter_name}\n" + appended.strip() + "\n"
+                combined = (current + "\n" + appended).strip()
+                r.hset(key, field, combined)
+                readback = r.hget(key, field)
+                if isinstance(readback, bytes):
+                    readback = readback.decode("utf-8")
+                if readback != combined:
+                    raise RuntimeError(f"Redis记忆写入校验失败：{field}")
+
+            provenance = ChapterService._memory_provenance(novel_unique_id, chapter_name, content)
+            if not provenance:
+                raise RuntimeError("发布记忆重建结果为空：未写入本章有效条目")
+            source_field = "_source:" + str(number)
+            r.hset(key, source_field, provenance)
+            actual = r.hget(key, source_field)
+            if isinstance(actual, bytes):
+                actual = actual.decode("utf-8")
+            if actual != provenance:
+                raise RuntimeError("发布记忆来源指纹写入校验失败")
+            return True
+        except BaseException:
+            ChapterService._restore_memory_snapshot(novel_unique_id, snapshot)
+            raise
 
     @staticmethod
     async def _extract_and_append_to_memory(novel_unique_id: str, content: str,
@@ -1010,14 +1097,14 @@ class ChapterService:
             ]
             result, err, usage = await chat_completion(
                 messages=efs_msgs,
-                model=deepseek_model(),
+                model=mimo_model(),
                 max_tokens=_efs.get("max_tokens", 8000),
                 timeout=_efs.get("timeout", 180),
                 thinking={"type": "disabled"},
                 temperature=_efs.get("temperature", 0.2),
             )
             log_ai_call("发布记忆提取", efs_msgs, result, err, usage,
-                        model=deepseek_model(),
+                        model=mimo_model(),
                         extra_info={"内容字数": len(extract_content), "章节名": chapter_name})
             if not err:
                 info_data = ChapterService._parse_extract_result(result)
@@ -1166,47 +1253,70 @@ class ChapterService:
         ]
         result, err, usage = await chat_completion(
             messages=inc_msgs,
-            model=deepseek_model(),
+            model=mimo_model(),
             max_tokens=_einc.get("max_tokens", 8000),
             timeout=_einc.get("timeout", 120),
             thinking={"type": "disabled"},
             temperature=_einc.get("temperature", 0.3),
         )
         log_ai_call("增量记忆提取", inc_msgs, result, err, usage,
-                    model=deepseek_model(),
+                    model=mimo_model(),
                     extra_info={"章节名": chapter_name, "已有记忆字数": len(existing_for_ai or "")})
-        if err or not result:
-            system_logger.error(f"[记忆体] 增量提取失败: {err}")
-            raise RuntimeError(f"记忆提取失败: {err}")
+        if err or not result or not result.strip():
+            reason = err or "AI返回空内容"
+            system_logger.error(f"[记忆体] 增量提取失败: {reason}")
+            raise RuntimeError(f"记忆提取失败: {reason}")
 
-        # 解析并按维度追加
-        # 章节标记由代码强制补上：count_sources（三源统计）/ 按需检索的章号过滤 /
-        # _remove_from_dimension（重写时清旧记忆）都依赖 [第N章] 标记，
-        # 而增量提取的提示词只要求标「本章新增」，不能指望模型输出标记。
-        marker = ""
-        chapter_num = ChapterService._chapter_num_from_name(chapter_name)
-        if chapter_num and chapter_num > 0:
-            marker = f"[第{chapter_num}章] "
-        sections = re.split(r'\n(?=【)', result)
-        for sec in sections:
-            m = re.match(r'【(.+?)】\s*\n?(.*)', sec, re.DOTALL)
-            if not m:
+        parsed = ChapterService._parse_incremental_memory(result, chapter_name)
+        for category, lines in parsed.items():
+            new_content = "\n".join(lines)
+            ChapterService._append_to_dimension(novel_unique_id, category, new_content)
+            system_logger.info(f"[记忆体] 增量追加 {category}: +{len(new_content)} 字符")
+        system_logger.info(
+            f"[记忆体] 章节 {chapter_name} 增量更新完成: "
+            f"{len(parsed)}维度/{sum(map(len, parsed.values()))}条")
+
+    @staticmethod
+    def _parse_incremental_memory(result: str, chapter_name: str) -> dict:
+        number = ChapterService._chapter_num_from_name(chapter_name)
+        if not number or number <= 0:
+            raise RuntimeError("章节号无效，无法校验记忆来源")
+        aliases = {}
+        for dimension, frontend, label, _ in MEMORY_DIMENSION_DEFS:
+            if dimension != "作品设定":
+                for alias in (dimension, frontend, label):
+                    aliases[alias] = dimension
+        parsed = {}
+        category = None
+        headers = 0
+        for raw_line in result.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("```"):
                 continue
-            ai_cat = m.group(1)
-            new_content = m.group(2).strip()
-            if not new_content or new_content == "无新增":
+            line = re.sub(r"^(?:#{1,6}\s+|[-*]\s+|\d+[.、．)]\s*)", "", line).strip()
+            line = line.strip("*").strip()
+            header = re.match(r"^【([^】]+)】\s*[:：]?\s*(.*)$", line)
+            if header:
+                headers += 1
+                label = header.group(1).strip()
+                category = aliases.get(label)
+                if category is None:
+                    raise RuntimeError(f"记忆提取格式错误：未知维度【{label}】")
+                line = header.group(2).lstrip("*").strip()
+            if not line or category is None:
                 continue
-
-            # 用统一维度映射匹配
-            matched = match_ai_label_to_dimension(ai_cat)
-            if matched:
-                new_content = ChapterService._ensure_chapter_markers(new_content, marker)
-                ChapterService._append_to_dimension(novel_unique_id, matched, new_content)
-                system_logger.info(f"[记忆体] 增量追加 {matched}: +{len(new_content)} 字符")
-            else:
-                system_logger.warning(f"[记忆体] 未识别的AI维度标签: {ai_cat}")
-
-        system_logger.info(f"[记忆体] 章节 {chapter_name} 增量更新完成")
+            marker = re.match(r"^\[(第[^]]+)\]\s*(.*)$", line)
+            if marker:
+                if ChapterService._chapter_num_from_name(marker.group(1)) != number:
+                    raise RuntimeError("记忆提取章节标记与本章不一致")
+                line = marker.group(2).strip()
+            if not line or line.strip("。；;.!！ ") in ("无", "无新增", "无新信息", "无变化", "暂无", "—", "-"):
+                continue
+            parsed.setdefault(category, []).append(f"[第{number}章] {line}")
+        if not parsed:
+            reason = "未识别到维度标题" if not headers else "各维度均无有效条目"
+            raise RuntimeError(f"记忆提取结果为空：{reason}（响应{len(result)}字）")
+        return parsed
 
 
     # ----------------------------------------------------------------
@@ -1647,7 +1757,7 @@ class ChapterService:
                             {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
                             {"role": "user", "content": prompt},
                         ],
-                        model=deepseek_model(),
+                        model=mimo_model(),
                         max_tokens=_el2.get("max_tokens", 3000),
                         timeout=_el2.get("timeout", 120),
                         thinking={"type": "disabled"},
@@ -1778,8 +1888,7 @@ class ChapterService:
                 novel_unique_id, db, chapter_content, chapter_name, chapter_summary)
             provenance = ChapterService._memory_provenance(novel_unique_id, chapter_name, chapter_content)
             if not provenance:
-                ChapterService._restore_memory_snapshot(novel_unique_id, snapshot)
-                return False
+                raise RuntimeError("记忆提取结果为空：未写入本章有效条目")
             r.hset(key, "_source:" + str(number), provenance)
             if not ChapterService._memory_matches_content(novel_unique_id, chapter_name, chapter_content):
                 raise RuntimeError("Redis正文来源校验失败")
@@ -1806,7 +1915,7 @@ class ChapterService:
                     {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
-                model=deepseek_model(),
+                model=mimo_model(),
                 max_tokens=_el.get("max_tokens", 3000),
                 timeout=_el.get("timeout", 120),
                 thinking={"type": "disabled"},
@@ -2175,6 +2284,8 @@ class ChapterService:
                     if ch.chapter_unique_id in fname:
                         os.remove(os.path.join(novel_dir_del, fname))
                         break
+                ChapterService._restore_outline_cache_if_missing(
+                    novel_unique_id, ch.chapter_number, ch.chapter_summary, ch.chapter_name)
                 ChapterDAO.delete(db, ch.chapter_unique_id)
                 system_logger.info(f"[创建草稿] 覆盖同名草稿: {chapter_name}")
                 break
@@ -2384,7 +2495,9 @@ class ChapterService:
                     await on_chunk(mock_text[index:index + 80])
             return mock_text, ""
         try:
-            gen_model = deepseek_long_model()
+            gen_model = deepseek_writer_model()
+            _wk = deepseek_writer_api_key()
+            _wu = deepseek_writer_base_url()
             msgs = [
                 {"role": "system", "content": build_generate_system_prompt(
                     summary, genre, use_anti_ai=use_anti_ai)},
@@ -2398,6 +2511,9 @@ class ChapterService:
                 "timeout": gen_api_timeout(),
                 "thinking": {"type": "disabled"},
             }
+            if _wk:
+                completion_params["base_url"] = _wu
+                completion_params["api_key"] = _wk
             if on_chunk:
                 completion_params["on_chunk"] = on_chunk
             text, err, usage = await completion(**completion_params,
@@ -2407,7 +2523,7 @@ class ChapterService:
                 presence_penalty=cfg("ai.generation.presence_penalty", 0.5),
             )
             log_ai_call("正文生成", msgs, text, err, usage,
-                        model=deepseek_long_model(),
+                        model=gen_model,
                         extra_info={"概要字数": len(summary), "max_tokens": max_tokens})
             if err or not text:
                 return "", err or "模型返回空内容"
@@ -2453,7 +2569,8 @@ class ChapterService:
         # ---- 2. 读取已有章节概要作为前文脉络 ----
         chapters = ChapterDAO.get_by_novel_id(db, novel_unique_id)
         chapters.sort(key=lambda c: c.chapter_number or 0)
-        max_num = max((c.chapter_number or 0) for c in chapters) if chapters else 0
+        published_chapters = [c for c in chapters if bool(c.is_published)]
+        max_num = max((c.chapter_number or 0) for c in published_chapters) if published_chapters else 0
         start_num = max_num + 1
         existing_lines = []
         for c in chapters:
@@ -2547,7 +2664,11 @@ class ChapterService:
             f"[AI调用-概要生成] 已有概要={len(existing_outlines)}字 | "
             f"剧情大框={len(story_direction)}字 | 提示词={len(system_prompt) + len(user_prompt)}字 | "
             f"生成章节数={chapter_count}")
-        outline_text, err = await ChapterService._call_outline_api(system_prompt, user_prompt)
+        outline_text, err = await ChapterService._call_outline_api(
+            system_prompt,
+            user_prompt,
+            max_tokens=max(4000, chapter_count * 1200),
+        )
         if not outline_text:
             return fail(f"概要生成失败：{err or 'AI接口无返回'}", code=502)
 
@@ -2566,8 +2687,15 @@ class ChapterService:
             else:
                 name = (o.get("chapter_name") or "未知").strip()
                 system_logger.warning(f"[概要规划] 概要字数不足{MIN_OUTLINE_CHARS}字，已过滤: {name}（{len(s)}字）")
-        if not valid_outlines:
-            return fail(f"生成的概要均少于{MIN_OUTLINE_CHARS}字，请重新生成", code=502)
+        if len(valid_outlines) < chapter_count:
+            system_logger.warning(
+                f"[概要规划] 有效概要数量不足：请求{chapter_count}章，"
+                f"解析{len(outlines)}章，过滤后{len(valid_outlines)}章"
+            )
+            return fail(
+                f"AI仅生成{len(valid_outlines)}章有效概要，目标为{chapter_count}章，请重新生成",
+                code=502,
+            )
         outlines = valid_outlines[:chapter_count]
 
         preview = []
@@ -2621,6 +2749,23 @@ class ChapterService:
                   [o for o in outlines if isinstance(o, dict)], ttl=86400)
         except Exception:
             pass
+
+    @staticmethod
+    def _restore_outline_cache_if_missing(novel_unique_id: str, chapter_number: int,
+                                          chapter_summary: str, chapter_name: str = "") -> None:
+        summary = (chapter_summary or "").strip()
+        if not chapter_number or not summary:
+            return
+        outlines = ChapterService._get_outline_cache(novel_unique_id)
+        if any((o.get("chapter_number") or 0) == chapter_number for o in outlines):
+            return
+        outlines.append({
+            "chapter_name": chapter_name or f"第{chapter_number}章",
+            "chapter_number": chapter_number,
+            "chapter_summary": summary,
+        })
+        ChapterService._write_outline_cache(
+            novel_unique_id, sorted(outlines, key=lambda o: o.get("chapter_number") or 0))
 
     @staticmethod
     def get_cached_outlines(novel_unique_id: str) -> dict:
@@ -2684,7 +2829,8 @@ class ChapterService:
 
         # ---- 2. 计算起始章节号（从现有最大章号 +1 连续编排） ----
         existing = ChapterDAO.get_by_novel_id(db, novel_unique_id)
-        max_num = max((c.chapter_number or 0) for c in existing) if existing else 0
+        published = [c for c in existing if bool(c.is_published)]
+        max_num = max((c.chapter_number or 0) for c in published) if published else 0
         start_num = max_num + 1
 
         # ---- 3. 批量创建草稿章节（含概要，正文留空） ----
@@ -2732,7 +2878,7 @@ class ChapterService:
             ]
             text, err, usage = await chat_completion(
                 messages=ol_msgs,
-                model=deepseek_model(),
+                model=mimo_model(),
                 max_tokens=max_tokens,
                 timeout=_ol.get("timeout", 120),
                 thinking={"type": "disabled"},
@@ -2742,7 +2888,7 @@ class ChapterService:
                 presence_penalty=_ol.get("presence_penalty", 0.2),
             )
             log_ai_call("概要生成", ol_msgs, text, err, usage,
-                        model=deepseek_model(),
+                        model=mimo_model(),
                         extra_info={"max_tokens": max_tokens})
             if text:
                 return text, ""
@@ -3024,8 +3170,8 @@ class ChapterService:
         chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
         if not chapter:
             return fail("章节不存在", code=404)
-        if chapter.is_published:
-            return fail("该章节已发布", code=400)
+        if chapter.is_published and content is None:
+            return fail("请提供需要更新发布的章节正文", code=400)
 
         novel_unique_id = chapter.novel_unique_id
         chapter_name = chapter.chapter_name
@@ -3046,10 +3192,16 @@ class ChapterService:
         try:
             cached = ChapterService._get_outline_cache(novel_unique_id)
             match = next((item for item in cached
-                          if item.get("chapter_number") == chapter.chapter_number), {})
+                          if int(item.get("chapter_number") or 0) == int(chapter.chapter_number or 0)), {})
+            # 先独立重建当前章节记忆，不依赖其他章节是否完整
+            loop.run_until_complete(
+                ChapterService._rebuild_current_chapter_memory(
+                    novel_unique_id, content_to_save, chapter.chapter_name,
+                    match.get("chapter_summary", "")))
+            # 再用 publish 模式写 TXT/MySQL（含指纹校验，跳过重复记忆提取）
             loop.run_until_complete(_save_chapter_content(
                 {"db": db, "publish": True, "summary": match.get("chapter_summary", "")},
-                chapter, content_to_save, is_regenerate=True))
+                chapter, content_to_save, is_regenerate=False, skip_memory_extract=True))
         except Exception as exc:
             return fail(f"章节发布失败：{exc}", code=500)
         finally:
@@ -3144,6 +3296,11 @@ class ChapterService:
 
         old_chapter_name = chapter.chapter_name
         target_chapter_name = chapter_name if chapter_name is not None else old_chapter_name
+        if content is None and target_chapter_name != old_chapter_name:
+            content = ChapterService._read_chapter_content_from_file(
+                chapter.novel_unique_id, old_chapter_name, chapter.chapter_unique_id)
+        if content is not None and not content.strip():
+            return fail("章节正文为空，无法保存", code=400)
         novel_dir = os.path.join(NOVEL_DATA_PATH, chapter.novel_unique_id)
         os.makedirs(novel_dir, exist_ok=True)
         old_file = ChapterService._get_chapter_txt_path(
@@ -3242,7 +3399,7 @@ class ChapterService:
                 except Exception as redis_exc:
                     system_logger.error(f"[编辑保存] Redis恢复失败: {redis_exc}")
             system_logger.error(f"[编辑保存] 三源同步失败: {exc}")
-            return fail("章节保存失败，已回滚已知修改", code=500)
+            return fail(f"章节保存失败，已回滚已知修改：{exc}", code=500)
 
         if content is not None and target_file != old_file and old_file_exists:
             try:
@@ -3282,6 +3439,12 @@ class ChapterService:
 
         novel_unique_id = chapter.novel_unique_id
         chapter_name = chapter.chapter_name
+        chapter_number = chapter.chapter_number
+        chapter_summary = chapter.chapter_summary
+
+        if not chapter.is_published:
+            ChapterService._restore_outline_cache_if_missing(
+                novel_unique_id, chapter_number, chapter_summary, chapter_name)
 
         # 1. 删除本地 txt 文件
         novel_dir = os.path.join(NOVEL_DATA_PATH, novel_unique_id)
@@ -3385,6 +3548,19 @@ class ChapterService:
             r5.set(cache_key, result, ttl=300)
         return success(result)
 
+    @staticmethod
+    async def calibrate_with_ai(db: Session, content: str, hallucinations: list, on_chunk=None, *, chapter_unique_id: str, user_id: int) -> dict:
+        from app.service.chapter_review_service import ChapterReviewService
+        try:
+            context = ChapterService._load_review_context(db, chapter_unique_id, user_id)
+            if context.get("状态码") != 200:
+                return context
+            return await ChapterReviewService.calibrate(
+                content, hallucinations, on_chunk=on_chunk, **context["数据"])
+        except Exception as exc:
+            system_logger.error(f"[正文校准] 异常: {exc}")
+            return {"状态码": 500, "消息": str(exc)}
+
     # ============================================================
     # Worker Handler 方法（供 TaskQueue Worker 线程调用）
     # ============================================================
@@ -3437,6 +3613,57 @@ class ChapterService:
             return {"success": False, "error": str(e)}
         finally:
             db.close()
+
+    @staticmethod
+    def _load_review_context(db: Session, chapter_unique_id: str, user_id: int) -> dict:
+        chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
+        if not chapter:
+            return fail("章节不存在", code=404)
+        novel = NovelDAO.get_by_unique_id(db, chapter.novel_unique_id)
+        if not novel or chapter.user_id != user_id or novel.author_user_id != user_id:
+            return fail("无权核查或校准该章节", code=403)
+        current_num = chapter.chapter_number or ChapterService._chapter_num_from_name(chapter.chapter_name)
+        if not current_num or current_num < 1:
+            return fail("无法确定章节序号，不能安全加载历史记忆", code=400)
+        if not ChapterService._ensure_memory_store():
+            return fail("可信记忆服务不可用，请稍后重试", code=503)
+        memory = ChapterService._load_memory(chapter.novel_unique_id)
+        memory = ChapterService._retrieve_relevant_memory(
+            memory, chapter.chapter_summary or "", current_chapter_num=current_num)
+        return success({
+            "memory_body": memory,
+            "summary": chapter.chapter_summary or "",
+            "settings_text": ChapterService._get_novel_settings(chapter.novel_unique_id).get("content", ""),
+            "character_cards": ChapterService._load_character_cards(db, chapter.novel_unique_id),
+        })
+
+    @staticmethod
+    async def check_with_ai(db: Session, chapter_unique_id: str, user_id: int, content: str) -> dict:
+        from app.service.chapter_review_service import ChapterReviewService
+        context = ChapterService._load_review_context(db, chapter_unique_id, user_id)
+        if context.get("状态码") != 200:
+            return context
+        return await ChapterReviewService.check(content=content, **context["数据"])
+
+    @staticmethod
+    def _worker_check(task_id: str, task_data: dict) -> dict:
+        return ChapterService._run_db_worker(
+            ChapterService.check_with_ai, "Worker-check", "核查失败",
+            chapter_unique_id=task_data["chapter_unique_id"],
+            user_id=task_data["user_id"],
+            content=task_data.get("content", ""),
+        )
+
+    @staticmethod
+    def _worker_calibrate(task_id: str, task_data: dict) -> dict:
+        return ChapterService._run_db_worker(
+            ChapterService.calibrate_with_ai, "Worker-calibrate", "校准失败",
+            task_id=task_id,
+            content=task_data.get("content", ""),
+            hallucinations=task_data.get("hallucinations", []),
+            chapter_unique_id=task_data["chapter_unique_id"],
+            user_id=task_data["user_id"],
+        )
 
     @staticmethod
     def _worker_generate(task_id: str, task_data: dict) -> dict:
@@ -3601,7 +3828,7 @@ class ChapterService:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
                 ],
-                model=deepseek_model(),
+                model=mimo_model(),
                 max_tokens=_sc.get("max_tokens", 16384),
                 timeout=_sc.get("timeout", 300),
                 thinking={"type": "disabled"},

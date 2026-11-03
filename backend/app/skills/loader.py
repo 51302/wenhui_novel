@@ -7,6 +7,7 @@ can be tested in isolation and reused by CLI/admin tooling later.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,9 +42,10 @@ class SkillLoader:
     """Discover, parse and validate ``backend/skills/*/SKILL.md`` files."""
 
     def __init__(self, skills_root: str | Path | None = None):
-        self.skills_root = Path(skills_root) if skills_root else (
-            Path(__file__).resolve().parents[2] / "skills"
-        )
+        default_root = Path(__file__).resolve().parents[2] / "skills"
+        workspace_root = Path(os.environ.get("TRAE_SKILLS_ROOT") or Path(__file__).resolve().parents[3] / ".trae" / "skills")
+        self.skills_roots = [Path(skills_root)] if skills_root else [workspace_root, default_root]
+        self.skills_root = self.skills_roots[0]
         self._cache: dict[str, SkillDocument] | None = None
 
     def load_all(self, *, force: bool = False) -> dict[str, SkillDocument]:
@@ -51,34 +53,29 @@ class SkillLoader:
             return dict(self._cache)
 
         documents: dict[str, SkillDocument] = {}
-        if not self.skills_root.is_dir():
-            self._cache = {}
-            return {}
-
-        # Support both the original flat layout and grouped skills such as
-        # ``writer_skills/<author>/SKILL.md``.
-        for skill_file in sorted(self.skills_root.glob("**/SKILL.md")):
-            # Skip vendored/reference repos (e.g. cloned humanizer skills under
-            # ai_detection_skills). They ship their own SKILL.md but are only
-            # reference material — a ``.git`` ancestor marks them as external.
-            if self._is_vendored(skill_file):
+        for skills_root in self.skills_roots:
+            if not skills_root.is_dir():
                 continue
-            document = self._parse_file(skill_file)
-            if document.skill_id in documents:
-                previous = documents[document.skill_id]
-                raise ValueError(
-                    f"duplicate skill id '{document.skill_id}': "
-                    f"{previous.path} and {document.path}"
-                )
-            documents[document.skill_id] = document
+            for skill_file in sorted(skills_root.glob("**/SKILL.md")):
+                if self._is_vendored(skill_file, skills_root):
+                    continue
+                document = self._parse_file(skill_file)
+                if document.skill_id in documents:
+                    previous = documents[document.skill_id]
+                    raise ValueError(
+                        f"duplicate skill id '{document.skill_id}': "
+                        f"{previous.path} and {document.path}"
+                    )
+                documents[document.skill_id] = document
 
         self._cache = documents
         return dict(documents)
 
-    def _is_vendored(self, skill_file: Path) -> bool:
+    def _is_vendored(self, skill_file: Path, skills_root: Path | None = None) -> bool:
         """True if the skill lives inside a cloned repo (has a ``.git`` ancestor)."""
+        root = skills_root or self.skills_root
         for parent in skill_file.parents:
-            if parent == self.skills_root:
+            if parent == root:
                 break
             if (parent / ".git").exists():
                 return True

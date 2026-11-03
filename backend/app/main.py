@@ -94,10 +94,12 @@ async def lifespan(application: FastAPI):
             TaskQueue.start_worker("ai:regenerate",   ChapterService._worker_regenerate,    concurrency=_worker_concurrency("ai:regenerate", 1))
             TaskQueue.start_worker("ai:screenplay",   ChapterService._worker_generate_screenplay, concurrency=_worker_concurrency("ai:screenplay", 1))
             TaskQueue.start_worker("ai:outline",      ChapterService._worker_generate_outline, concurrency=_worker_concurrency("ai:outline", 1))
+            TaskQueue.start_worker("ai:calibrate",     ChapterService._worker_calibrate,      concurrency=_worker_concurrency("ai:calibrate", 1))
+            TaskQueue.start_worker("ai:check",          ChapterService._worker_check,           concurrency=_worker_concurrency("ai:check", 1))
             system_logger.info(
                 f"后台Worker线程启动完成 "
                 f"(max_concurrency={TaskQueue._max_concurrency}, "
-                f"workers={ {q: _worker_concurrency(q, 0) for q in ['ai:extract','ai:generate','ai:continue','ai:regenerate','ai:screenplay','ai:outline']} })"
+                f"workers={ {q: _worker_concurrency(q, 0) for q in ['ai:extract','ai:generate','ai:continue','ai:regenerate','ai:screenplay','ai:outline','ai:calibrate','ai:check']} })"
             )
     except Exception as e:
         system_logger.error(f"启动Worker线程失败: {e}")

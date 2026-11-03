@@ -84,7 +84,7 @@ class SkillSelector:
     # 规划/设计类 Skill：只在各自规划流程里用（章节概要规划由
     # ChapterService.generate_outline_with_ai 直接走提示词，不经过本选择器），
     # 注入正文生成只会污染写作规则。
-    _BODY_EXCLUDED = frozenset({"novel-outline"})
+    _BODY_EXCLUDED = frozenset({"novel-outline", "chapter-review"})
 
     def __init__(self, loader: SkillLoader | None = None):
         self.loader = loader or SkillLoader()
@@ -118,7 +118,7 @@ class SkillSelector:
 
         def add(skill_id: str, reason: str) -> None:
             document = documents.get(skill_id)
-            if document is None or (document.layer == "quality" and not include_quality):
+            if document is None or (document.layer == "quality" and (not include_quality or reason != "用户明确指定")):
                 return
             selected[skill_id] = document
             reasons.setdefault(skill_id, []).append(reason)
@@ -126,13 +126,6 @@ class SkillSelector:
         # The generic skill is the stable fallback for all chapter generation.
         if "novel-general" in documents:
             add("novel-general", "默认基础 Skill")
-
-        # Quality/anti-AI skills apply to every generation regardless of genre,
-        # unless the caller opts out (e.g. chapter-level "反AI检测" toggle off).
-        if include_quality:
-            for skill_id, document in documents.items():
-                if document.layer == "quality":
-                    add(skill_id, "质量控制 Skill（全量注入）")
 
         explicit_choices = self._normalize_explicit(explicit, documents)
         for skill_id in explicit_choices:

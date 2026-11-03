@@ -1,15 +1,17 @@
-import json
+﻿import json
 
 import httpx
 
-from app.config import deepseek_api_key, deepseek_base_url
+from app.config import mimo_api_key, mimo_base_url
 from app.utils.logger import system_logger
 
 
 async def chat_completion_stream(messages: list, model: str, max_tokens: int, timeout: int = 180,
-                                 on_chunk=None, **params) -> tuple:
-    api_key = (deepseek_api_key() or "").strip()
-    if not api_key:
+                                 on_chunk=None, base_url: str = None, api_key: str = None,
+                                 **params) -> tuple:
+    _base_url = base_url or mimo_base_url()
+    _api_key = (api_key or mimo_api_key() or "").strip()
+    if not _api_key:
         return "", "未配置模型 API Key，请在服务环境中设置 DEEPSEEK_API_KEY 后重新创建服务容器", None
     text_parts = []
     usage = None
@@ -17,9 +19,9 @@ async def chat_completion_stream(messages: list, model: str, max_tokens: int, ti
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream(
-                "POST", deepseek_base_url(),
+                "POST", _base_url,
                 headers={
-                    "Authorization": f"Bearer {api_key}",
+                    "Authorization": f"Bearer {_api_key}",
                     "Content-Type": "application/json",
                 },
                 json={"model": model, "messages": messages, "max_tokens": max_tokens,
@@ -69,21 +71,23 @@ async def chat_completion_stream(messages: list, model: str, max_tokens: int, ti
 
 
 async def chat_completion(messages: list, model: str, max_tokens: int, timeout: int = 180,
+                          base_url: str = None, api_key: str = None,
                           **params) -> tuple:
     """调用AI接口，返回 (text, err, usage_dict)。
 
     usage_dict 格式：{"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
     有用量时失败也返回 usage_dict；网络异常只发送一次请求并直接返回错误。
     """
-    api_key = (deepseek_api_key() or "").strip()
-    if not api_key:
+    _base_url = base_url or mimo_base_url()
+    _api_key = (api_key or mimo_api_key() or "").strip()
+    if not _api_key:
         return "", "未配置模型 API Key，请在服务环境中设置 DEEPSEEK_API_KEY 后重新创建服务容器", None
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
-                deepseek_base_url(),
+                _base_url,
                 headers={
-                    "Authorization": f"Bearer {api_key}",
+                    "Authorization": f"Bearer {_api_key}",
                     "Content-Type": "application/json",
                 },
                 json={

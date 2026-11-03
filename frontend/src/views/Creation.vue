@@ -22,8 +22,8 @@
     <div class="tabs">
       <span :class="{ active: tab === 'create' }" @click="tab = 'create'">新建作品</span>
       <span :class="{ active: tab === 'my' }" @click="fetchMyNovels(); tab = 'my'">我的作品</span>
-      <span :class="{ active: tab === 'outline' }" @click="tab = 'outline'">章节概要</span>
-      <span :class="{ active: tab === 'drafts' }" @click="fetchDrafts(); tab = 'drafts'">草稿列表</span>
+      <span :class="{ active: tab === 'outline' }" @click="tab = 'outline'; loadOutlineList()">章节概要</span>
+      <span :class="{ active: tab === 'drafts' }" @click="fetchDrafts(); tab = 'drafts'">草稿箱</span>
       <span :class="{ active: tab === 'screenplay' }" @click="initScreenplay(); tab = 'screenplay'">剧本创作</span>
     </div>
 
@@ -178,7 +178,7 @@
               </div>
             </section>
             <div class="chapter-btns">
-              <button class="btn-ai" @click="generateChapter" :disabled="generating">
+              <button class="btn-ai" @click="generateChapter" :disabled="generating || outlineChecking">
                 <span v-if="generating" class="spinner"></span>
                 {{ generating ? '正在生成中...' : '一键AI生成' }}
               </button>
@@ -211,16 +211,14 @@
         </div>
       </div>
 
+    </div>
+
       <!-- 章节编辑独立弹窗 -->
       <div v-if="showChapterEditModal" class="modal-overlay">
         <div class="modal-content chapter-edit-modal">
-          <button class="modal-close" @click="showChapterEditModal = false">&times;</button>
+          <button class="modal-close" @click="closeChapterEdit" :disabled="editorBusy">&times;</button>
           <h2>编辑章节：{{ editChapterForm.chapter_name }}</h2>
           <div v-if="chapterEditIssue" class="chapter-edit-issue" role="alert">{{ chapterEditIssue }}</div>
-          <div v-if="regenerationPreview">
-            <p>生成预览{{ regenerationOutOfScope ? '：概要越界，未保存' : '' }}</p>
-            <pre class="generation-preview" :class="{ 'scope-violation': regenerationOutOfScope }">{{ regenerationPreview }}</pre>
-          </div>
           <div class="edit-row"><label>章节名称</label><input v-model="editChapterForm.chapter_name" /></div>
           <div class="edit-row"><label>剧情发展路线</label>
             <textarea v-model="editChapterForm.chapter_summary" class="wide-textarea" rows="4" style="width: 580px; height: 71px;" placeholder="剧情发展路线(如：主角偷袭天道教宗→夺取镇教之宝→被追杀→坠崖获机缘)"></textarea></div>
@@ -261,15 +259,14 @@
               </div>
             </div></div>
           <div class="edit-row"><label>章节正文</label><button class="btn-copy-content" @click="copyChapterContent" title="复制正文内容">📋</button>
-            <textarea v-model="editChapterForm.content" :readonly="regenerating" rows="16" placeholder="章节正文内容"></textarea></div>
+            <textarea v-model="editChapterForm.content" :readonly="editorBusy" rows="16" placeholder="章节正文内容"></textarea></div>
           <div class="edit-actions">
-            <button class="btn-save" @click="saveChapterEdit" :disabled="saving || regenerating">💾 {{ saving ? '保存中...' : '保存修改' }}</button>
-            <button class="btn-regenerate" :class="{ 'btn-svip-only': !isSvip }" @click="isSvip ? regenerateChapter() : null" :disabled="regenerating || !isSvip" :title="isSvip ? 'AI重新生成本章节内容' : '仅SVIP可使用此功能'">🔄 {{ regenerating ? '重新生成中...' : 'AI重新生成' }}</button>
-            <button class="btn-cancel" @click="showChapterEditModal = false">取消</button>
+            <button class="btn-save" @click="saveChapterEdit" :disabled="saving || regenerating || calibrating">💾 {{ saving ? '保存中...' : '保存修改' }}</button>
+            <button class="btn-regenerate" :class="{ 'btn-svip-only': !isSvip }" @click="isSvip ? regenerateChapter() : null" :disabled="editorBusy || !isSvip" :title="isSvip ? 'AI重新生成本章节内容' : '仅SVIP可使用此功能'">🔄 {{ regenerating ? '重新生成中...' : 'AI重新生成' }}</button>
+            <button class="btn-cancel" @click="closeChapterEdit" :disabled="editorBusy">取消</button>
           </div>
         </div>
       </div>
-    </div>
 
     <!-- ==================== 编辑作品弹窗 ==================== -->
     <div v-if="showEditModal" class="modal-overlay">
@@ -342,10 +339,10 @@
 
     <!-- ==================== 草稿列表 ==================== -->
     <div v-if="tab === 'drafts'" class="tab-content">
-      <section v-if="generationStatus" class="draft-card generation-card" aria-label="生成预览">
+      <section v-if="generationStatus" class="draft-card generation-card" aria-label="生成新章节草稿">
         <div class="draft-header">
           <h3>{{ generationTitle.novel }} · {{ generationTitle.chapter }}</h3>
-          <span>生成预览</span>
+          <span>生成新章节</span>
         </div>
         <div v-if="generating" class="generating-waiting-bar" role="status">
           <span class="generating-waiting-spinner"></span>
@@ -358,25 +355,40 @@
       <div v-for="d in drafts" :key="d.chapter_unique_id" class="draft-card">
         <div class="draft-header">
           <h3>{{ d.chapter_name }}</h3>
+          <span v-if="d.generationType || d.checkType">{{ draftTaskLabels[d.generationType || d.checkType] }}</span>
           <span>{{ d.word_count }}字 | {{ formatTime(d.created_at) }}</span>
         </div>
+        <div v-if="d.taskType" role="status">{{ draftTaskLabels[d.taskType] }}{{ d.taskStatus === 'running' ? '中...' : d.taskStatus === 'failed' ? '失败' : '完成' }}</div>
+        <div v-if="d.check" class="fact-check-warnings" role="status">
+          <strong>{{ draftTaskLabels[d.checkType] || '章节' }}核查结果：{{ d.checkStale ? '已过期' : checkResultText(d.check) }}</strong>
+          <p v-if="d.checkStale">正文已变更，以下为旧核查建议，仅供复核；请重新核查后再校准。</p>
+          <p v-for="(warning, index) in checkWarnings(d.check)" :key="'draft-warning-' + index">{{ warning }}</p>
+          <p v-for="(item, index) in reviewItems(d.check)" :key="'draft-item-' + index">{{ reviewItemText(item) }}</p>
+        </div>
+        <p v-if="d.issue" class="error" role="alert">{{ d.issue }}</p>
         <div class="draft-content">
-          <textarea v-model="d.content" :readonly="continuing[d.chapter_unique_id]" rows="10" />
+          <textarea v-model="d.content" @input="invalidateDraftCheck(d)" :readonly="chapterBusy || showChapterEditModal" rows="10" />
         </div>
         <div v-if="continuing[d.chapter_unique_id] || continuationPreviews[d.chapter_unique_id]">
           <p>{{ continuing[d.chapter_unique_id] ? '正在续写，以下为实时预览，最终内容以保存结果为准' : '续写预览，成功后正文已刷新为保存结果' }}</p>
           <pre v-if="continuationPreviews[d.chapter_unique_id]" class="generation-preview" :class="{ 'scope-violation': continuationOutOfScope[d.chapter_unique_id] }">{{ continuationPreviews[d.chapter_unique_id] }}</pre>
         </div>
+        <div v-if="checkWarnings(continuationChecks[d.chapter_unique_id]).length" class="fact-check-warnings" role="status">
+          <strong>续写核查告警</strong>
+          <p v-for="(warning, index) in checkWarnings(continuationChecks[d.chapter_unique_id])" :key="index">{{ warning }}</p>
+        </div>
         <div class="draft-actions">
-          <button @click="continueChapter(d)" :disabled="continuing[d.chapter_unique_id]">
+          <button v-if="shouldShowDraftCheck(d)" class="btn-ai" @click="checkDraft(d)" :disabled="chapterBusy || showChapterEditModal || !d.content?.trim()">{{ d.checkStatus === 'running' ? '核查中...' : d.checkStale ? '重新核查' : '核查正文' }}</button>
+          <button v-if="d.check?.hallucinations?.length && !d.checkStale" class="btn-outline" @click="calibrateChapter(d)" :disabled="chapterBusy || showChapterEditModal">校准</button>
+          <button @click="publishChapter(d)" :disabled="chapterBusy || showChapterEditModal">
+            <span v-if="publishing[d.chapter_unique_id]" class="spinner"></span>
+            {{ publishing[d.chapter_unique_id] ? '发布中...' : '章节发布' }}
+          </button>
+          <button @click="continueChapter(d)" :disabled="chapterBusy || showChapterEditModal">
             <span v-if="continuing[d.chapter_unique_id]" class="spinner"></span>
             {{ continuing[d.chapter_unique_id] ? '正在续写...' : '🤖 AI续写' }}
           </button>
-          <button @click="publishChapter(d)" :disabled="publishing[d.chapter_unique_id] || continuing[d.chapter_unique_id]">
-            <span v-if="publishing[d.chapter_unique_id]" class="spinner"></span>
-            {{ publishing[d.chapter_unique_id] ? '发布中...' : '发布章节' }}
-          </button>
-          <button class="btn-danger" @click="deleteDraft(d)" :disabled="continuing[d.chapter_unique_id]">删除</button>
+          <button class="btn-danger" @click="deleteDraft(d)" :disabled="chapterBusy || showChapterEditModal">删除</button>
         </div>
       </div>
     </div>
@@ -458,13 +470,22 @@
               class="btn-generate"
               :class="{ 'btn-generate-disabled': outlineResult.length > 0 }"
               @click="outlineGenerate"
-              :disabled="outlineGenerating || !outlineDirection.trim()"
+              :disabled="outlineGenerating || outlineLoading || !outlineHistoryReady || !outlineDirection.trim()"
               :aria-disabled="outlineResult.length > 0"
               :title="outlineResult.length > 0 ? '请先清空章节概要列表后，再生成章节概要' : ''"
             >
               <span v-if="outlineGenerating" class="spinner"></span>
               {{ outlineGenerating ? '生成中...' : '📝 生成章节概要' }}
             </button>
+            <button class="btn-outline-export" @click="exportHistoryOutlines"
+              :disabled="outlineLoading || !outlineHistoryReady || !outlineHistory.length"
+              :title="outlineLoadError || (outlineHistory.length ? '导出已有章节（含草稿）的历史概要为TXT' : '暂无历史章节概要')">
+              导出历史章节概要
+            </button>
+          </div>
+          <div v-if="outlineLoadError" class="error" role="alert">
+            {{ outlineLoadError }}
+            <button class="btn-outline-export" :disabled="outlineLoading" @click="loadOutlineList">重新加载</button>
           </div>
 
           <div class="form-row">
@@ -555,7 +576,7 @@
                   <div class="outline-item-summary">{{ o.chapter_summary }}</div>
                   <div class="outline-char-count" :class="{ 'char-warn': isOutlineTooShort(o.chapter_summary) }">{{ getOutlineCharCount(o.chapter_summary) }} 字 {{ isOutlineTooShort(o.chapter_summary) ? '（不足170字）' : '' }}</div>
                   <div class="outline-item-actions">
-                    <button class="btn-outline-save" @click="outlineGenerateChapter(o)" :disabled="generating || outlineLoading || outlineBatchDeleting">
+                    <button class="btn-outline-save" @click="outlineGenerateChapter(o)" :disabled="!!outlineChapterHint(o)" :title="outlineChapterHint(o)">
                       📝 生成正文
                     </button>
                     <button class="btn-outline-edit" @click="startOutlineEditOne(o)" :disabled="outlineLoading || outlineBatchDeleting">✏️ 修改</button>
@@ -563,6 +584,7 @@
                       🗑 删除
                     </button>
                   </div>
+                  <p v-if="outlineChapterHint(o)" class="outline-generation-hint">{{ outlineChapterHint(o) }}</p>
                 </template>
               </div>
             </template>
@@ -605,7 +627,7 @@
 </template>
 
 <script>
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import api from '../api'
 
 export default {
@@ -897,8 +919,51 @@ export default {
     const novelChapters = ref([])
     const generating = ref(false)
     const generationOutOfScope = ref(false)
-    const regenerationPreview = ref('')
-    const regenerationOutOfScope = ref(false)
+    const generationCheck = ref(null)
+    const generationChapterId = ref(null)
+    const deletingChapter = ref(false)
+    const editingNovelId = ref(null)
+    const editorBusy = computed(() => deletingChapter.value || calibrating.value || regenerating.value || saving.value || checkingEdit.value)
+    const chapterBusy = computed(() => generating.value || editorBusy.value || Object.values(checkingDraft).some(Boolean) || Object.values(continuing).some(Boolean) || Object.values(publishing).some(Boolean))
+    const draftTaskLabels = { generate: '生成新章节', regenerate: '重新生成章节', calibrate: '校准', save: '章节发布' }
+    const draftFields = d => ({ chapter_name: d.chapter_name || '', chapter_summary: d.chapter_summary || '', content: d.content || '' })
+    const draftDirty = d => !d.savedFields || Object.keys(draftFields(d)).some(key => d[key] !== d.savedFields[key])
+    const retainDraft = (chapter) => {
+      let draft = drafts.value.find(d => d.chapter_unique_id === chapter.chapter_unique_id)
+      if (!draft) {
+        draft = reactive({ ...chapter, savedFields: draftFields(chapter), workspace: true })
+        drafts.value.unshift(draft)
+      }
+      return draft
+    }
+    const continuationChecks = reactive({})
+    const reviewItems = (result) => Array.isArray(result?.hallucinations) ? result.hallucinations : []
+    const reviewItemText = (item) => {
+      const layer = { fact: '硬错误检查', plot: '剧情检查', literary: '文学质量检查' }[item.layer] || item.layer || '未知层'
+      const severity = { low: '低', medium: '中', high: '高' }[item.severity] || item.severity || '未知'
+      const dimension = item.dimension ? `/${item.dimension}` : ''
+      return `[${layer}${dimension} · 严重性：${severity}] ${item.located === true ? '已定位' : '未定位'}引用：${item.text || ''}\n原因：${item.reason || ''}\n建议：${item.suggestion || ''}`
+    }
+    const checkWarnings = (result) => {
+      if (!result) return []
+      const rawWarnings = result.review_warnings ?? result.fact_check_warnings ?? []
+      const warnings = Array.isArray(rawWarnings) ? [...rawWarnings] : [rawWarnings]
+      if (result.review_result === 'UNKNOWN' || result.fact_check_result === 'UNKNOWN') warnings.unshift('核查结果未知，不能视为通过，请人工核对。')
+      return warnings.filter(Boolean)
+    }
+    const checkResultText = (result) => {
+      const status = result?.review_result ?? result?.fact_check_result
+      if (status === 'PASS' && !reviewItems(result).length && !checkWarnings(result).length) return 'PASS（通过）'
+      if (status === 'PASS') return 'PASS（含告警或建议，请复核）'
+      if (status === 'FAIL') return 'FAIL（未通过）'
+      return 'UNKNOWN（结果未知，请人工核对）'
+    }
+    const shouldShowDraftCheck = (draft) => {
+      if (!draft?.check || draft.checkStale || draft.checkStatus === 'failed' || draft.checkStatus === 'running') return true
+      const status = draft.check.review_result ?? draft.check.fact_check_result
+      if (status === 'UNKNOWN' || status === 'SKIP') return true
+      return !status && !reviewItems(draft.check).length && !checkWarnings(draft.check).length
+    }
     const continuationOutOfScope = reactive({})
     const generationPreview = ref('')
     const generationStatus = ref('')
@@ -907,6 +972,10 @@ export default {
     const continuationPreviews = reactive({})
     const saving = ref(false)
     const regenerating = ref(false)
+    const calibrating = ref(false)
+    const checkingEdit = ref(false)
+    const editCheck = ref(null)
+    let editCheckRevision = 0
     const chapterEditIssue = ref('')
     const showChapterEditModal = ref(false)
     // 已有章节列表分页
@@ -969,31 +1038,68 @@ export default {
       else if (arr.length < 4) arr.push(id)
     }
 
-    const openChapterModal = async (novel) => {
+    let chapterModalRequestId = 0
+    const openChapterModal = async (novel, chapters = null) => {
+      if (chapterBusy.value || showChapterEditModal.value) return
+      const requestId = ++chapterModalRequestId
+      chapterOutlineSource.value = null
       chapterNovel.value = novel
       showChapterModal.value = true
-      editingChapterId.value = null
       selAuthorStyles.value = []
       selChapterTemplates.value = []
       msStyleOpen.value = false
       msTemplateOpen.value = false
       Object.assign(chapterForm, { chapter_name: '', characters_involved: '', organizations: '', locations: '', skills: '', word_count: 2500, chapter_summary: '', content: '', author_style: '', chapter_template: '', use_anti_ai: true })
+      novelChapters.value = []
+      chapterPage.value = 1
+      if (chapters) {
+        novelChapters.value = chapters
+        return
+      }
       try {
         const res = await api.get(`/chapters/novel/${novel.novel_unique_id}`)
-        if (res.状态码 === 200) { novelChapters.value = res.数据; chapterPage.value = 1 }
-      } catch { novelChapters.value = [] }
+        if (requestId === chapterModalRequestId && res.状态码 === 200) novelChapters.value = res.数据
+      } catch {
+        if (requestId === chapterModalRequestId) novelChapters.value = []
+      }
     }
 
     const generateChapter = async () => {
-      if (generating.value) return
+      if (chapterBusy.value || outlineChecking.value || showChapterEditModal.value) return
       if (!chapterForm.chapter_name.trim()) return alert('请输入章节名称')
       if (chapterForm.word_count > 3000) {
         if (!confirm(`章节字数超过3000字上限（当前${chapterForm.word_count}字），将自动调整为3000字。是否继续？`)) return
         chapterForm.word_count = 3000
       }
+      const source = chapterOutlineSource.value
+      if (source) {
+        const modalRequestId = chapterModalRequestId
+        outlineChecking.value = true
+        try {
+          const history = await fetchOutlineHistory(source.novelId)
+          if (modalRequestId !== chapterModalRequestId || !showChapterModal.value) return
+          const nextNumber = history
+            .filter(ch => Boolean(Number(ch.is_published)))
+            .reduce((max, ch) => Math.max(max, Number(ch.chapter_number) || 0), 0) + 1
+          if (source.chapterNumber !== nextNumber) {
+            if (outlineNovelId.value === source.novelId) await loadOutlineList()
+            return alert(`章节进度已更新，仅可生成第${nextNumber}章正文，请重新选择概要`)
+          }
+        } catch (e) {
+          if (outlineNovelId.value === source.novelId) {
+            outlineHistoryReady.value = false
+            outlineLoadError.value = '历史章节加载失败，请重试'
+          }
+          return alert('历史章节校验失败，已停止生成，请重试')
+        } finally {
+          outlineChecking.value = false
+        }
+      }
       generating.value = true
       generationOutOfScope.value = false
       generationPreview.value = ''
+      generationCheck.value = null
+      generationChapterId.value = null
       const novelId = chapterNovel.value.novel_unique_id
       generationTitle.value = { novel: chapterNovel.value.title, chapter: chapterForm.chapter_name }
       generationStatus.value = 'waiting'
@@ -1023,13 +1129,26 @@ export default {
             generationStatus.value = 'streaming'
             generationPreview.value += chunk
           })
+          generationCheck.value = task.result
           if (task.status !== 'done') {
             generationPreview.value = task.result?.preview_text || generationPreview.value
             generationOutOfScope.value = task.result?.summary_scope_result?.within_scope === false
             throw new Error(task.error || 'AI生成失败')
           }
+          generationChapterId.value = task.result?.chapter_unique_id || null
           generationPreview.value = task.result?.content ?? generationPreview.value
+          if (!generationChapterId.value) throw new Error('生成结果缺少章节ID，正文保留在草稿箱中')
+          const draft = retainDraft({
+            ...task.result, novel_unique_id: novelId,
+            chapter_summary: chapterForm.chapter_summary, content: generationPreview.value
+          })
+          draft.check = task.result
+          draft.checkType = 'generate'
+          draft.generationType = 'generate'
+          draft.taskType = 'generate'
+          draft.taskStatus = 'done'
           generationStatus.value = 'refreshing'
+          if (outlineNovelId.value === novelId) await loadOutlineList()
           if (!await fetchDrafts()) throw new Error('正文已生成，但草稿刷新失败，请稍后刷新草稿列表')
           generationStatus.value = ''
           generationPreview.value = ''
@@ -1059,6 +1178,30 @@ export default {
     const outlineGenerating = ref(false)
     const outlineResult = ref([])        // Redis 缓存概要（24h，不落库）
     const outlineLoading = ref(false)
+    const outlineLoadError = ref('')
+    const outlineHistory = ref([])
+    const outlineHistoryReady = ref(false)
+    const outlineChecking = ref(false)
+    const chapterOutlineSource = ref(null)
+    let outlineRequestId = 0
+    let outlineSelectionId = 0
+    const nextOutlineChapterNumber = computed(() => outlineHistory.value
+      .filter(ch => Boolean(Number(ch.is_published)))
+      .reduce((max, ch) => Math.max(max, Number(ch.chapter_number) || 0), 0) + 1)
+    const outlineChapterHint = (o) => {
+      if (outlineLoading.value) return '正在加载章节，请稍候'
+      if (!outlineHistoryReady.value) return outlineLoadError.value || '请先加载历史章节'
+      if (generating.value || outlineChecking.value) return '正在生成或校验章节，请稍候'
+      if (outlineGenerating.value || outlineSaving.value || outlineBatchDeleting.value) return '正在处理概要，请稍候'
+      if (Number(o.chapter_number) !== nextOutlineChapterNumber.value) return `仅可生成第${nextOutlineChapterNumber.value}章正文，请按顺序生成`
+      return ''
+    }
+    const fetchOutlineHistory = async (novelId) => {
+      const res = await api.get(`/chapters/novel/${novelId}`)
+      if (res.状态码 !== 200 || !Array.isArray(res.数据)) throw new Error('历史章节加载失败，请重试')
+      if (res.数据.some(ch => ch.chapter_number != null && (!Number.isInteger(Number(ch.chapter_number)) || Number(ch.chapter_number) < 0))) throw new Error('历史章号异常，暂时无法生成正文')
+      return res.数据.slice().sort((a, b) => (Number(a.chapter_number) || 0) - (Number(b.chapter_number) || 0))
+    }
     const outlineSaving = ref(false)
     const outlineBatchDeleting = ref(false)
     const outlineSelectedNumbers = ref([])
@@ -1079,34 +1222,55 @@ export default {
 
     // 加载：只展示 Redis 缓存概要（MySQL 章节概要仅作为生成输入，不在此展示）
     const loadOutlineList = async () => {
-      if (!outlineNovelId.value) { outlineResult.value = []; return }
+      const novelId = outlineNovelId.value
+      const requestId = ++outlineRequestId
+      const isCurrent = () => requestId === outlineRequestId && novelId === outlineNovelId.value
+      outlineHistoryReady.value = false
+      outlineLoadError.value = ''
+      outlineHistory.value = []
+      if (!novelId) {
+        outlineResult.value = []
+        outlineLoading.value = false
+        return false
+      }
       outlineLoading.value = true
       try {
-        const cacheRes = await api.get('/chapters/outline/cache?novel_unique_id=' + outlineNovelId.value)
-        if (cacheRes.状态码 === 200 && cacheRes.数据 && Array.isArray(cacheRes.数据.chapters)) {
-          outlineResult.value = cacheRes.数据.chapters.slice().sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0))
-        } else {
-          outlineResult.value = []
-        }
+        const [cacheRes, history] = await Promise.all([
+          api.get('/chapters/outline/cache?novel_unique_id=' + novelId),
+          fetchOutlineHistory(novelId)
+        ])
+        if (!isCurrent()) return false
+        if (cacheRes.状态码 !== 200 || !Array.isArray(cacheRes.数据?.chapters)) throw new Error('章节概要加载失败，请重试')
+        outlineResult.value = cacheRes.数据.chapters.slice().sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0))
+        outlineHistory.value = history
+        outlineHistoryReady.value = true
         outlineSelectedNumbers.value = outlineSelectedNumbers.value.filter(number =>
           outlineResult.value.some(o => o.chapter_number === number)
         )
+        return true
       } catch (e) {
-        console.error('[加载章节概要失败]', e)
-        outlineResult.value = []
+        if (isCurrent()) outlineLoadError.value = e.message || '章节加载失败，请重试'
+        return false
       } finally {
-        outlineLoading.value = false
+        if (isCurrent()) outlineLoading.value = false
       }
     }
 
     // 切换作品：清空缓存预览并加载该作品概要
     const onOutlineNovelChange = () => {
+      outlineSelectionId++
       outlineResult.value = []
       outlineSelectedNumbers.value = []
+      outlineEditNum.value = null
+      outlineEditName.value = ''
+      outlineEditSummary.value = ''
       loadOutlineList()
     }
 
     const outlineGenerate = async () => {
+      if (outlineGenerating.value || outlineLoading.value || !outlineHistoryReady.value) return
+      const novelId = outlineNovelId.value
+      const selectionId = outlineSelectionId
       if (outlineResult.value.length > 0) {
         alert('请先清空章节概要列表后，再生成章节概要')
         return
@@ -1118,7 +1282,7 @@ export default {
       outlineSelectedNumbers.value = []
       try {
         const res = await api.post('/chapters/outline/generate', {
-          novel_unique_id: outlineNovelId.value,
+          novel_unique_id: novelId,
           story_direction: outlineDirection.value,
           chapter_count: outlineCount.value
         })
@@ -1126,7 +1290,7 @@ export default {
           const taskId = res.数据.task_id
           const task = await waitForTask(taskId, 150000, 3000)
           if (task.status === 'done') {
-            await loadOutlineList()
+            if (selectionId === outlineSelectionId && novelId === outlineNovelId.value) await loadOutlineList()
           } else if (task.status === 'failed') {
             alert(task.error || '概要生成失败')
             return
@@ -1146,18 +1310,51 @@ export default {
 
     // 从缓存概要一键生成正文：预填章节管理弹窗表单
     const outlineGenerateChapter = async (o) => {
-      const novel = myNovels.value.find(n => n.novel_unique_id === outlineNovelId.value)
+      if (outlineChapterHint(o)) return
+      const novelId = outlineNovelId.value
+      const selectionId = outlineSelectionId
+      const novel = myNovels.value.find(n => n.novel_unique_id === novelId)
       if (!novel) return alert('作品不存在，请刷新后重试')
-      await openChapterModal(novel)
-      Object.assign(chapterForm, {
-        chapter_name: o.chapter_name || '',
-        chapter_summary: o.chapter_summary || ''
-      })
-      tab.value = 'my'
+      outlineChecking.value = true
+      try {
+        const loaded = await loadOutlineList()
+        if (selectionId !== outlineSelectionId || novelId !== outlineNovelId.value) return
+        if (!loaded) return alert(outlineLoadError.value || '章节加载失败，请重试')
+        if (Number(o.chapter_number) !== nextOutlineChapterNumber.value) return alert(`仅可生成第${nextOutlineChapterNumber.value}章正文`)
+        const current = outlineResult.value.find(item => Number(item.chapter_number) === Number(o.chapter_number))
+        if (!current) return alert('该概要已失效，请刷新后重试')
+        openChapterModal(novel, outlineHistory.value)
+        chapterOutlineSource.value = { novelId, chapterNumber: Number(current.chapter_number) }
+        Object.assign(chapterForm, {
+          chapter_name: current.chapter_name || '',
+          chapter_summary: current.chapter_summary || ''
+        })
+        tab.value = 'my'
+      } finally {
+        outlineChecking.value = false
+      }
+    }
+
+    const exportHistoryOutlines = () => {
+      if (outlineLoading.value || !outlineHistoryReady.value || !outlineHistory.value.length) return
+      const novel = myNovels.value.find(n => n.novel_unique_id === outlineNovelId.value)
+      const title = novel?.title || '作品'
+      const lines = outlineHistory.value.map(ch => `第${ch.chapter_number || 0}章 ${ch.chapter_name || ''}\n${ch.chapter_summary || '（暂无概要）'}\n`)
+      const content = `${title} - 历史章节概要\n共 ${outlineHistory.value.length} 章\n\n${lines.join('\n')}`
+      const url = URL.createObjectURL(new Blob([String.fromCharCode(0xfeff), content], { type: 'text/plain;charset=utf-8' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${title.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')}_历史概要_${new Date().toISOString().slice(0, 10)}.txt`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
     }
 
     // 批量删除临时缓存概要：逐条调用现有删除接口，全部完成后刷新列表
     const outlineDeleteSelected = async () => {
+      const novelId = outlineNovelId.value
+      const selectionId = outlineSelectionId
       if (!outlineSelectedCount.value || outlineBatchDeleting.value) return
       if (!confirm(`确定删除选中的 ${outlineSelectedCount.value} 条章节概要吗？此操作不可恢复。`)) return
       outlineBatchDeleting.value = true
@@ -1167,7 +1364,7 @@ export default {
         for (const o of selected) {
           try {
             const res = await api.delete('/chapters/outline/cache', {
-              data: { novel_unique_id: outlineNovelId.value, chapter_number: o.chapter_number }
+              data: { novel_unique_id: novelId, chapter_number: o.chapter_number }
             })
             if (res.状态码 !== 200) failedCount++
           } catch (e) {
@@ -1175,11 +1372,11 @@ export default {
           }
         }
         alert(failedCount ? `删除完成，${failedCount} 条概要删除失败，请稍后重试` : '选中概要已删除')
-        await loadOutlineList()
+        if (selectionId === outlineSelectionId && novelId === outlineNovelId.value) await loadOutlineList()
       } catch (e) {
         const msg = e.response ? (e.response.数据 || e.response.消息 || JSON.stringify(e.response.data)) : (e.message || '网络错误')
         alert('批量删除失败: ' + msg)
-        await loadOutlineList()
+        if (selectionId === outlineSelectionId && novelId === outlineNovelId.value) await loadOutlineList()
       } finally {
         outlineBatchDeleting.value = false
       }
@@ -1203,14 +1400,16 @@ export default {
 
     // 删除单条临时缓存概要（不落库，直接丢弃）
     const outlineDeleteOne = async (o) => {
+      const novelId = outlineNovelId.value
+      const selectionId = outlineSelectionId
       if (!confirm(`确定删除第${o.chapter_number}章《${o.chapter_name}》的缓存概要吗？`)) return
       outlineSaving.value = true
       try {
         const res = await api.delete('/chapters/outline/cache', {
-          data: { novel_unique_id: outlineNovelId.value, chapter_number: o.chapter_number }
+          data: { novel_unique_id: novelId, chapter_number: o.chapter_number }
         })
         if (res.状态码 === 200) {
-          await loadOutlineList()
+          if (selectionId === outlineSelectionId && novelId === outlineNovelId.value) await loadOutlineList()
           alert(res.消息 || '已删除')
         } else {
           alert(res.消息 || '删除失败')
@@ -1233,18 +1432,20 @@ export default {
 
     // 保存缓存概要的修改（更新 Redis，不落库）
     const outlineUpdateOne = async (o) => {
+      const novelId = outlineNovelId.value
+      const selectionId = outlineSelectionId
       if (!outlineEditName.value.trim()) { alert('章节名不能为空'); return }
       outlineSaving.value = true
       try {
         const res = await api.put('/chapters/outline/cache', {
-          novel_unique_id: outlineNovelId.value,
+          novel_unique_id: novelId,
           chapter_number: o.chapter_number,
           chapter_name: outlineEditName.value.trim(),
           chapter_summary: outlineEditSummary.value.trim()
         })
         if (res.状态码 === 200) {
-          outlineEditNum.value = null
-          await loadOutlineList()
+          if (selectionId === outlineSelectionId) outlineEditNum.value = null
+          if (selectionId === outlineSelectionId && novelId === outlineNovelId.value) await loadOutlineList()
           alert(res.消息 || '概要已更新')
         } else {
           alert(res.消息 || '更新失败')
@@ -1260,6 +1461,7 @@ export default {
     // 草稿
     const drafts = ref([])
     const continuing = reactive({})
+    const checkingDraft = reactive({})
     const publishing = reactive({})
     const publishOverlay = reactive({ visible: false, name: '', step: 0 })
 
@@ -1312,11 +1514,26 @@ export default {
       return { status: 'timeout', result: null }
     }
 
+    let draftsRequestId = 0
     const fetchDrafts = async () => {
+      const requestId = ++draftsRequestId
       try {
         const res = await api.get('/chapters/drafts')
         if (res.状态码 === 200) {
-          drafts.value = (res.数据 || []).slice().reverse()
+          if (requestId === draftsRequestId) {
+            const existing = new Map(drafts.value.map(d => [d.chapter_unique_id, d]))
+            const incoming = (res.数据 || []).slice().reverse().map(chapter => {
+              const draft = existing.get(chapter.chapter_unique_id)
+              existing.delete(chapter.chapter_unique_id)
+              if (!draft) return { ...chapter, savedFields: draftFields(chapter) }
+              if (!draftDirty(draft) && draft.taskStatus !== 'running' && draft.checkStatus !== 'running') {
+                if (draft.content !== chapter.content) invalidateDraftCheck(draft)
+                Object.assign(draft, chapter, { savedFields: draftFields(chapter) })
+              }
+              return draft
+            })
+            drafts.value = [...existing.values()].filter(d => draftDirty(d) || d.workspace || d.taskStatus === 'running' || d.checkStatus === 'running').concat(incoming)
+          }
           return true
         }
         console.error('获取草稿列表失败:', res)
@@ -1325,6 +1542,7 @@ export default {
     }
 
     const publishChapter = async (d) => {
+      if (chapterBusy.value || showChapterEditModal.value) return
       if (!d.content || d.content.trim() === '') {
         alert('章节内容为空，无法发布')
         return
@@ -1361,6 +1579,7 @@ export default {
           await new Promise(r => setTimeout(r, 400)) // 短暂停留让用户看到全绿
           publishOverlay.visible = false
           alert(res.消息)
+          ++draftsRequestId
           drafts.value = drafts.value.filter(draft => draft.chapter_unique_id !== d.chapter_unique_id)
           await fetchDrafts()
           await fetchTodayPublished()
@@ -1381,32 +1600,46 @@ export default {
     }
 
     const deleteDraft = async (d) => {
+      if (chapterBusy.value || showChapterEditModal.value) return
       if (!confirm('确定删除该草稿？')) return
+      deletingChapter.value = true
       try {
         const res = await api.delete(`/chapters/delete/${d.chapter_unique_id}`)
         if (res.状态码 === 200) {
+          ++draftsRequestId
+          drafts.value = drafts.value.filter(item => item.chapter_unique_id !== d.chapter_unique_id)
+          if (generationChapterId.value === d.chapter_unique_id) generationChapterId.value = null
           alert('删除成功')
           await fetchDrafts()
+          if (outlineNovelId.value === d.novel_unique_id) await loadOutlineList()
         } else alert(res.消息)
-      } catch (e) { alert('删除失败') }
+      } catch (e) { alert('删除失败') } finally { deletingChapter.value = false }
     }
 
     const deleteChapter = async (ch) => {
+      if (chapterBusy.value || showChapterEditModal.value) return
       if (!confirm(`确定删除章节「${ch.chapter_name}」？此操作不可恢复。`)) return
+      deletingChapter.value = true
       try {
         const res = await api.delete(`/chapters/delete/${ch.chapter_unique_id}`)
         if (res.状态码 === 200) {
+          ++draftsRequestId
+          drafts.value = drafts.value.filter(item => item.chapter_unique_id !== ch.chapter_unique_id)
+          if (generationChapterId.value === ch.chapter_unique_id) generationChapterId.value = null
           alert('删除成功')
           const r2 = await api.get(`/chapters/novel/${chapterNovel.value.novel_unique_id}`)
           if (r2.状态码 === 200) { novelChapters.value = r2.数据; chapterPage.value = 1 }
+          if (outlineNovelId.value === ch.novel_unique_id) await loadOutlineList()
           fetchTodayPublished()
         } else alert(res.消息)
-      } catch (e) { alert('删除失败') }
+      } catch (e) { alert('删除失败') } finally { deletingChapter.value = false }
     }
 
     const editChapter = (ch) => {
-      regenerationPreview.value = ''
-      regenerationOutOfScope.value = false
+      if (chapterBusy.value || showChapterEditModal.value) return
+      if (!ch.chapter_unique_id) return
+      ch = drafts.value.find(d => d.chapter_unique_id === ch.chapter_unique_id) || ch
+      editingNovelId.value = ch.novel_unique_id || chapterNovel.value.novel_unique_id
       editingChapterId.value = ch.chapter_unique_id
       Object.assign(editChapterForm, {
         chapter_name: ch.chapter_name || '',
@@ -1421,6 +1654,7 @@ export default {
       msEditStyleOpen.value = false
       msEditTemplateOpen.value = false
       chapterEditIssue.value = ''
+      editCheck.value = null
       showChapterEditModal.value = true
     }
 
@@ -1463,117 +1697,233 @@ export default {
       }
     }
 
-    const saveChapterEdit = async () => {
-      if (!editChapterForm.chapter_name) {
-        chapterEditIssue.value = '保存失败：请输入章节名称'
-        return
-      }
-      chapterEditIssue.value = ''
-      saving.value = true
+    const invalidateDraftCheck = (d) => {
+      if (!d) return
+      d.checkRevision = (d.checkRevision || 0) + 1
+      d.checkStale = true
+      d.check = null
+      d.checkType = ''
+    }
+
+    const invalidateEditCheck = () => {
+      ++editCheckRevision
+      editCheck.value = null
+    }
+
+    watch(() => editChapterForm.content, invalidateEditCheck, { flush: 'sync' })
+    watch(showChapterEditModal, invalidateEditCheck, { flush: 'sync' })
+
+    const closeChapterEdit = () => {
+      if (editorBusy.value) return
+      showChapterEditModal.value = false
+    }
+
+    const checkDraft = async (d) => {
+      if (chapterBusy.value || showChapterEditModal.value || !d?.chapter_unique_id || !d.content?.trim()) return
+      const content = d.content
+      const revision = d.checkRevision || 0
+      d.checkStatus = 'running'
+      checkingDraft[d.chapter_unique_id] = true
+      d.issue = ''
       try {
-        const res = await api.put(`/chapters/update/${editingChapterId.value}`, {
-          content: editChapterForm.content,
-          chapter_name: editChapterForm.chapter_name,
-          chapter_summary: editChapterForm.chapter_summary
-        })
-        if (res.状态码 === 200) {
-          alert('章节修改成功')
-          const r2 = await api.get(`/chapters/novel/${chapterNovel.value.novel_unique_id}`)
-          if (r2.状态码 === 200) { novelChapters.value = r2.数据; chapterPage.value = 1 }
-          showChapterEditModal.value = false
-        } else {
-          chapterEditIssue.value = '保存失败：' + (res.消息 || '服务器未能保存章节')
-          alert(res.消息)
+        const res = await api.post(`/chapters/check/${d.chapter_unique_id}`, { content })
+        if (res.状态码 !== 200 || !res.数据?.task_id) throw new Error(res.消息 || '提交失败')
+        const task = await streamTask(res.数据.task_id, () => {})
+        if (task.status !== 'done') throw new Error(task.error || '任务执行失败')
+        if (content !== d.content || revision !== (d.checkRevision || 0)) {
+          invalidateDraftCheck(d)
+          d.checkStatus = 'stale'
+          d.issue = '核查期间正文已变更，请重新核查。'
+          return
         }
+        d.check = task.result || { review_result: 'UNKNOWN', review_warnings: ['核查未返回结果，请人工核对。'] }
+        d.checkType = 'check'
+        d.checkStale = false
+        d.checkStatus = 'done'
       } catch (e) {
-        const msg = e.response?.data?.消息 || e.response?.data?.detail || e.message || '网络错误'
-        chapterEditIssue.value = '保存失败：' + msg
-        alert('修改失败: ' + msg)
-      } finally { saving.value = false }
+        d.checkStatus = 'failed'
+        d.issue = `核查失败：${e.response?.data?.消息 || e.response?.data?.detail || e.message || '网络错误'}`
+      } finally {
+        checkingDraft[d.chapter_unique_id] = false
+      }
+    }
+
+    const checkChapterEdit = async () => {
+      if (chapterBusy.value || !showChapterEditModal.value || !editingChapterId.value || !editChapterForm.content.trim()) return
+      const targetId = editingChapterId.value
+      const content = editChapterForm.content
+      const revision = ++editCheckRevision
+      const isCurrent = () => showChapterEditModal.value && editingChapterId.value === targetId && editCheckRevision === revision && editChapterForm.content === content
+      editCheck.value = null
+      checkingEdit.value = true
+      chapterEditIssue.value = ''
+      try {
+        const res = await api.post(`/chapters/check/${targetId}`, { content })
+        if (res.状态码 !== 200 || !res.数据?.task_id) throw new Error(res.消息 || '提交失败')
+        const task = await streamTask(res.数据.task_id, () => {})
+        if (task.status !== 'done') throw new Error(task.error || '任务执行失败')
+        if (!isCurrent()) return
+        editCheck.value = task.result || { review_result: 'UNKNOWN', review_warnings: ['核查未返回结果，请人工核对。'] }
+      } catch (e) {
+        if (!isCurrent()) return
+        chapterEditIssue.value = `核查失败：${e.response?.data?.消息 || e.response?.data?.detail || e.message || '网络错误'}`
+      } finally {
+        checkingEdit.value = false
+      }
+    }
+
+    const runDraftTask = async (d, type, body) => {
+      if (chapterBusy.value || !d.chapter_unique_id) return
+      const targetId = d.chapter_unique_id
+      const originalContent = d.content
+      const originalCheck = d.check
+      const originalCheckType = d.checkType
+      const originalCheckStale = d.checkStale
+      const busy = type === 'calibrate' ? calibrating : regenerating
+      busy.value = true
+      ++draftsRequestId
+      if (type === 'regenerate') d.generationType = type
+      d.taskType = type
+      d.taskStatus = 'running'
+      d.issue = ''
+      let preview = ''
+      try {
+        const res = await api.post(`/chapters/${type}/${targetId}`, body)
+        if (res.状态码 !== 200 || !res.数据?.task_id) throw new Error(res.消息 || '提交失败')
+        const task = await streamTask(res.数据.task_id, chunk => {
+          preview += chunk
+          d.content = preview
+        })
+        if (task.status !== 'done') throw new Error(task.error || '任务执行失败')
+        if (task.result?.chapter_unique_id && task.result.chapter_unique_id !== targetId) throw new Error('任务返回章节ID不匹配')
+        const content = task.result?.content ?? preview
+        if (!content.trim()) throw new Error('任务完成但没有返回章节正文')
+        d.content = content
+        d.word_count = Array.from(content).length
+        if (type === 'regenerate') {
+          d.check = task.result
+          d.checkType = type
+          d.checkStale = false
+        } else {
+          d.checkStale = true
+        }
+        d.taskStatus = 'done'
+        d.issue = type === 'calibrate' ? '校准完成，正文待发布；原核查建议已过期，请重新核查后再校准。' : '重新生成完成，正文待发布。'
+      } catch (e) {
+        d.content = originalContent
+        d.check = originalCheck
+        d.checkType = originalCheckType
+        d.checkStale = originalCheckStale
+        d.taskStatus = 'failed'
+        d.issue = `${draftTaskLabels[type]}失败：${e.response?.data?.消息 || e.response?.data?.detail || e.message || '网络错误'}。已恢复操作前正文。`
+      } finally {
+        ++draftsRequestId
+        busy.value = false
+      }
+    }
+
+    const calibrateChapter = async (d) => {
+      if (chapterBusy.value || showChapterEditModal.value || d.checkStale || !d.check?.hallucinations?.length) return
+      if (!d.content?.trim()) { d.issue = '校准失败：章节正文为空'; return }
+      await runDraftTask(d, 'calibrate', { content: d.content, hallucinations: d.check.hallucinations })
+    }
+
+    const saveDraft = async (d) => {
+      if (chapterBusy.value || !d.chapter_unique_id) return false
+      if (!d.chapter_name?.trim() || !d.content?.trim()) {
+        d.issue = '保存失败：章节名称和正文不能为空'
+        return false
+      }
+      const targetId = d.chapter_unique_id
+      const fields = draftFields(d)
+      saving.value = true
+      ++draftsRequestId
+      d.taskType = 'save'
+      d.taskStatus = 'running'
+      d.issue = ''
+      try {
+        const res = await api.put(`/chapters/update/${targetId}`, fields)
+        if (res.状态码 !== 200) throw new Error(res.消息 || '服务器未能保存章节')
+        d.savedFields = fields
+        d.word_count = Array.from(fields.content).length
+        d.taskStatus = 'done'
+        const chapter = novelChapters.value.find(ch => ch.chapter_unique_id === targetId)
+        if (chapter) Object.assign(chapter, fields, { word_count: d.word_count })
+        return true
+      } catch (e) {
+        d.taskStatus = 'failed'
+        d.issue = '保存失败：' + (e.response?.data?.消息 || e.response?.data?.detail || e.message || '网络错误')
+        return false
+      } finally {
+        ++draftsRequestId
+        saving.value = false
+      }
+    }
+
+    const editorDraft = () => {
+      const chapter = novelChapters.value.find(ch => ch.chapter_unique_id === editingChapterId.value)
+      const d = retainDraft({ ...chapter, chapter_unique_id: editingChapterId.value, novel_unique_id: editingNovelId.value })
+      if (d.content !== editChapterForm.content) invalidateDraftCheck(d)
+      Object.assign(d, draftFields(editChapterForm), { workspace: true })
+      if (editCheck.value) {
+        d.check = editCheck.value
+        d.checkType = 'check'
+        d.checkStale = false
+        d.checkStatus = 'done'
+      }
+      return d
+    }
+
+    const calibrateChapterEdit = async () => {
+      if (chapterBusy.value || !showChapterEditModal.value || !editingChapterId.value || !reviewItems(editCheck.value).length || !editChapterForm.content.trim()) return
+      const d = editorDraft()
+      showChapterEditModal.value = false
+      showChapterModal.value = false
+      tab.value = 'drafts'
+      await calibrateChapter(d)
+    }
+
+    const saveChapterEdit = async () => {
+      if (chapterBusy.value || !editingChapterId.value || !showChapterEditModal.value) return
+      const d = editorDraft()
+      showChapterEditModal.value = false
+      showChapterModal.value = false
+      tab.value = 'drafts'
+      await saveDraft(d)
     }
 
     const regenerateChapter = async () => {
-      if (!editChapterForm.chapter_name) {
+      if (chapterBusy.value || !isSvip.value || !editingChapterId.value || !showChapterEditModal.value) return
+      if (!editChapterForm.chapter_name.trim()) {
         chapterEditIssue.value = '重新生成失败：请输入章节名称'
         return
       }
-      if (!confirm('AI重新生成将在正文框中逐步显示新内容，点击“保存修改”才会正式保存。确定继续？')) return
-      if (regenerating.value) return
-      chapterEditIssue.value = ''
-      regenerating.value = true
-      regenerationPreview.value = ''
-      regenerationOutOfScope.value = false
-      const targetChapterId = editingChapterId.value
-      let lastEditorContent = editChapterForm.content
-      const updateEditorPreview = (content) => {
-        if (showChapterEditModal.value && editingChapterId.value === targetChapterId && editChapterForm.content === lastEditorContent) {
-          editChapterForm.content = content
-          lastEditorContent = content
-        }
+      const d = editorDraft()
+      const body = {
+        chapter_summary: d.chapter_summary,
+        word_count: chapterForm.word_count,
+        author_style: selEditAuthorStyles.value.join(','),
+        chapter_template: selEditChapterTemplates.value.join(','),
+        use_anti_ai: chapterForm.use_anti_ai
       }
-      try {
-        const res = await api.post(`/chapters/regenerate/${editingChapterId.value}`, {
-          chapter_summary: editChapterForm.chapter_summary,
-          word_count: chapterForm.word_count,
-          author_style: selEditAuthorStyles.value.join(','),
-          chapter_template: selEditChapterTemplates.value.join(','),
-          use_anti_ai: chapterForm.use_anti_ai
-        })
-        if (res.状态码 === 200 && res.数据 && res.数据.task_id) {
-          // 异步任务：轮询结果（重新生成耗时可达数分钟，同步请求会被公网隧道/浏览器掐断）
-          const taskId = res.数据.task_id
-          let preview = ''
-          const task = await streamTask(taskId, chunk => {
-            preview += chunk
-            regenerationPreview.value = preview
-            updateEditorPreview(preview)
-          })
-          if (task.status === 'done') {
-            const newContent = task.result?.content ?? preview
-            if (newContent) {
-              updateEditorPreview(newContent)
-              regenerationPreview.value = newContent
-              chapterEditIssue.value = ''
-              await fetchDrafts()
-              const chapters = await api.get(`/chapters/novel/${chapterNovel.value.novel_unique_id}`)
-              if (chapters.状态码 === 200) novelChapters.value = chapters.数据
-              alert('重新生成成功，内容已更新到编辑区')
-            } else {
-              chapterEditIssue.value = '重新生成失败：任务完成但没有返回章节正文'
-              alert('重新生成成功，但未能获取内容')
-            }
-          } else if (task.status === 'failed') {
-            regenerationPreview.value = task.result?.preview_text || regenerationPreview.value
-            if (regenerationPreview.value) updateEditorPreview(regenerationPreview.value)
-            regenerationOutOfScope.value = task.result?.summary_scope_result?.within_scope === false
-            chapterEditIssue.value = '重新生成失败：' + (task.error || '任务执行失败')
-            alert('AI重新生成失败: ' + task.error)
-          } else {
-            chapterEditIssue.value = '重新生成失败：任务超时，请稍后重试'
-            alert('AI重新生成超时，请稍后查看章节内容')
-          }
-        } else {
-          chapterEditIssue.value = '重新生成失败：' + (res.消息 || '提交失败')
-          alert('重新生成失败: ' + (res.消息 || '提交失败'))
-        }
-      } catch (e) {
-        const msg = e.response?.data?.消息 || e.response?.data?.detail || e.message || '网络错误'
-        chapterEditIssue.value = '重新生成失败：' + msg
-        alert('AI重新生成失败: ' + msg)
-      } finally {
-        regenerating.value = false
-      }
+      showChapterEditModal.value = false
+      showChapterModal.value = false
+      tab.value = 'drafts'
+      await runDraftTask(d, 'regenerate', body)
     }
 
     const continueChapter = async (d) => {
+      if (chapterBusy.value || showChapterEditModal.value) return
       // 非VIP且次数用完的前端拦截
       if (!isVip.value && freeQuota.value <= 0) {
         alert('免费生成次数已用完，请开通VIP继续使用')
         router.push('/vip')
         return
       }
+      if (draftDirty(d)) return alert('请先手动保存当前正文，再进行续写')
       if (continuing[d.chapter_unique_id]) return
       continuing[d.chapter_unique_id] = true
+      continuationChecks[d.chapter_unique_id] = null
       continuationPreviews[d.chapter_unique_id] = ''
       continuationOutOfScope[d.chapter_unique_id] = false
       try {
@@ -1584,6 +1934,7 @@ export default {
           const task = await streamTask(taskId, chunk => {
             continuationPreviews[d.chapter_unique_id] += chunk
           })
+          continuationChecks[d.chapter_unique_id] = task.result
           if (task.status === 'done') {
             const result = task.result
             continuationPreviews[d.chapter_unique_id] = result?.continued_text ?? continuationPreviews[d.chapter_unique_id]
@@ -1609,6 +1960,7 @@ export default {
     }
 
     const deleteNovel = async (novel) => {
+      if (chapterBusy.value || showChapterEditModal.value) return
       if (!confirm(`确定删除作品「${novel.title}」？\n\n此操作将同时删除该作品的所有章节和设定文件，不可恢复！`)) return
       try {
         const res = await api.delete(`/novels/delete/${novel.novel_unique_id}`)
@@ -1785,14 +2137,16 @@ export default {
     return { tab, isVip, isSvip, vipLevel, freeQuota, publishedToday, maxDailyQuota, quotaRemaining, quotaPercent, levelLabel, levelDesc, fetchTodayPublished, novelForm, createError, createSuccess, handleCreateNovel,
       myNovels, fetchMyNovels,
       creationSections, creationIdentitySummary, creationWorldSummary, creationRealmSummary, creationCharacterSummary, creationCompleted, creationProgress,
-      generationOutOfScope, regenerationPreview, regenerationOutOfScope, continuationOutOfScope,
+      generationCheck, continuationChecks, checkWarnings, checkResultText, shouldShowDraftCheck, reviewItems, reviewItemText, closeChapterEdit, calibrateChapterEdit,
+      generationChapterId, editorBusy, chapterBusy, draftTaskLabels, draftDirty, saveDraft,
+      generationOutOfScope, continuationOutOfScope,
       showChapterModal, chapterNovel, novelChapters, chapterForm, generating, generationPreview, generationStatus, generationTitle, generationError, continuationPreviews,
       openChapterModal, generateChapter, authorStyles, fetchAuthorStyles,
       chapterTemplates, fetchChapterTemplates, chapterTemplateGroups,
       selAuthorStyles, selChapterTemplates, selEditAuthorStyles, selEditChapterTemplates,
       msStyleOpen, msTemplateOpen, msEditStyleOpen, msEditTemplateOpen, toggleMulti,
       chapterPage, chapterPageSize, chapterPaged, chapterPageCount, chapterPageNums,
-      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, editChapter, saveChapterEdit, regenerateChapter, continueChapter, continuing, deleteNovel, downloadNovel, formatTime, saving, regenerating, chapterEditIssue, showChapterEditModal, editChapterForm,
+      drafts, fetchDrafts, publishChapter, deleteDraft, deleteChapter, editChapter, saveChapterEdit, regenerateChapter, calibrateChapter, calibrating, checkDraft, checkChapterEdit, checkingEdit, editCheck, invalidateEditCheck, invalidateDraftCheck, continueChapter, continuing, deleteNovel, downloadNovel, formatTime, saving, regenerating, chapterEditIssue, showChapterEditModal, editChapterForm, chapterBusy, draftTaskLabels, draftDirty, saveDraft,
       publishing, publishOverlay,
       genreOptions, selectedGenres, toggleGenre, handleCoverUpload,
       showEditModal, editForm, editSelectedGenres, editError, editSuccess,
@@ -1800,7 +2154,8 @@ export default {
       spNovelId, spChapters, spSelectedIds, spGenerating, spResult, spResultRef,
       spAllSelected, initScreenplay, spLoadChapters, spToggleAll, spGenerate, spCopyResult,
       outlineNovelId, outlineDirection, outlineCount, outlineGenerating, outlineResult,
-      outlineLoading, outlineSaving,
+      outlineLoading, outlineSaving, outlineLoadError, outlineHistory, outlineHistoryReady, outlineChecking,
+      outlineChapterHint, exportHistoryOutlines,
       outlineSelectedNumbers, outlineSelectedCount, outlineAllSelected, outlineBatchDeleting,
       getOutlineCharCount, isOutlineTooShort, toggleOutlineSelectAll, outlineDeleteSelected, exportOutlines,
       outlineEditNum, outlineEditName, outlineEditSummary,
@@ -1813,6 +2168,20 @@ export default {
 </script>
 
 <style scoped>
+.fact-check-warnings {
+  margin: 12px 0;
+  padding: 12px 16px;
+  border-left: 3px solid #b7791f;
+  background: var(--bg-secondary, #fff8eb);
+  color: var(--text-primary, #704b13);
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+.fact-check-warnings p {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+}
+
 .page-title { font-size: 24px; margin-bottom: 20px; color: var(--text-primary); font-weight: 700; }
 
 /* 配额横幅 */
@@ -2094,6 +2463,9 @@ export default {
 .btn-ai { background: linear-gradient(135deg, #06b6d4, #8b5cf6) !important; color: #fff !important; border: none !important; box-shadow: 0 4px 16px var(--border-hover); }
 .btn-ai:hover { box-shadow: 0 4px 28px var(--border-hover); }
 .btn-ai:disabled { opacity: 0.6; cursor: not-allowed; }
+.btn-outline { background: transparent !important; color: var(--accent) !important; border: 1px solid rgba(6,182,212,0.4) !important; }
+.btn-outline:hover { background: rgba(6,182,212,0.08) !important; }
+.btn-outline:disabled { opacity: 0.6; cursor: not-allowed; }
 .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -2499,6 +2871,7 @@ export default {
 .outline-tag { font-size: 11px; padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
 .outline-tag.pending { background: rgba(251, 191, 36, 0.12); color: #f59e0b; }
 .outline-tag.saved { background: rgba(74, 222, 128, 0.12); color: var(--success-text); }
+.outline-generation-hint { margin: 6px 0 0; font-size: 12px; color: var(--text-muted); }
 .outline-item-actions { display: flex; gap: 8px; margin-top: 8px; }
 .btn-outline-save, .btn-outline-edit {
   padding: 5px 14px;

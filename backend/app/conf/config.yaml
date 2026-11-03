@@ -50,22 +50,20 @@ jwt:
   algorithm: "HS256"           # JWT 签名算法（固定 HS256）
   expire_minutes: 1440         # Token 过期时间（分钟），1440=30天
 
-deepseek:
-  # API Key 不放这里：app/config.py 的 get() 里环境变量优先于本文件，
-  # 部署时由 docker-compose 传入 DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}"
-  # （值来自宿主机的 .env，.env 已在 .gitignore 中）。
-  # 本地非容器运行请先 export DEEPSEEK_API_KEY=sk-xxx 再启动，否则调用会鉴权失败。
-  api_key: ""
-  base_url: "https://api.deepseek.com/v1/chat/completions"
-  # 轻量功能（记忆体提取/剧本/概要）用 flash，省成本
-  model: "deepseek-flash"
-  # 章节正文生成 + 续写 + 重新生成用 pro，AI 味更淡
-  model_long: "deepseek-flash"
+# MIMO 模型配置（核查/校准/记忆提取）
+mimo:
+  # 环境变量 MIMO_API_KEY 优先；未配置时使用下面的 key
+  api_key: "sk-cynmyzh16vyv4b7pj03sbnb6q0wl5qnhw8pyibbwpb1o9bje"
+  base_url: "https://api.xiaomimimo.com/v1/chat/completions"
+  model: "mimo-v2.5"
+  model_long: "mimo-v2.5-pro"
 
-  # 备选供应商（同样只在此保留非敏感项，key 走 DEEPSEEK_API_KEY 环境变量）
-  # base_url: "https://api.xiaomimimo.com/v1/chat/completions"
-  # model: "mimo-v2.5"
-  # model_long: "mimo-v2.5-pro"
+# 正文生成/续写专用 DeepSeek 模型（与 MIMO 分开计费）
+deepseek_writer:
+  # 环境变量 DEEPSEEK_WRITER_API_KEY 优先；未配置时使用下面的 key
+  api_key: "sk-93c9de087b5948ba827a08039b59ae42"
+  base_url: "https://api.deepseek.com/v1/chat/completions"
+  model: "deepseek-flash"
 
 # AI 生成 Mock 开关（压测用）：true 时 AI 生成接口不调用真实 DeepSeek，返回固定文本
 ai:
@@ -122,8 +120,8 @@ ai:
       tail_chars: 2000          # 续写时读取当前章末尾多少字作为上下文
     # 事实核查（chapter_gen_graph → node_fact_check）
     fact_check_api:
-      max_tokens: 1500
-      timeout: 60
+      max_tokens: 8192
+      timeout: 120
       temperature: 0.1
     # 记忆体提取（所有提取场景统一参数：轻量/全量/增量/发布/修复）
     extract:

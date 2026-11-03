@@ -120,16 +120,18 @@ services:
       SEAWEEDFS_EXTERNAL_PORT: "443"
       SEAWEEDFS_EXTERNAL_PROTOCOL: https
       JWT_SECRET_KEY: "wenhui-novel-jwt-secret-key-2024"
-      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY}"
-      DEEPSEEK_BASE_URL: "https://api.deepseek.com"
+      MIMO_API_KEY: "${MIMO_API_KEY}"
+      DEEPSEEK_WRITER_API_KEY: "${DEEPSEEK_WRITER_API_KEY}"
       # Resend 邮件服务密钥：值来自宿主机 .env（.env 已 gitignore），
       # 与 config.yaml 的 email.resend_api_key 对应，环境变量优先
       RESEND_API_KEY: "${RESEND_API_KEY}"
       WEBSITE_URL: "https://wenhui.nat100.top"
       ALIPAY_NOTIFY_URL: "https://wenhui.nat100.top/api/vip/notify"
       ALIPAY_RETURN_URL: "https://wenhui.nat100.top/vip"
+      TRAE_SKILLS_ROOT: /app/.trae/skills
       TZ: "Asia/Shanghai"
     volumes:
+      - ./.trae/skills:/app/.trae/skills:ro
       - ./backend/app:/app/app
       - ./data/backend/novel_structure_data:/app/app/novel_structure_data
       - ./data/backend/logs:/app/logs

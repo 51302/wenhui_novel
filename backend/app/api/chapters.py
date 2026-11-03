@@ -7,6 +7,7 @@ from app.models.novel import Novel
 from app.service.chapter_service import ChapterService
 from app.api.deps import get_current_user, check_generate_permission, require_svip
 from app.dao.user_dao import UserDAO
+from app.dao.chapter_dao import ChapterDAO
 from fastapi.responses import StreamingResponse
 from app.utils.response import fail, success
 import asyncio
@@ -330,6 +331,67 @@ class RegenerateBody(BaseModel):
     author_style: str = ""
     chapter_template: str = ""
     use_anti_ai: bool = True
+
+
+class CalibrateBody(BaseModel):
+    content: str
+    hallucinations: list = []
+
+
+class ReviewBody(BaseModel):
+    content: str
+
+
+@router.post("/check/{chapter_unique_id}")
+def check_chapter(
+    chapter_unique_id: str,
+    body: ReviewBody,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
+    if not chapter:
+        return fail("章节不存在", code=404)
+    if chapter.user_id != current_user["user_id"]:
+        return fail("无权核查该章节", code=403)
+    if not body.content.strip():
+        return fail("章节正文为空，无法核查", code=400)
+    task_id = TaskQueue.push("ai:check", {
+        "chapter_unique_id": chapter_unique_id,
+        "user_id": current_user["user_id"],
+        "content": body.content,
+    }, ttl=1800)
+    if not task_id:
+        return fail("系统繁忙，请稍后重试", code=503)
+    return success({"task_id": task_id, "queue_name": "ai:check"}, "章节核查任务已提交，请稍后查询结果")
+
+
+@router.post("/calibrate/{chapter_unique_id}")
+def calibrate_chapter(
+    chapter_unique_id: str,
+    body: CalibrateBody,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
+    if not chapter:
+        return fail("章节不存在", code=404)
+    if chapter.user_id != current_user["user_id"]:
+        return fail("无权校准该章节", code=403)
+    if not body.content.strip():
+        return fail("章节正文为空，无法校准", code=400)
+    if not body.hallucinations:
+        return fail("缺少核查建议", code=400)
+    task_id = TaskQueue.push("ai:calibrate", {
+        "chapter_unique_id": chapter_unique_id,
+        "user_id": current_user["user_id"],
+        "content": body.content,
+        "hallucinations": body.hallucinations,
+    }, ttl=1800)
+    if not task_id:
+        return fail("系统繁忙，请稍后重试", code=503)
+    system_logger.info(f"[队列] 提交AI校准任务: {chapter_unique_id} → task_id={task_id}")
+    return success({"task_id": task_id, "queue_name": "ai:calibrate"}, "AI校准任务已提交，请稍后查看结果")
 
 
 @router.post("/regenerate/{chapter_unique_id}")
