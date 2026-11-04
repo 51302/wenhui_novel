@@ -523,6 +523,27 @@ def publish_chapter(
             system_logger.info(f"配额扣减完成: 用户={current_user['username']}, 剩余配额={remaining}")
         except Exception as e:
             system_logger.warning(f"配额扣减失败（非致命）: 用户={current_user['username']}, 错误={e}")
+        # 发布链路自动挂草稿内容校验（非阻断：仅入队，失败不影响发布；结果由前端轮询 check_task_id 获取）
+        check_task_id = None
+        try:
+            chapter = ChapterDAO.get_by_unique_id(db, chapter_unique_id)
+            if chapter:
+                check_content = body.get("content") or ChapterService._read_chapter_content_from_file(
+                    chapter.novel_unique_id, chapter.chapter_name, chapter.chapter_unique_id)
+                if check_content and check_content.strip():
+                    check_task_id = TaskQueue.push("ai:check", {
+                        "chapter_unique_id": chapter_unique_id,
+                        "user_id": chapter.user_id,
+                        "content": check_content,
+                    }, ttl=1800)
+                    if check_task_id:
+                        system_logger.info(
+                            f"[发布-校验] 已挂草稿内容校验: {ch_name} check_task_id={check_task_id}")
+        except Exception as e:
+            check_task_id = None
+            system_logger.warning(f"[发布-校验] 挂载内容校验失败（非致命，不影响发布）: {e}")
+        if check_task_id:
+            result.setdefault("数据", {})["check_task_id"] = check_task_id
     else:
         system_logger.warning(f"章节发布失败: ID={chapter_unique_id} → {result.get('消息', '')}")
     return result
@@ -550,6 +571,7 @@ def extract_chapter_info(
         "content": body.content,
         "chapter_name": body.chapter_name,
         "novel_unique_id": body.novel_unique_id,
+        "user_id": current_user["user_id"],
     }, ttl=1800)
     if not task_id:
         return fail("系统繁忙，请稍后重试", code=503)

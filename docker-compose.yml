@@ -1,6 +1,6 @@
 services:
   elasticsearch:
-    image: crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com/wenhui_novel/elasticsearch:8.11.0
+    image: elasticsearch:8.11.0
     container_name: wenhui-es
     restart: unless-stopped
     environment:
@@ -20,7 +20,7 @@ services:
       retries: 10
 
   seaweedfs-master:
-    image: crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com/wenhui_novel/seaweedfs:latest
+    image: chrislusf/seaweedfs:latest
     container_name: wenhui-seaweedfs-master
     restart: unless-stopped
     command: master -port=9333 -ip=seaweedfs-master
@@ -30,7 +30,7 @@ services:
       - ./data/seaweedfs/master:/data
 
   seaweedfs-volume:
-    image: crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com/wenhui_novel/seaweedfs:latest
+    image: chrislusf/seaweedfs:latest
     container_name: wenhui-seaweedfs-volume
     restart: unless-stopped
     command: volume -port=8080 -mserver=seaweedfs-master:9333 -ip=seaweedfs-volume
@@ -42,7 +42,7 @@ services:
       - seaweedfs-master
 
   seaweedfs-filer:
-    image: crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com/wenhui_novel/seaweedfs:latest
+    image: chrislusf/seaweedfs:latest
     container_name: wenhui-seaweedfs-filer
     restart: unless-stopped
     command: filer -port=8888 -master=seaweedfs-master:9333
@@ -59,7 +59,7 @@ services:
       retries: 5
 
   mysql:
-    image: crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com/wenhui_novel/mysql:8.0
+    image: mysql:8.0
     container_name: wenhui-mysql
     restart: unless-stopped
     environment:
@@ -79,7 +79,7 @@ services:
       retries: 5
 
   redis:
-    image: crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com/wenhui_novel/redis:7-alpine
+    image: redis:7-alpine
     container_name: wenhui-redis
     restart: unless-stopped
     command: redis-server --appendonly yes
@@ -115,8 +115,8 @@ services:
       SEAWEEDFS_FILER_HOST: seaweedfs-filer
       SEAWEEDFS_FILER_PORT: "8888"
       SEAWEEDFS_FILER_PROTOCOL: http
-      # 外部访问走 Natapp（HTTPS），图片通过 Nginx 代理到 SeaweedFS
-      SEAWEEDFS_EXTERNAL_HOST: "wenhui.nat100.top"
+      # 外部访问走正式域名（Caddy 自动 HTTPS），图片通过 Nginx 代理到 SeaweedFS
+      SEAWEEDFS_EXTERNAL_HOST: "wenhui.xyz"
       SEAWEEDFS_EXTERNAL_PORT: "443"
       SEAWEEDFS_EXTERNAL_PROTOCOL: https
       JWT_SECRET_KEY: "wenhui-novel-jwt-secret-key-2024"
@@ -125,9 +125,9 @@ services:
       # Resend 邮件服务密钥：值来自宿主机 .env（.env 已 gitignore），
       # 与 config.yaml 的 email.resend_api_key 对应，环境变量优先
       RESEND_API_KEY: "${RESEND_API_KEY}"
-      WEBSITE_URL: "https://wenhui.nat100.top"
-      ALIPAY_NOTIFY_URL: "https://wenhui.nat100.top/api/vip/notify"
-      ALIPAY_RETURN_URL: "https://wenhui.nat100.top/vip"
+      WEBSITE_URL: "https://wenhui.xyz"
+      ALIPAY_NOTIFY_URL: "https://wenhui.xyz/api/vip/notify"
+      ALIPAY_RETURN_URL: "https://wenhui.xyz/vip"
       TRAE_SKILLS_ROOT: /app/.trae/skills
       TZ: "Asia/Shanghai"
     volumes:
@@ -153,14 +153,29 @@ services:
     # image: crpi-1xy58ppkqat4md0n.cn-hangzhou.personal.cr.aliyuncs.com/wenhui_novel/wenhui_novel-frontend:v1.1.0-20260226
     container_name: wenhui-frontend
     restart: unless-stopped
-    ports:
-      - "80:80"
+    # 80/443 由 Caddy 统一接管（自动 HTTPS），前端仅在 compose 网络内暴露 80
     volumes:
       - ./data/frontend/uploads:/usr/share/nginx/html/uploads
       - ./data/frontend/covers:/usr/share/nginx/html/covers
       - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf
     depends_on:
       - backend
+
+  # Caddy 反向代理：域名自动 HTTPS（Let's Encrypt 自动签发/续期）
+  caddy:
+    image: caddy:2
+    container_name: wenhui-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy/data:/data
+      - ./data/caddy/config:/config
+    depends_on:
+      - frontend
 
   # Natapp 内网穿透
   natapp:

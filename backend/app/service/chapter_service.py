@@ -980,12 +980,14 @@ class ChapterService:
 
     @staticmethod
     async def _rebuild_current_chapter_memory(novel_unique_id: str, content: str,
-                                              chapter_name: str, chapter_summary: str) -> bool:
+                                              chapter_name: str, chapter_summary: str,
+                                              chapter_number: int = None) -> bool:
         """仅重建当前章节的记忆，不依赖其他章节完整。发布场景专用。"""
         from app.config import get as cfg, mimo_model
         from app.service.ai_chat_service import chat_completion, log_ai_call
 
-        number = ChapterService._chapter_num_from_name(chapter_name)
+        # 章号优先取数据库字段，章节名解析作为兜底（章节名可能不含「第X章」前缀）
+        number = chapter_number or ChapterService._chapter_num_from_name(chapter_name)
         if not number or number <= 0:
             raise RuntimeError("章节号无效，无法补全记忆")
 
@@ -2664,34 +2666,56 @@ class ChapterService:
             f"[AI调用-概要生成] 已有概要={len(existing_outlines)}字 | "
             f"剧情大框={len(story_direction)}字 | 提示词={len(system_prompt) + len(user_prompt)}字 | "
             f"生成章节数={chapter_count}")
-        outline_text, err = await ChapterService._call_outline_api(
-            system_prompt,
-            user_prompt,
-            max_tokens=max(4000, chapter_count * 1200),
-        )
-        if not outline_text:
-            return fail(f"概要生成失败：{err or 'AI接口无返回'}", code=502)
-
-        # ---- 5. 解析 JSON 数组（不落库，写入 Redis 临时缓存，24小时有效） ----
+        # ---- 5. 调用 + 解析 JSON 数组（数量不足自动重试，最多3轮；不落库，写入 Redis 临时缓存24小时） ----
         MIN_OUTLINE_CHARS = 170  # 章节概要最少字数
-        outlines = ChapterService._parse_outline_json(outline_text, chapter_count)
-        if not outlines:
-            system_logger.warning(f"[概要规划] JSON解析失败，原始返回: {outline_text[:500]}")
-            return fail("AI返回格式无法解析，请重试", code=502)
-        # 过滤掉少于 MIN_OUTLINE_CHARS 字的概要
         valid_outlines = []
-        for o in outlines:
-            s = (o.get("chapter_summary") or "").strip()
-            if len(s) >= MIN_OUTLINE_CHARS:
-                valid_outlines.append(o)
-            else:
-                name = (o.get("chapter_name") or "未知").strip()
-                system_logger.warning(f"[概要规划] 概要字数不足{MIN_OUTLINE_CHARS}字，已过滤: {name}（{len(s)}字）")
-        if len(valid_outlines) < chapter_count:
-            system_logger.warning(
-                f"[概要规划] 有效概要数量不足：请求{chapter_count}章，"
-                f"解析{len(outlines)}章，过滤后{len(valid_outlines)}章"
+        retry_hint = ""
+        last_fail_reason = ""
+        for attempt in range(1, 4):
+            outline_text, err = await ChapterService._call_outline_api(
+                system_prompt,
+                user_prompt + retry_hint,
+                max_tokens=max(4000, chapter_count * 1200),
             )
+            if not outline_text:
+                last_fail_reason = err or "AI接口无返回"
+                if attempt < 3:
+                    system_logger.warning(f"[概要规划] 第{attempt}次AI无返回（{last_fail_reason}），重试")
+                    continue
+                break
+            outlines = ChapterService._parse_outline_json(outline_text, chapter_count)
+            if not outlines:
+                last_fail_reason = "AI返回格式无法解析"
+                system_logger.warning(
+                    f"[概要规划] 第{attempt}次JSON解析失败，原始返回: {outline_text[:500]}")
+            else:
+                # 过滤掉少于 MIN_OUTLINE_CHARS 字的概要
+                valid_outlines = []
+                for o in outlines:
+                    s = (o.get("chapter_summary") or "").strip()
+                    if len(s) >= MIN_OUTLINE_CHARS:
+                        valid_outlines.append(o)
+                    else:
+                        name = (o.get("chapter_name") or "未知").strip()
+                        system_logger.warning(
+                            f"[概要规划] 概要字数不足{MIN_OUTLINE_CHARS}字，已过滤: {name}（{len(s)}字）")
+                if len(valid_outlines) < chapter_count:
+                    last_fail_reason = (
+                        f"仅生成{len(valid_outlines)}章有效概要（解析{len(outlines)}章，过滤后{len(valid_outlines)}章）")
+                    system_logger.warning(
+                        f"[概要规划] 第{attempt}次有效概要数量不足：请求{chapter_count}章，{last_fail_reason}"
+                    )
+            if len(valid_outlines) >= chapter_count:
+                break
+            # 带失败原因强化要求后重试
+            retry_hint = (
+                f"\n\n【上次输出不合格，本次必须修正】上次输出{last_fail_reason}，目标是{chapter_count}章。"
+                f"本次必须严格输出一个 JSON 数组、恰好 {chapter_count} 个对象（不多不少），"
+                f"每条 chapter_summary 不少于{MIN_OUTLINE_CHARS}字。输出前先自行数一遍对象个数。"
+            )
+        if not valid_outlines and last_fail_reason == "AI返回格式无法解析":
+            return fail("AI返回格式无法解析，请重试", code=502)
+        if len(valid_outlines) < chapter_count:
             return fail(
                 f"AI仅生成{len(valid_outlines)}章有效概要，目标为{chapter_count}章，请重新生成",
                 code=502,
@@ -2836,7 +2860,14 @@ class ChapterService:
         # ---- 3. 批量创建草稿章节（含概要，正文留空） ----
         created = []
         for i, o in enumerate(chapters):
-            name = (o.get("chapter_name") or f"第{start_num + i}章").strip()
+            num = start_num + i
+            raw_name = (o.get("chapter_name") or "").strip()
+            # 章节名统一带「第X章」前缀：发布链路按章节名解析章号补全记忆、
+            # 三源统计按 TXT 文件名解析章号，缺前缀会导致解析失败（发布 500 / 三源误判不一致）
+            if re.match(r'^第\s*[一二三四五六七八九十百零\d]+\s*章', raw_name):
+                name = raw_name
+            else:
+                name = f"第{num}章 {raw_name}" if raw_name else f"第{num}章"
             summary = (o.get("chapter_summary") or "").strip()
             chapter_unique_id = uuid.uuid4().hex
             ChapterDAO.create(
@@ -2845,7 +2876,7 @@ class ChapterService:
                 user_id=user_id,
                 chapter_unique_id=chapter_unique_id,
                 chapter_name=name,
-                chapter_number=start_num + i,
+                chapter_number=num,
                 chapter_summary=summary,
                 is_published=0,
                 created_by=f"user:{user_id}",
@@ -2853,7 +2884,7 @@ class ChapterService:
             created.append({
                 "chapter_unique_id": chapter_unique_id,
                 "chapter_name": name,
-                "chapter_number": start_num + i,
+                "chapter_number": num,
                 "chapter_summary": summary,
             })
 
@@ -2933,6 +2964,8 @@ class ChapterService:
         for json_str in candidates:
             if not json_str:
                 continue
+            # 预处理：模型常在字符串内输出未转义的换行/制表/控制符（json 非法），统一替换为空格
+            json_str = re.sub(r"[\x00-\x1f]", " ", json_str)
             # 预处理中文标点：中文引号、中文逗号、中文冒号（仅在 JSON 字符串外层的标点）
             try:
                 data = json.loads(json_str)
@@ -2978,20 +3011,51 @@ class ChapterService:
             if out:
                 return out[:expected_count * 2]
 
-        # ===== 4. 全量正则兜底（逐对象正则抓取，容错 JSON 极度破损）=====
+        # ===== 4. 逐对象边界感知抽取（修复字符串内未转义英文引号导致的破损 JSON）=====
+        def _unescape(s: str) -> str:
+            return (s.replace("\\n", "\n").replace("\\t", " ")
+                     .replace('\\"', '"').replace("\\\\", "\\").strip())
+
+        rows = []
+        for chunk in re.findall(r"\{(.*?)\}", text, re.S):
+            # name 在前、summary 在后（标准格式）：name 取到 "chapter_summary" 边界为止，
+            # summary 贪婪取到对象末尾（} 已被切分去除），字符串内的英文引号不再造成截断
+            m = re.search(
+                r'"(?:chapter_name|章节名|name)"\s*[:：]\s*"(.*?)"\s*,\s*"(?:chapter_summary|概要|summary)"\s*[:：]\s*"(.*)"',
+                chunk, re.S)
+            if m:
+                rows.append((m.group(1), m.group(2)))
+                continue
+            # summary 在前、name 在后（逆序容错）
+            m = re.search(
+                r'"(?:chapter_summary|概要|summary)"\s*[:：]\s*"(.*?)"\s*,\s*"(?:chapter_name|章节名|name)"\s*[:：]\s*"(.*)"',
+                chunk, re.S)
+            if m:
+                rows.append((m.group(2), m.group(1)))
+        if rows:
+            # 清理 summary 末尾可能混入的其他键（如 chapter_number）
+            cleaned_rows = [
+                (n, re.sub(r'"\s*,\s*"chapter_[a-z_]*"\s*:.*$', '', s, flags=re.S))
+                for n, s in rows
+            ]
+            system_logger.warning(f"[概要规划] JSON破损，边界感知抽取成功: 匹配条数={len(cleaned_rows)}")
+            return [{"chapter_name": _unescape(n), "chapter_summary": _unescape(s)}
+                    for n, s in cleaned_rows if n.strip() and s.strip()][:expected_count * 2]
+
+        # ===== 5. 全量正则兜底（转义感知，最后一道防线）=====
         rows = re.findall(
-            r'"(?:chapter_name|章节名|name)"\s*[:：]\s*"([^"]*)"[^}]*"(?:chapter_summary|概要|summary)"\s*[:：]\s*"([^"]*)"',
+            r'"(?:chapter_name|章节名|name)"\s*[:：]\s*"((?:[^"\\]|\\.)*)"[^}]*"(?:chapter_summary|概要|summary)"\s*[:：]\s*"((?:[^"\\]|\\.)*)"',
             text, re.S)
         if not rows:
             rows = re.findall(
-                r'"(?:chapter_summary|概要|summary)"\s*[:：]\s*"([^"]*)"[^}]*"(?:chapter_name|章节名|name)"\s*[:：]\s*"([^"]*)"',
+                r'"(?:chapter_summary|概要|summary)"\s*[:：]\s*"((?:[^"\\]|\\.)*)"[^}]*"(?:chapter_name|章节名|name)"\s*[:：]\s*"((?:[^"\\]|\\.)*)"',
                 text, re.S)
             rows = [(s, n) for n, s in rows]
         system_logger.warning(
             f"[概要规划] JSON解析降级到正则抓取, 匹配条数={len(rows)}, "
             f"最后一次parse_err={last_err}, 原始返回前300字={text[:300]!r}"
         )
-        return [{"chapter_name": n.strip(), "chapter_summary": s.strip()}
+        return [{"chapter_name": _unescape(n), "chapter_summary": _unescape(s)}
                 for n, s in rows if n.strip() and s.strip()][:expected_count * 2]
 
     @staticmethod
@@ -3193,14 +3257,16 @@ class ChapterService:
             cached = ChapterService._get_outline_cache(novel_unique_id)
             match = next((item for item in cached
                           if int(item.get("chapter_number") or 0) == int(chapter.chapter_number or 0)), {})
+            # 概要优先取临时缓存，缓存已被消费时回退数据库章节概要（避免记忆提取缺概要上下文）
+            publish_summary = match.get("chapter_summary") or (chapter.chapter_summary or "")
             # 先独立重建当前章节记忆，不依赖其他章节是否完整
             loop.run_until_complete(
                 ChapterService._rebuild_current_chapter_memory(
                     novel_unique_id, content_to_save, chapter.chapter_name,
-                    match.get("chapter_summary", "")))
+                    publish_summary, chapter_number=chapter.chapter_number))
             # 再用 publish 模式写 TXT/MySQL（含指纹校验，跳过重复记忆提取）
             loop.run_until_complete(_save_chapter_content(
-                {"db": db, "publish": True, "summary": match.get("chapter_summary", "")},
+                {"db": db, "publish": True, "summary": publish_summary},
                 chapter, content_to_save, is_regenerate=False, skip_memory_extract=True))
         except Exception as exc:
             return fail(f"章节发布失败：{exc}", code=500)
@@ -3264,12 +3330,20 @@ class ChapterService:
             # 概要落库失败不影响发布主流程，仅记录日志
             system_logger.warning(f"[发布-概要落库] ⚠️ 异常（非致命）: {e}")
 
+        # 发布后实际记忆体维度数（_load_memory 按【维度】拼接，统计方括号数）
+        mem_dims = 0
+        try:
+            mem_text = ChapterService._load_memory(novel_unique_id)
+            mem_dims = len(re.findall(r"【[^】]+】", mem_text))
+        except Exception:
+            pass
+
         system_logger.info(
             f"[发布-验证] 🎉 三阶段全部验证通过 | "
             f"章节={chapter_name} | "
             f"txt={os.path.getsize(chapter_file) if chapter_file and os.path.exists(chapter_file) else '?'}字节 | "
             f"MySQL=is_published:{t2_ok} | "
-            f"Redis记忆体={saved_count if 'saved_count' in dir() else 0}维度"
+            f"Redis记忆体={mem_dims}维度"
         )
         return success(
             {"chapter_unique_id": chapter_unique_id, "chapter_name": chapter_name},

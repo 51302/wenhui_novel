@@ -81,10 +81,10 @@ class SkillSelector:
     # 于是每章正文都注入了一份"章节概要规划"规则。
     _EMPTY_LABEL_RE = re.compile(r"^\s*[^：:\s]{1,16}[：:]\s*$", re.MULTILINE)
 
-    # 规划/设计类 Skill：只在各自规划流程里用（章节概要规划由
+    # 规划/核查/校准类 Skill：只在各自流程里用（章节概要规划由
     # ChapterService.generate_outline_with_ai 直接走提示词，不经过本选择器），
     # 注入正文生成只会污染写作规则。
-    _BODY_EXCLUDED = frozenset({"novel-outline", "chapter-review"})
+    _BODY_EXCLUDED = frozenset({"novel-outline", "chapter-review", "chapter-calibration"})
 
     def __init__(self, loader: SkillLoader | None = None):
         self.loader = loader or SkillLoader()
@@ -146,6 +146,16 @@ class SkillSelector:
                 if trigger and str(trigger) in context:
                     add(document.skill_id, f"Skill 元数据命中：{trigger}")
                     break
+
+        # 通用质量层：include_quality=True 时，所有未被显式排除的 quality 层 skill
+        # 自动全量注入（如 novel-anti-ai）。这里直接塞字典，不走 add() 的门控
+        # （add() 里 quality 层只有"用户明确指定"的 reason 才会放行）。
+        if include_quality:
+            for skill_id, document in documents.items():
+                if document.layer == "quality" and skill_id not in selected \
+                        and skill_id not in self._BODY_EXCLUDED:
+                    selected[skill_id] = document
+                    reasons.setdefault(skill_id, []).append("通用质量层自动注入")
 
         ordered = sorted(
             (document for skill_id, document in selected.items()

@@ -53,17 +53,17 @@ jwt:
 # MIMO 模型配置（核查/校准/记忆提取）
 mimo:
   # 环境变量 MIMO_API_KEY 优先；未配置时使用下面的 key
-  api_key: "sk-cynmyzh16vyv4b7pj03sbnb6q0wl5qnhw8pyibbwpb1o9bje"
+  api_key: "sk-cntypv7fu6sph86a90oetdzse1lk7w4kgyjsadsbufpk36g3"
   base_url: "https://api.xiaomimimo.com/v1/chat/completions"
-  model: "mimo-v2.5"
-  model_long: "mimo-v2.5-pro"
+  model: "mimo-v2.6-pro"
+  model_long: "mimo-v2.6-pro"
 
-# 正文生成/续写专用 DeepSeek 模型（与 MIMO 分开计费）
+# 正文生成/续写专用模型（已切换为 MIMO，与核查/校准同一账号）
 deepseek_writer:
   # 环境变量 DEEPSEEK_WRITER_API_KEY 优先；未配置时使用下面的 key
-  api_key: "sk-93c9de087b5948ba827a08039b59ae42"
-  base_url: "https://api.deepseek.com/v1/chat/completions"
-  model: "deepseek-flash"
+  api_key: "sk-cntypv7fu6sph86a90oetdzse1lk7w4kgyjsadsbufpk36g3"
+  base_url: "https://api.xiaomimimo.com/v1/chat/completions"
+  model: "mimo-v2.6-pro"
 
 # AI 生成 Mock 开关（压测用）：true 时 AI 生成接口不调用真实 DeepSeek，返回固定文本
 ai:

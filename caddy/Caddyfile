@@ -1,0 +1,11 @@
+# wenhui.xyz 正式站点：自动 HTTPS（HTTP 自动 308 跳转 + Let's Encrypt 证书自动签发续期）
+wenhui.xyz, www.wenhui.xyz {
+	encode gzip
+	reverse_proxy frontend:80
+}
+
+# 兜底：IP / localhost 等任意 HTTP 主机，保持原有裸 80 端口访问方式可用（不跳转）
+http:// {
+	encode gzip
+	reverse_proxy frontend:80
+}

@@ -96,10 +96,12 @@ class ChapterGenState(TypedDict, total=False):
     clean_stats: dict
     summary_scope_result: dict
     actual_word_count: int
+    richness: dict                   # 丰富度指标（句数/对白占比），驱动增厚补齐
     fact_check_result: str           # PASS / SKIP / UNKNOWN 或合法幻觉列表原文
     review_skill: dict
     fact_check_warnings: list
     hallucinations: list             # 幻觉条目列表
+    rewrite_count: int               # 已执行的幻觉定向改写轮数（防死循环）
     error: str                       # 失败出口
     # continue 专属
     existing_content: str
@@ -475,6 +477,184 @@ def _diagnose_repetition(cleaned: str, stats: dict, reference: str) -> None:
         system_logger.warning(f"[跨章查重] 检测失败（不影响生成）: {e}")
 
 
+def _measure_richness(text: str, target: int) -> dict:
+    """内容丰富度指标：句数 + 对白占比（与测试口径一致）
+
+    - sent_count: 按 。！？!? 切分的有效句数
+    - dialog_ratio: 「」/“”/"" 引号内容字数占比
+    - thin_reasons: 触发增厚补齐的原因列表（句数过少 / 对白过少）
+    """
+    flat = re.sub(r'\s', '', text or '')
+    if not flat:
+        return {"sent_count": 0, "dialog_ratio": 0.0, "thin_reasons": ["正文为空"]}
+    sents = [s for s in re.split(r'[。！？!?]', re.sub(r'\n', '', text or '')) if s.strip()]
+    sent_count = len(sents)
+    dial = sum(len(m) for m in re.findall(r'[「“"][^」”"]*[」”"]', text or ''))
+    dial_ratio = dial / max(1, len(flat))
+
+    thin = []
+    # 句数下限：按目标字数折算（2000字 → 80句），低于即视为叙述过薄
+    sent_floor = max(int(target / 25), 40)
+    if sent_count < sent_floor:
+        thin.append(f"句数{sent_count}<{sent_floor}")
+    # 对白占比下限 8%：动作/心理戏占比过高时读者体感沉闷
+    if dial_ratio < 0.08:
+        thin.append(f"对白{dial_ratio:.0%}<8%")
+    return {"sent_count": sent_count, "dialog_ratio": round(dial_ratio, 4),
+            "thin_reasons": thin}
+
+
+async def _fill_to_min_word_count(
+    state: dict,
+    cleaned: str,
+    stats: dict,
+    before_len: int,
+    target: int,
+    lower_bound: int,
+    reasons: list | None = None,
+) -> None:
+    """字数/丰富度补齐（仅补 1 次，写入 state['generated_text'/'clean_stats'/'actual_word_count']）。
+
+    用续写 Prompt 模板补齐剩余字数，context 取当前正文末尾 tail_chars 字。
+    追加内容走同一套程序化清洗，不新增新事件/新人物/新设定。
+
+    reasons: 触发原因列表（["字数不足"] / ["句数少", "对白少"]），
+             含丰富度项时追加对白推进与短句拆分约束。
+    """
+    from app.config import get as cfg
+    from app.service.ai_chat_service import chat_completion, log_ai_call
+    from app.prompts.chapter_prompts import (
+        CONTINUE_PROMPT, CONTINUE_CHAOT_RULES, SELF_CHECK_LIST,
+        build_generate_system_prompt,
+    )
+    from app.service.text_cleaner import clean_generated_text
+    from app.config import (
+        deepseek_writer_model, deepseek_writer_api_key,
+        deepseek_writer_base_url, gen_api_timeout,
+    )
+
+    reasons = reasons or ["字数不足"]
+    thin_reasons = [r for r in reasons if r not in ("字数不足", "正文为空")]
+
+    chapter = state.get("chapter")
+    chapter_name = chapter.chapter_name if chapter else ""
+    summary = state.get("summary") or (chapter.chapter_summary if chapter else "") or ""
+    memory_body = state.get("memory_body", "") or ""
+    tail_chars = cfg("ai.api_params.continue_writing.tail_chars", 2000)
+    context_content = cleaned[-tail_chars:] if len(cleaned) > tail_chars else cleaned
+    if "字数不足" in reasons:
+        remaining = max(target - before_len, 800)  # 至少补 800
+    else:
+        # 丰富度补齐：字数已达标，只补一段对白密集的场景来稀释比值
+        remaining = 800
+
+    # 疯批专属规则（沿用续写图的判断逻辑）
+    chaot_rules = ""
+    try:
+        cc = state.get("character_cards")
+        if isinstance(cc, list) and cc:
+            pers_all = (cc[0].get("personality") or "") + " " + (cc[0].get("intro") or "")
+            if _re.search(r'疯|疯批|疯癫|癫|偏执|病娇|嘴贱|反骨|狂', pers_all):
+                chaot_rules = CONTINUE_CHAOT_RULES
+    except Exception:
+        pass
+
+    fill_prompt = CONTINUE_PROMPT.format(
+        protagonist_block="",
+        chaot_rules=chaot_rules,
+        memory_body=memory_body,
+        chapter_name=chapter_name,
+        chapter_summary=summary,
+        context_content=context_content,
+        word_count=remaining,
+        min_words=remaining,
+    ) + (
+        "\n\n🔴【补齐模式特殊约束】"
+        f"\n触发原因：{'、'.join(reasons)}；当前正文 {before_len} 字，本次补约 {remaining} 字。"
+        "\n严格禁止新增概要外的新事件 / 新人物 / 新设定。"
+        "\n优先补充：最后事件的后续细节、现场反应、人物身体感受、环境氛围、"
+        "未解决的已有疑问。写完剩余字数即停，不得额外收尾、不得升华。"
+    )
+    if thin_reasons:
+        fill_prompt += (
+            "\n\n🟠【增厚约束】正文叙述过薄（" + "、".join(thin_reasons) + "），续写部分必须："
+            "\n1. 以人物对话推进情节，对白字数占比不低于 50%，用对话交代信息、制造张力，"
+            "避免用叙述句复述已发生的事件。"
+            "\n2. 每句控制在 25 字以内，长短句交替，杜绝一句到底的长叙述。"
+            "\n3. 对白要短促、带情绪、有潜台词，人物语气需与角色卡一致。"
+            "\n4. 不堆形容词、不用排比铺陈，靠动作与台词撑起画面。"
+        )
+
+    fill_msgs = [
+        {"role": "system", "content": build_generate_system_prompt(
+            summary, state.get("genre", ""),
+            use_anti_ai=state.get("use_anti_ai", True))},
+        {"role": "user",
+         "content": fill_prompt + (
+             "\n\n" + SELF_CHECK_LIST if state.get("use_anti_ai", True) else "")},
+    ]
+
+    cw_params = cfg("ai.api_params.continue_writing", {})
+    max_tokens = min(max(int(remaining * 2), 1200), 5000)
+    params = {
+        "messages": fill_msgs,
+        "model": deepseek_writer_model(),
+        "max_tokens": max_tokens,
+        "timeout": cw_params.get("timeout", gen_api_timeout()),
+        "thinking": {"type": "disabled"},
+        "temperature": cw_params.get("temperature", 0.85),
+        "top_p": cw_params.get("top_p", 0.92),
+        "frequency_penalty": cfg("ai.generation.frequency_penalty", 0.5),
+        "presence_penalty": cfg("ai.generation.presence_penalty", 0.5),
+    }
+    _wk = deepseek_writer_api_key()
+    _wu = deepseek_writer_base_url()
+    if _wk:
+        params["base_url"] = _wu
+        params["api_key"] = _wk
+
+    try:
+        filled, err, usage = await chat_completion(**params)
+        log_ai_call("字数补齐", fill_msgs, filled, err, usage,
+                    model=deepseek_writer_model())
+        if err:
+            system_logger.warning(
+                f"[补齐] AI 失败（保留原 {before_len} 字）: {err}")
+            state["generated_text"] = cleaned
+            state["clean_stats"] = stats
+            state["actual_word_count"] = before_len
+            return
+        if not filled:
+            system_logger.warning("[补齐] AI 返回空（保留原文本）")
+            state["generated_text"] = cleaned
+            state["clean_stats"] = stats
+            state["actual_word_count"] = before_len
+            return
+        fill_clean, fill_stats = (
+            clean_generated_text(filled)
+            if state.get("use_anti_ai", True) else (filled, {}))
+        merged = cleaned.rstrip() + "\n\n" + fill_clean
+        merged_len = len(merged)
+        after = _measure_richness(merged, target)
+        system_logger.info(
+            f"[补齐-{'+'.join(reasons)}] 原目标{target} 下限{lower_bound} "
+            f"补前{before_len} → 补后{merged_len} (+{merged_len - before_len}) | "
+            f"句数{after['sent_count']} 对白{after['dialog_ratio']:.0%}"
+        )
+        stats_copy = dict(stats)
+        stats_copy.setdefault("append_fill", {})
+        stats_copy["append_fill"].update(fill_stats)
+        state["generated_text"] = merged
+        state["clean_stats"] = stats_copy
+        state["actual_word_count"] = merged_len
+    except Exception as e:
+        system_logger.warning(
+            f"[补齐] 异常（保留原 {before_len} 字）: {e}")
+        state["generated_text"] = cleaned
+        state["clean_stats"] = stats
+        state["actual_word_count"] = before_len
+
+
 async def node_postprocess(state: dict) -> dict:
     """后处理：无损概要诊断 → 超长上限截断 → 程序化清洗。"""
     from app.config import gen_hard_cap_ratio, gen_hard_cap_min_extra
@@ -520,10 +700,35 @@ async def node_postprocess(state: dict) -> dict:
             )
     except Exception as e:
         system_logger.warning(f"[AI味检测] 评分失败（不影响生成）: {e}")
+
+    # ===== 字数硬校验 + 内容丰富度校验：不达标自动补齐（仅补 1 次，防死循环） =====
+    target = state.get("word_count", 2000)
+    current_len = len(cleaned)
+    lower_bound = int(target * 0.8)  # 允许 20% 浮动，与提示词"上下浮动"对齐
+    richness = _measure_richness(cleaned, target)
+    reasons = []
+    if current_len < lower_bound:
+        reasons.append("字数不足")
+    reasons.extend(richness["thin_reasons"])
+    if reasons:
+        system_logger.info(
+            f"[丰富度] 句数{richness['sent_count']} 对白{richness['dialog_ratio']:.0%} "
+            f"→ 触发补齐：{'、'.join(reasons)}")
+        await _fill_to_min_word_count(
+            state, cleaned, stats, current_len, target, lower_bound, reasons)
+        cleaned = state["generated_text"]
+        stats = state["clean_stats"]
+        current_len = state["actual_word_count"]
+        richness = _measure_richness(cleaned, target)
+        system_logger.info(
+            f"[丰富度] 补齐后 句数{richness['sent_count']} 对白{richness['dialog_ratio']:.0%} "
+            f"字数{current_len} 仍薄={richness['thin_reasons'] or '否'}")
+
     return {
         "generated_text": cleaned,
         "clean_stats": stats,
         "actual_word_count": len(cleaned),
+        "richness": richness,
         "ai_quality_score": ai_quality,
     }
 
@@ -567,10 +772,106 @@ async def node_content_check(state: dict) -> dict:
             "review_skill": data.get("skill"),
         }
     except Exception as exc:
+        # 复检失败（改写后第二轮核查挂了）不推翻已改写的正文：降级为 UNKNOWN 继续走保存
+        if state.get("rewrite_count", 0) > 0:
+            warning = f"改写后复检未完成：{exc}；沿用改写后正文，请人工核对"
+            system_logger.warning(warning)
+            return {"hallucinations": [], "fact_check_result": "UNKNOWN",
+                    "fact_check_warnings": [warning]}
         warning = f"章节核查未完成：{exc}；结果未知，请人工核对"
         system_logger.warning(warning)
         return {"error": f"章节核查失败：{exc}", "hallucinations": [],
                 "fact_check_result": "UNKNOWN", "fact_check_warnings": [warning]}
+
+
+# ===== 幻觉定向改写回环 =====
+
+# 触发阈值：medium+high 幻觉 ≥3 条，或总数 ≥8 条 → 认定"幻觉超标"，定向改写一轮
+_REWRITE_MIN_SEVERE = 3
+_REWRITE_MIN_TOTAL = 8
+_REWRITE_MAX_ROUNDS = 1
+
+
+def _needs_rewrite(state: dict) -> bool:
+    """幻觉是否超标且还有改写轮次可用（最多 N 轮，防死循环）"""
+    if state.get("error"):
+        return False
+    if state.get("mode") == "continue":
+        return False  # 续写模式正文是追加的，改写会破坏已发布内容的连续性
+    if state.get("rewrite_count", 0) >= _REWRITE_MAX_ROUNDS:
+        return False
+    items = state.get("hallucinations") or []
+    if not items:
+        return False
+    severe = sum(1 for i in items if isinstance(i, dict)
+                 and i.get("severity") in ("medium", "high"))
+    hit = severe >= _REWRITE_MIN_SEVERE or len(items) >= _REWRITE_MIN_TOTAL
+    if hit:
+        system_logger.warning(
+            f"[幻觉改写] 幻觉超标：共{len(items)}条（medium+high={severe}）"
+            f" → 触发第{state.get('rewrite_count', 0) + 1}轮定向改写")
+    return hit
+
+
+async def node_rewrite(state: dict) -> dict:
+    """幻觉定向改写：按核查建议修复正文，复检在 content_check 节点完成。"""
+    from app.service.chapter_review_service import ChapterReviewService
+    from app.service.text_cleaner import clean_generated_text
+
+    try:
+        items = state.get("hallucinations") or []
+        text = state.get("continued_text") if state.get("mode") == "continue" \
+            else state.get("generated_text") or ""
+        result = await ChapterReviewService.calibrate(
+            content=text,
+            hallucinations=items,
+            settings_text=(state.get("settings") or {}).get("content", ""),
+            character_cards=state.get("character_cards") or [],
+            memory_body=state.get("memory_body") or "",
+            summary=state.get("summary") or "",
+        )
+        if result.get("状态码") != 200:
+            raise ValueError(result.get("消息", "改写失败"))
+        new_text = (result["数据"].get("content") or "").strip()
+        if not new_text:
+            raise ValueError("改写返回空正文")
+
+        # 改写后仍走同一套程序化清洗；字数跌破下限则放弃改写（保字数优先）
+        target = state.get("word_count", 2000)
+        lower_bound = int(target * 0.8)
+        if state.get("use_anti_ai", True):
+            new_text, new_stats = clean_generated_text(new_text)
+        else:
+            new_text, new_stats = new_text, {}
+        if len(new_text) < lower_bound:
+            system_logger.warning(
+                f"[幻觉改写] 改写后字数{len(new_text)}<{lower_bound}，放弃本轮改写保留原文")
+            return {"rewrite_count": state.get("rewrite_count", 0) + 1}
+
+        # 改写不得删掉过多内容（防模型只回片段）
+        origin_len = len(text)
+        if len(new_text) < origin_len * 0.6:
+            system_logger.warning(
+                f"[幻觉改写] 改写后字数骤降 {origin_len}→{len(new_text)}，放弃本轮")
+            return {"rewrite_count": state.get("rewrite_count", 0) + 1}
+
+        merged_stats = dict(state.get("clean_stats") or {})
+        merged_stats.setdefault("rewrite", {})
+        merged_stats["rewrite"].update(new_stats)
+        n = state.get("rewrite_count", 0) + 1
+        system_logger.info(
+            f"[幻觉改写] 第{n}轮完成：{origin_len} → {len(new_text)}字，"
+            f"修复{len(items)}条幻觉，待复检")
+        upd = {"generated_text": new_text, "clean_stats": merged_stats,
+               "actual_word_count": len(new_text), "rewrite_count": n}
+        if state.get("mode") == "continue":
+            upd["continued_text"] = new_text
+            upd["total_word_count"] = len(state.get("existing_content", "")) + len(new_text)
+        return upd
+    except Exception as exc:
+        # 改写失败不阻断：记轮次并保留原文，直接进入复检/保存
+        system_logger.warning(f"[幻觉改写] 失败（保留原文）: {exc}")
+        return {"rewrite_count": state.get("rewrite_count", 0) + 1}
 
 
 async def _save_chapter_content(
@@ -977,6 +1278,9 @@ def _route_on_error(state: dict) -> str:
 def _route_after_content_check(state: dict) -> str:
     if state.get("error"):
         return "error"
+    # 幻觉超标 → 定向改写一轮 → 回到 content_check 复检（最多 1 轮）
+    if _needs_rewrite(state):
+        return "rewrite"
     return "preview" if state.get("mode") == "regenerate" else "save"
 
 
@@ -995,6 +1299,7 @@ def build_chapter_gen_graph():
     builder.add_node("call_llm", node_call_llm)
     builder.add_node("postprocess", node_postprocess)
     builder.add_node("content_check", node_content_check)
+    builder.add_node("rewrite", node_rewrite)
     builder.add_node("save", node_save)
 
     builder.add_edge(START, "repair_load")
@@ -1008,7 +1313,9 @@ def build_chapter_gen_graph():
     builder.add_conditional_edges("postprocess", _route_on_error, {"ok": "content_check", "error": END})
     builder.add_conditional_edges(
         "content_check", _route_after_content_check,
-        {"save": "save", "preview": END, "error": END})
+        {"save": "save", "preview": END, "error": END, "rewrite": "rewrite"})
+    # 改写后回到 content_check 复检（rewrite_count 上限保证回环终止）
+    builder.add_edge("rewrite", "content_check")
     builder.add_edge("save", END)
     return builder.compile()
 
@@ -1080,6 +1387,8 @@ async def run_chapter_gen(state: dict) -> dict:
         "hallucinations": result.get("hallucinations", []),
         "fact_check_warnings": result.get("fact_check_warnings", []),
         "review_skill": result.get("review_skill"),
+        "richness": result.get("richness", {}),
+        "rewrite_count": result.get("rewrite_count", 0),
     }
     if result.get("error"):
         response = fail(result["error"], code=500)
